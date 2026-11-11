@@ -6,6 +6,7 @@ import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-
 import type { Settings } from '../state/store'
 import { createLayers, type StaticAttribution, type TileLayer } from './providers'
 import { ecefToGeodetic, frame, geodeticToEcef } from './frame'
+import { FlightPrefetch } from './flightPrefetch'
 
 // BVH-accelerated raycasts; trees are built lazily only for tiles under the aircraft.
 BufferGeometry.prototype.computeBoundsTree = computeBoundsTree
@@ -29,6 +30,9 @@ export class WorldSystem {
   private readonly raycaster = new Raycaster()
   private readonly hits: Intersection[] = []
   private readonly candidates: Mesh[] = []
+  private readonly prefetch = new FlightPrefetch()
+  private prefetchActive = false
+  private readonly prefetchResolution: number
   failed = false
   lastError: string | null = null
   /** World-space surface normal of the most recent ray hit. */
@@ -40,11 +44,15 @@ export class WorldSystem {
     private camera: PerspectiveCamera,
     private scene: Scene,
   ) {
+    this.prefetchResolution = { low: 64, medium: 96, high: 128, ultra: 192 }[settings.quality]
     const { layers, attributions } = createLayers(settings, renderer)
     this.layers = layers
     this.staticAttributions = attributions
     ;(this.raycaster as Raycaster & { firstHitOnly?: boolean }).firstHitOnly = true
     for (const l of layers) {
+      // The streaming view can activate tiles outside the visible camera.
+      // Let Three cull those meshes before submitting them to the GPU.
+      l.tiles.autoDisableRendererCulling = false
       l.tiles.setCamera(camera)
       l.tiles.setResolutionFromRenderer(camera, renderer)
       l.tiles.addEventListener('load-error', (e: { error: Error; url: string | URL }) => {
@@ -76,9 +84,39 @@ export class WorldSystem {
     }
   }
 
+  /**
+   * Relaxes the detail target while the ground is sweeping past quickly (low and
+   * fast), where full-resolution tiles would fly out of view before they finish
+   * downloading and the queue never catches up. 1 = full detail.
+   */
+  detailScale = 1
+  private readonly baseErrorTargets = new Map<TileLayer, number>()
+
+  setFlightPath(position: Vector3, velocity: Vector3, up: Vector3, agl: number, enabled: boolean) {
+    const active = this.prefetch.update(position, velocity, up, agl, enabled)
+    if (active === this.prefetchActive) return
+    this.prefetchActive = active
+    for (const { tiles } of this.layers) {
+      if (active) {
+        tiles.setCamera(this.prefetch.camera)
+        // Coarse data only: the visible camera still requests full detail.
+        // Both views share the existing bounded queues and memory budget.
+        tiles.setResolution(this.prefetch.camera, this.prefetchResolution, this.prefetchResolution)
+      } else {
+        tiles.deleteCamera(this.prefetch.camera)
+      }
+    }
+  }
+
   update() {
     this.syncTransforms()
     for (const l of this.layers) {
+      let base = this.baseErrorTargets.get(l)
+      if (base === undefined) {
+        base = l.tiles.errorTarget
+        this.baseErrorTargets.set(l, base)
+      }
+      l.tiles.errorTarget = base * this.detailScale
       l.tiles.setResolutionFromRenderer(this.camera, this.renderer)
       l.tiles.update()
     }

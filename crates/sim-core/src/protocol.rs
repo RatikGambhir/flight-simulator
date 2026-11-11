@@ -23,6 +23,8 @@ pub struct ControlInput {
     /// Lever movement request in [-1, 1] (full deflection = 60 %/s).
     pub throttle_rate: f64,
     pub brake: f64,
+    /// Hold for reverse thrust (jets, on the ground, throttle at idle); 0 or 1.
+    pub reverse: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -95,6 +97,20 @@ pub enum SimCommand {
     SetTimeScale { scale: f64 },
     /// The renderer detected the aircraft hitting scenery (buildings, terrain ahead).
     Collision { what: String },
+    /// Surface wind and turbulence.
+    SetWeather(WeatherRequest),
+}
+
+/// Weather settings sent by the UI.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct WeatherRequest {
+    /// Direction the wind blows from (degrees true).
+    pub wind_from_deg: f64,
+    /// Surface wind speed (knots).
+    pub wind_speed_kt: f64,
+    /// Turbulence intensity 0..1.
+    pub turbulence: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -179,7 +195,19 @@ pub mod snap {
     pub const VEL_N: usize = 46;
     pub const VEL_U: usize = 47;
     pub const TIME_SCALE: usize = 48;
-    pub const LEN: usize = 49;
+    /// Specific force in body axes, in g (x forward, y right, z up; 1 g up in level flight).
+    pub const NX: usize = 49;
+    pub const NY: usize = 50;
+    pub const NZ: usize = 51;
+    /// Wind at the aircraft (including gusts), local east/north/up, m/s.
+    pub const WIND_E: usize = 52;
+    pub const WIND_N: usize = 53;
+    pub const WIND_U: usize = 54;
+    /// Thrust reverser deployment 0..1.
+    pub const REVERSER: usize = 55;
+    /// Ground-effect strength 0 (none) .. 1 (wheels on the runway).
+    pub const GROUND_EFFECT: usize = 56;
+    pub const LEN: usize = 57;
 
     pub mod flags {
         pub const ON_GROUND: u32 = 1;

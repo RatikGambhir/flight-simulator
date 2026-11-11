@@ -6,9 +6,30 @@ import { ApModes, Flags, S } from '../sim/protocol'
 import { sim } from '../sim/simClient'
 import { useAircraftList } from './useAircraftList'
 import { useApp } from '../state/store'
+import { angleDelta, navigationTo } from '../navigation/route'
+
+// Intl formatters are expensive to create; build them once.
+const FORMATTERS = [0, 1, 2].map((d) => new Intl.NumberFormat('en-US', { maximumFractionDigits: d, minimumFractionDigits: d }))
 
 function fmt(n: number, digits = 0) {
-  return n.toLocaleString('en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits })
+  return FORMATTERS[digits].format(n)
+}
+
+/** Writes text/colour only when they change, so steady values cost no DOM work. */
+type Cached = HTMLElement & { _t?: string; _c?: string }
+function text(el: HTMLElement, v: string) {
+  const c = el as Cached
+  if (c._t !== v) {
+    c._t = v
+    el.textContent = v
+  }
+}
+function color(el: HTMLElement, v: string) {
+  const c = el as Cached
+  if (c._c !== v) {
+    c._c = v
+    el.style.color = v
+  }
 }
 
 const HEADING_PX_PER_DEG = 4
@@ -28,6 +49,7 @@ export function Hud() {
       ias: q('ias'),
       gs: q('gs'),
       mach: q('mach'),
+      wind: q('wind'),
       alt: q('alt'),
       agl: q('agl'),
       vs: q('vs'),
@@ -46,6 +68,9 @@ export function Hud() {
       warn: q('warn'),
       status: q('status'),
       assist: q('assist'),
+      destination: q('destination'),
+      destinationLabel: q('destinationLabel'),
+      destinationHint: q('destinationHint'),
     }
     // Build the heading strip once.
     const strip = nodes.strip
@@ -72,54 +97,82 @@ export function Hud() {
       const s = sim.latest
       const flags = s[S.FLAGS] | 0
       const spec = listRef.current[s[S.AIRCRAFT_INDEX] | 0]
-      nodes.ias.textContent = fmt(s[S.IAS_KT])
-      nodes.gs.textContent = `GS ${fmt(s[S.GS_KT])}  TAS ${fmt(s[S.TAS_KT])}`
-      nodes.mach.textContent = s[S.MACH] > 0.4 ? `M ${s[S.MACH].toFixed(2)}` : `G ${s[S.G_LOAD].toFixed(1)}`
-      nodes.alt.textContent = fmt(Math.round(s[S.ALT_MSL_FT] / 10) * 10)
+      text(nodes.ias, fmt(s[S.IAS_KT]))
+      text(nodes.gs, `GS ${fmt(s[S.GS_KT])}  TAS ${fmt(s[S.TAS_KT])}`)
+      text(nodes.mach, s[S.MACH] > 0.4 ? `M ${s[S.MACH].toFixed(2)}` : `G ${s[S.G_LOAD].toFixed(1)}`)
+      text(nodes.alt, fmt(Math.round(s[S.ALT_MSL_FT] / 10) * 10))
       const agl = s[S.AGL_FT]
-      nodes.agl.textContent = agl < 2500 ? `RA ${fmt(agl)}` : ''
+      text(nodes.agl, agl < 2500 ? `RA ${fmt(agl)}` : '')
       const vs = s[S.VS_FPM]
-      nodes.vs.textContent = `${vs >= 0 ? '▲' : '▼'} ${fmt(Math.abs(Math.round(vs / 10) * 10))} fpm`
+      text(nodes.vs, `${vs >= 0 ? '▲' : '▼'} ${fmt(Math.abs(Math.round(vs / 10) * 10))} fpm`)
       const hdg = s[S.HEADING]
-      nodes.hdg.textContent = `${String(Math.round(hdg) % 360).padStart(3, '0')}°`
+      text(nodes.hdg, `${String(Math.round(hdg) % 360).padStart(3, '0')}°`)
       strip.style.transform = `translateX(${210 - (hdg + 360) * HEADING_PX_PER_DEG}px)`
+      const destination = useApp.getState().destination?.airport
+      if (destination && sim.snapshotsReceived) {
+        const nav = navigationTo({ lat: s[S.LAT], lon: s[S.LON] }, destination)
+        const delta = angleDelta(nav.bearing, hdg)
+        // Same scale as the cardinal heading strip; never clamp a marker to a false bearing.
+        const inStrip = Math.abs(delta) <= 50 && nav.distanceNm > 0.05
+        nodes.destination.style.display = inStrip ? 'flex' : 'none'
+        nodes.destination.style.left = `${210 + delta * HEADING_PX_PER_DEG}px`
+        text(nodes.destinationLabel, `${destination.ident} · ${destination.name}`)
+        const bearing = String(Math.round(nav.bearing) % 360).padStart(3, '0')
+        text(nodes.destinationHint, nav.distanceNm <= 0.05 ? `✈ ${destination.ident} · At destination` : `${!inStrip ? (delta < 0 ? '◀ ' : '▶ ') : ''}${destination.ident} · ${bearing}°T · ${nav.distanceNm.toFixed(1)} NM`)
+        nodes.destinationHint.style.display = 'block'
+      } else {
+        nodes.destination.style.display = 'none'
+        nodes.destinationHint.style.display = 'none'
+      }
       const thr = s[S.THROTTLE]
       ;(nodes.thrBar.firstElementChild as HTMLElement).style.height = `${thr * 100}%`
-      nodes.thr.textContent = `${Math.round(thr * 100)}%`
+      const rev = s[S.REVERSER]
+      text(nodes.thr, rev > 0.05 ? (rev > 0.95 ? 'REV' : 'REV…') : `${Math.round(thr * 100)}%`)
+      color(nodes.thr, rev > 0.05 ? '#ffb547' : '')
+      // Wind as pilots read it: direction it blows from / speed.
+      const we = s[S.WIND_E]
+      const wn = s[S.WIND_N]
+      const wkt = Math.hypot(we, wn) * 1.943844
+      const wdir = (Math.round((Math.atan2(-we, -wn) * 180) / Math.PI + 360) % 360) || 360
+      text(nodes.wind, wkt >= 1 ? `WIND ${String(wdir).padStart(3, '0')}°/${Math.round(wkt)}` : 'WIND CALM')
       const gear = s[S.GEAR]
       if (spec && !spec.retractable_gear) {
-        nodes.gear.textContent = 'FIXED'
-        nodes.gear.style.color = '#9aa6b6'
+        text(nodes.gear, 'FIXED')
+        color(nodes.gear, '#9aa6b6')
       } else {
-        nodes.gear.textContent = gear > 0.99 ? 'DOWN' : gear < 0.01 ? 'UP' : 'MOVING'
-        nodes.gear.style.color = gear > 0.99 ? '#55e08a' : gear < 0.01 ? '#e9fbff' : '#ffb547'
+        text(nodes.gear, gear > 0.99 ? 'DOWN' : gear < 0.01 ? 'UP' : 'MOVING')
+        color(nodes.gear, gear > 0.99 ? '#55e08a' : gear < 0.01 ? '#e9fbff' : '#ffb547')
       }
       const fi = s[S.FLAPS_INDEX] | 0
-      nodes.flaps.textContent = spec ? spec.flap_detents[fi] ?? String(fi) : String(fi)
-      nodes.spd.textContent = s[S.SPOILERS] > 0.05 ? 'EXT' : '—'
-      nodes.spd.style.color = s[S.SPOILERS] > 0.05 ? '#ffb547' : ''
-      nodes.brake.textContent = flags & Flags.PARKING_BRAKE ? 'PARK' : s[S.BRAKE] > 0 ? 'ON' : '—'
-      nodes.brake.style.color = flags & Flags.PARKING_BRAKE || s[S.BRAKE] > 0 ? '#ffb547' : ''
-      nodes.gload.textContent = `${s[S.G_LOAD].toFixed(1)} G`
+      text(nodes.flaps, spec ? spec.flap_detents[fi] ?? String(fi) : String(fi))
+      text(nodes.spd, s[S.SPOILERS] > 0.05 ? 'EXT' : '—')
+      color(nodes.spd, s[S.SPOILERS] > 0.05 ? '#ffb547' : '')
+      text(nodes.brake, flags & Flags.PARKING_BRAKE ? 'PARK' : s[S.BRAKE] > 0 ? 'ON' : '—')
+      color(nodes.brake, flags & Flags.PARKING_BRAKE || s[S.BRAKE] > 0 ? '#ffb547' : '')
+      text(nodes.gload, `${s[S.G_LOAD].toFixed(1)} G`)
       const lat = s[S.LAT]
       const lon = s[S.LON]
-      nodes.coords.textContent = `${Math.abs(lat).toFixed(4)}°${lat >= 0 ? 'N' : 'S'}  ${Math.abs(lon).toFixed(4)}°${lon >= 0 ? 'E' : 'W'}`
+      text(nodes.coords, `${Math.abs(lat).toFixed(4)}°${lat >= 0 ? 'N' : 'S'}  ${Math.abs(lon).toFixed(4)}°${lon >= 0 ? 'E' : 'W'}`)
       const apOn = (flags & Flags.AP_ENGAGED) !== 0
-      nodes.ap.textContent = apOn ? 'AP ON' : 'AP OFF'
-      nodes.ap.className = apOn ? 'ap-on' : 'faint'
+      text(nodes.ap, apOn ? 'AP ON' : 'AP OFF')
+      const apClass = apOn ? 'ap-on' : 'faint'
+      if (nodes.ap.className !== apClass) nodes.ap.className = apClass
       const m = s[S.AP_MODES] | 0
-      nodes.apModes.textContent = apOn
-        ? `${m & ApModes.HEADING ? `HDG ${String(Math.round(s[S.AP_HEADING])).padStart(3, '0')}` : ''}  ${m & ApModes.ALTITUDE ? `ALT ${fmt(s[S.AP_ALT_FT])}` : ''}  ${m & ApModes.AUTOTHROTTLE ? `SPD ${fmt(s[S.AP_SPEED_KT])}` : ''}`
-        : ''
-      nodes.assist.textContent = flags & Flags.ASSIST ? 'ASSIST' : 'DIRECT'
+      text(
+        nodes.apModes,
+        apOn
+          ? `${m & ApModes.HEADING ? `HDG ${String(Math.round(s[S.AP_HEADING])).padStart(3, '0')}` : ''}  ${m & ApModes.ALTITUDE ? `ALT ${fmt(s[S.AP_ALT_FT])}` : ''}  ${m & ApModes.AUTOTHROTTLE ? `SPD ${fmt(s[S.AP_SPEED_KT])}` : ''}`
+          : '',
+      )
+      text(nodes.assist, flags & Flags.ASSIST ? 'ASSIST' : 'DIRECT')
       let warn = ''
       if (flags & Flags.STALL) warn = 'STALL'
       else if (flags & Flags.OVERSPEED) warn = 'OVERSPEED'
       else if (flags & Flags.TAILSTRIKE) warn = 'TAIL STRIKE'
       else if (!(flags & Flags.ON_GROUND) && gear < 0.5 && agl < 500 && vs < -200 && spec?.retractable_gear) warn = 'GEAR'
-      nodes.warn.textContent = warn
+      text(nodes.warn, warn)
       nodes.warn.style.display = warn ? 'block' : 'none'
-      nodes.status.textContent = flags & Flags.PAUSED ? 'PAUSED' : s[S.TIME_SCALE] > 1 ? `SIM RATE ${s[S.TIME_SCALE]}×` : ''
+      text(nodes.status, flags & Flags.PAUSED ? 'PAUSED' : s[S.TIME_SCALE] > 1 ? `SIM RATE ${s[S.TIME_SCALE]}×` : '')
     }
     tick()
     return () => cancelAnimationFrame(raf)
@@ -127,19 +180,22 @@ export function Hud() {
 
   return (
     <div className={`hud ${cockpit ? 'compact' : ''}`} ref={root}>
-      <div className="hud-heading box">
+      <div className="hud-heading box heading-with-destination">
         <div className="strip" data-k="strip" />
         <div className="pointer" />
+        <div className="compass-destination" data-k="destination" style={{ display: 'none' }}><span>✈</span><b data-k="destinationLabel" /></div>
       </div>
-      <div className="hud-heading" style={{ height: 'auto', top: 66, width: 'auto', overflow: 'visible' }}>
+      <div className="hud-heading" style={{ height: 'auto', top: 94, width: 'auto', overflow: 'visible' }}>
         <b data-k="hdg" style={{ fontSize: 16 }} />
       </div>
+      <div className="destination-heading-hint" data-k="destinationHint" style={{ display: 'none' }} />
       <div className="hud-status" data-k="status" />
       <div className="hud-side left box">
         <div className="hud-unit">AIRSPEED KT</div>
         <div className="hud-big" data-k="ias" />
         <div className="hud-small" data-k="gs" />
         <div className="hud-small" data-k="mach" />
+        <div className="hud-small" data-k="wind" />
       </div>
       <div className="hud-side right box">
         <div className="hud-unit">ALTITUDE FT</div>

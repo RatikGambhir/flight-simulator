@@ -76,8 +76,8 @@ pub extern "C" fn sim_snapshot_len() -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn sim_input(pitch: f64, roll: f64, yaw: f64, throttle_rate: f64, brake: f64) {
-    with_host(|h| h.sim.set_input(ControlInput { pitch, roll, yaw, throttle_rate, brake }));
+pub extern "C" fn sim_input(pitch: f64, roll: f64, yaw: f64, throttle_rate: f64, brake: f64, reverse: f64) {
+    with_host(|h| h.sim.set_input(ControlInput { pitch, roll, yaw, throttle_rate, brake, reverse }));
 }
 
 /// Applies the JSON command previously written to the IO buffer. Returns 0 on success.

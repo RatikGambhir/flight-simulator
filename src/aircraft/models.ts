@@ -13,6 +13,7 @@ import {
   Vector3,
   type BufferGeometry,
   type Material,
+  type Quaternion,
 } from 'three'
 import {
   airlinerStations,
@@ -22,6 +23,7 @@ import {
   tubeGeometry,
   wingPanelGeometry,
   wingPoint,
+  wingUpperPoint,
   type Station,
   type WingParams,
 } from './geometry'
@@ -31,6 +33,7 @@ export type SurfaceKind = 'aileron' | 'elevator' | 'rudder' | 'flap' | 'spoiler'
 
 export interface ControlSurface {
   pivot: Object3D
+  restQuaternion: Quaternion
   kind: SurfaceKind
   /** Rotation (rad) at full deflection / extension. */
   max: number
@@ -119,25 +122,35 @@ function buildWings(model: AircraftModel, parent: Object3D, b: WingBuild) {
       g.add(pivot)
       const geo = toHingeLocal(wingPanelGeometry(b.params, e0, e1, c0, c1, side, 4, 8), h.origin, h.quat)
       mesh(geo, mat, pivot)
-      model.surfaces.push({ pivot, kind, max, sign })
+      model.surfaces.push({ pivot, restQuaternion: h.quat.clone(), kind, max, sign })
     }
     for (const [e0, e1] of b.flaps ?? []) addSurface(e0, e1, hc, 1, 'flap', 0.65, side, b.surfaceMat)
     if (b.aileron) addSurface(b.aileron[0], b.aileron[1], hc, 1, 'aileron', 0.35, side, b.surfaceMat)
     if (b.spoilers) {
       // Thin panels on the upper surface just ahead of the flaps, hinged at their leading edge.
       const [e0, e1] = b.spoilers
-      const h = hingeFrame(b.params, e0, e1, hc - 0.16, side)
+      const h = hingeFrame(b.params, e0, e1, hc - 0.16, side, true)
       const pivot = new Object3D()
       pivot.position.copy(h.origin)
       pivot.quaternion.copy(h.quat)
       g.add(pivot)
       const sp: WingParams = { ...b.params, thicknessRoot: b.params.thicknessRoot * 0.25, thicknessTip: b.params.thicknessTip * 0.25 }
       const geo = wingPanelGeometry(sp, e0, e1, hc - 0.16, hc - 0.01, side, 3, 4)
-      // Lift onto the upper surface.
-      geo.translate(0, b.params.thicknessRoot * b.params.rootChord * 0.42, 0)
+      // Follow the tapered skin rather than floating every panel at root-wing
+      // height. Keep a small physical gap so the stowed panel cannot z-fight.
+      const positions = geo.getAttribute('position')
+      const uv = geo.getAttribute('uv')
+      for (let i = 0; i < positions.count; i++) {
+        const e = uv.getY(i)
+        const c = uv.getX(i)
+        const mean = wingPoint(sp, e, c, side).y
+        const upper = wingUpperPoint(b.params, e, c, side).y
+        positions.setY(i, upper + 0.015 + (positions.getY(i) - mean) * 0.04)
+      }
+      geo.computeVertexNormals()
       toHingeLocal(geo, h.origin, h.quat)
       mesh(geo, b.surfaceMat, pivot)
-      model.surfaces.push({ pivot, kind: 'spoiler', max: -0.9, sign: side })
+      model.surfaces.push({ pivot, restQuaternion: h.quat.clone(), kind: 'spoiler', max: -0.9, sign: side })
     }
     if (side === 1) model.wingTipRight = wingPoint(b.params, 1, 0.5, 1).add(g.position)
   }
@@ -157,7 +170,7 @@ function tailSurface(model: AircraftModel, parent: Object3D, params: WingParams,
     g.add(pivot)
     mesh(toHingeLocal(wingPanelGeometry(params, 0.04, 0.97, hc, 1, side, 6, 6), h.origin, h.quat), surfMat, pivot)
     if (params.vertical) mesh(wingPanelGeometry(params, 0.97, 1, hc, 1, side, 1, 4), mat, g)
-    model.surfaces.push({ pivot, kind, max: kind === 'rudder' ? 0.4 : 0.35, sign: side })
+    model.surfaces.push({ pivot, restQuaternion: h.quat.clone(), kind, max: kind === 'rudder' ? 0.4 : 0.35, sign: side })
   }
 }
 

@@ -26,6 +26,18 @@ const QUALITIES: { id: Quality; label: string }[] = [
   { id: 'ultra', label: 'Ultra' },
 ]
 
+const TURBULENCE: [string, number][] = [
+  ['None', 0],
+  ['Light', 0.2],
+  ['Moderate', 0.45],
+  ['Severe', 0.8],
+]
+
+function compass(deg: number) {
+  const pts = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+  return pts[Math.round(deg / 45) % 8]
+}
+
 function formatHour(h: number) {
   const hh = Math.floor(h)
   const mm = Math.round((h - hh) * 60)
@@ -155,6 +167,50 @@ export function Settings({ onClose, full }: { onClose: () => void; full?: boolea
                   {l}
                 </button>
               ))}
+            </div>
+          </section>
+
+          <section className="settings-section glass">
+            <h3>Weather</h3>
+            <div className="field">
+              <label>
+                Surface wind: {s.windSpeedKt < 1 ? 'calm' : `${String(Math.round(s.windFromDeg)).padStart(3, '0')}° (${compass(s.windFromDeg)}) at ${Math.round(s.windSpeedKt)} kt`}
+              </label>
+              <input type="range" min={0} max={40} step={1} value={s.windSpeedKt} onChange={(e) => update({ windSpeedKt: Number(e.target.value) })} />
+            </div>
+            <div className="field">
+              <label>Wind from</label>
+              <input type="range" min={0} max={350} step={10} value={s.windFromDeg} disabled={s.windSpeedKt < 1} onChange={(e) => update({ windFromDeg: Number(e.target.value) })} />
+            </div>
+            <div className="field">
+              <label>Turbulence</label>
+              <div className="segmented">
+                {TURBULENCE.map(([label, v]) => (
+                  <button key={label} className={Math.abs(s.turbulence - v) < 0.05 ? 'on' : ''} onClick={() => update({ turbulence: v })}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <span className="faint" style={{ fontSize: 12 }}>
+                Wind strengthens with height and gusts near the ground. Clouds drift with it.
+              </span>
+            </div>
+          </section>
+
+          <section className="settings-section glass">
+            <h3>Sound</h3>
+            <div className="field">
+              <label>Volume: {Math.round(s.volume * 100)}%</label>
+              <input type="range" min={0} max={1} step={0.05} value={s.volume} onChange={(e) => update({ volume: Number(e.target.value) })} />
+            </div>
+            <div className="toggle-row">
+              <div>
+                <div>Cockpit callouts</div>
+                <div className="faint" style={{ fontSize: 12 }}>
+                  Radio-altitude calls and ground-proximity warnings in jets.
+                </div>
+              </div>
+              <input type="checkbox" checked={s.callouts} onChange={(e) => update({ callouts: e.target.checked })} />
             </div>
           </section>
 

@@ -84,22 +84,54 @@ else (airports, cities, landmarks) is searched offline from bundled data.
 | --- | --- |
 | `W`/`↑`, `S`/`↓` | Nose down / nose up (invertible in Settings) |
 | `A`/`←`, `D`/`→` | Roll left / right |
-| `Q` / `E` | Rudder; nosewheel steering on the ground |
+| `J` / `E` | Rudder; nosewheel steering on the ground |
 | `R` / `F` | Throttle up / down (`⇧R` full, `⇧F` idle) |
+| `X` (hold) | Reverse thrust (jets, on the ground with throttle at idle) |
 | `G` | Landing gear |
 | `[` / `]` | Flaps up / down |
 | `/` | Speed brakes |
-| `Space` (hold) / `N` | Wheel brakes / parking brake |
+| `Space` or `.` (hold) / `N` | Wheel brakes / parking brake |
 | `T` | Assisted flight on/off |
 | `Z` | Autopilot (holds heading, altitude, speed); `⇧←/→` heading ±5°, `⇧↑/↓` altitude ±500 ft, `⌥R/⌥F` speed ±5 kt |
 | `C`, `V`, `1`–`6` | Cycle cameras, cockpit↔exterior, Exterior / Cockpit / Wing / Free / Cinematic / Flyby |
 | Mouse drag / scroll / double‑click | Look around or orbit / zoom / reset view |
 | `H`, `P`, `Esc`, `?` | HUD, pause, menu, controls help |
+| `M` | Destination selection and live route map |
+| `Q` | Skip to a chosen number of miles from the destination |
+| `Shift` + `~` (the backquote key) | Toggle the destination airport beacon |
 
-Standard‑layout gamepads work too (left stick flies, triggers throttle, bumpers rudder,
-A gear, B/X flaps, Y camera, Start menu).
+The **737-800 cockpit** has a dedicated NG-style interior with six main display
+units, standby instruments, a labeled MCP/EFIS panel, dual yokes, throttle
+quadrant, CDU keypads and overhead switches. Click **CMD A** to toggle autopilot;
+click the speed, heading and altitude knobs to increase their targets, or
+Shift-click to decrease. Throttle handles change power by 10% (Shift-click to
+decrease); the gear and speed-brake handles toggle their controls, and the flap
+handle moves one notch down (Shift-click up). Hover a main control for its hint.
+Other buttons, radios and overhead switches are decorative. Secondary engine
+readouts are visual approximations of the simulator's engine spool, not a
+full aircraft-systems simulation. Existing keyboard controls work as before.
 
-**First takeoff:** `⇧R` for full power, keep straight with `Q`/`E`, gently hold `S` at the
+Choose **Destination** before flying to search for an arrival airport and preview a
+direct great-circle route. The compass places the airport icon and name at its
+current true bearing, with distance remaining below. The optional world beacon
+is anchored to the airport's coordinates and elevation and follows the camera;
+it disappears when outside the view. The map uses the bundled coastline and
+airport data and shows your live aircraft position. Routes are direct navigation
+guides, not airway or ATC flight plans. Clear the destination to return to free flight.
+
+Press **Q** for **Skip to**, enter **1–10,000 ordinary miles (mi)** from your selected
+airport, then press **Okay**. The screen fades to black while the aircraft is
+placed airborne on the current route, pointing toward the airport, then fades
+back in. Terrain placement finishes before the transition ends. The aircraft
+uses a trimmed flying speed, with at least 5,000 ft terrain clearance (1,500 ft
+within 15 miles). Cancel/Escape preserves the flight, and an already paused
+flight stays paused. The compass continues to display nautical miles (NM).
+
+Holding a flight key builds up deflection gradually (a tap is a small correction), like
+moving a real yoke. Standard‑layout gamepads work too (left stick flies, triggers throttle,
+bumpers rudder, A gear, B/X flaps, Y camera, D‑pad down reverse thrust, Start menu).
+
+**First takeoff:** `⇧R` for full power, keep straight with `J`/`E`, gently hold `S` at the
 rotate speed shown on the aircraft card, then `G` (gear up) and `[` (flaps up). `Z` hands
 over to the autopilot.
 
@@ -144,16 +176,28 @@ over to the autopilot.
     precision, so the GPU only sees small coordinates (no Earth‑scale float32 jitter).
     `providers.ts` configures the 3D Tiles layers; `worldSystem.ts` streams them, probes
     ground height (BVH‑accelerated raycasts, rejecting tiles whose geometric error is too
-    coarse) and casts forward collision rays against buildings/terrain.
+    coarse) and casts forward collision rays against buildings/terrain. A coarse
+    secondary streaming view follows horizontal flight velocity roughly 12 seconds
+    ahead (600 m–6 km), using the same bounded cache and download queues. The visible
+    camera continues to request full detail; prefetch switches off below 25 m/s
+    and outside active flight.
   * `scene/` — React Three Fiber scene: Takram’s precomputed atmospheric scattering
     (sky, aerial perspective, sun & sky light), volumetric clouds, stars, lens flare, AgX
     tone mapping, SMAA, dithering, a PMREM sky environment for reflections and an animated
-    ocean (open‑data mode).
+    ocean (open‑data mode), plus shoreline-clipped, geoid-corrected Great Lakes water
+    in all providers. Lake surfaces load nearby and are released when flying away;
+    source data and elevation limitations are documented in `public/water/README.md`.
   * `aircraft/` — procedural models (parametric fuselage cross‑sections, NACA‑airfoil wings
     with hinged flaps/ailerons/spoilers, lathe‑turned nacelles with spinning fans,
     retractable gear, nav/strobe/beacon lights), painted liveries, cockpit interiors with
     live PFD/ND/EICAS or six‑pack instruments, and a sun‑projected ground shadow.
-  * `camera/`, `input/`, `ui/` — camera modes, the universal control scheme, menus and HUD.
+  * `camera/`, `input/`, `ui/` — camera modes (exterior cameras trail the aircraft's
+    acceleration on a spring; the pilot's head moves with g‑forces and runway rumble), the
+    universal control scheme, menus and HUD.
+  * `audio/` — procedural Web Audio: turbofan whine/roar or propeller buzz from engine RPM,
+    wind noise with airspeed and drag devices, tyre rumble, touchdown thumps, gear/flap
+    motors, stall horn / stick shaker, overspeed clacker, autopilot‑disconnect tone and
+    spoken radio‑altitude / GPWS callouts. The cockpit muffles outside sound.
 
 **Level of detail & memory:** 3d‑tiles‑renderer refines tiles by screen‑space error
 (the *Scenery detail* setting sets the error target), fades between levels, unloads tiles
@@ -170,7 +214,20 @@ are true MSL (ellipsoid height minus geoid).
 Forces are integrated in ECEF at 120 Hz: lift from an angle‑of‑attack lift curve with
 flaps, spoilers and a soft stall; parabolic drag with gear/flap/spoiler increments; thrust
 with altitude lapse (jets) or a power‑limited propeller model; gravity; wheel friction,
-braking and nosewheel steering on the ground. Rotation uses a rate‑command control law so
+braking and nosewheel steering on the ground.
+
+* **Wind and turbulence** (`crates/sim-core/src/weather.rs`): surface wind follows the 1/7
+  power‑law boundary layer (weaker in the flare than at pattern altitude); turbulence is a
+  Dryden‑style gust model with height‑dependent length scales and rotational gusts, plus
+  mechanical turbulence near the ground in strong wind. Aerodynamics use the air‑relative
+  velocity, so headwinds cut ground speed, crosswinds need a crab, and approaches spawn
+  crabbed onto a true 3° glideslope over the ground.
+* **Ground effect** within about a wingspan of the runway reduces induced drag and adds
+  lift, so airliners float in the flare.
+* **Turbofan spool‑up** is slow from idle and quick near the top; **thrust reversers**
+  deploy on the ground at idle and give roughly 40 % reverse thrust.
+* The simulation reports the **felt g‑load** in body axes, which drives the HUD G meter,
+  camera head motion and shake. Rotation uses a rate‑command control law so
 one control scheme works for every aircraft — heavier aircraft have lower rate limits and
 slower response.
 
@@ -210,6 +267,16 @@ cargo run -p sim-core --example maneuver
 ```bash
 npm run typecheck
 ```
+
+```bash
+npm run test:graphics # Node 22.18+; clouds, aircraft geometry/hinges, lake surfaces and flight prefetch
+```
+
+Clouds use continuous reduced-resolution sampling with temporal antialiasing,
+rather than the library's 16-frame checkerboard reconstruction. History is reset
+on camera cuts, relocation, world-origin changes, resolution and quality changes.
+Atmosphere precomputation is owned per effect lifetime so development reloads
+cannot dispose the lighting textures still used by the sky and clouds.
 
 ### Adding an aircraft
 
@@ -253,6 +320,7 @@ You can drop the original `stbn.bin` in its place.
   below sea level (e.g. Dutch polders, the Dead Sea).
 * **Volumetric clouds** are GPU‑heavy. On older Macs lower *Scenery detail* (which also
   lowers cloud quality) or turn clouds off in Settings.
-* **Weather** is visual only (no wind or turbulence in the flight model yet).
+* **Weather**: wind and turbulence affect the flight model; precipitation and low
+  visibility are not simulated.
 * **Aircraft** are original procedural models in the style of each type — not licensed
   replicas of manufacturer designs or liveries.

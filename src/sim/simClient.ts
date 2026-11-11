@@ -11,9 +11,6 @@ import { S, type ControlInput, type SimCommand, type SimEvent, type WorldQuery }
 const RENDER_DELAY = 0.03
 const HISTORY = 8
 
-interface Sample {
-  data: Float64Array
-}
 
 export interface RenderState {
   valid: boolean
@@ -39,10 +36,13 @@ const _qb = new Quaternion()
 class SimClient {
   private transport: SimTransport = createTransport()
   readonly latest = new Float64Array(S.LEN)
-  private history: Sample[] = []
+  /** Ring buffer of recent snapshots (preallocated; no per-snapshot garbage). */
+  private ring: Float64Array[] = Array.from({ length: HISTORY }, () => new Float64Array(S.LEN))
+  private head = 0
+  private count = 0
   private clockOffset: number | null = null
   private eventListeners = new Set<(e: SimEvent) => void>()
-  private lastInput: ControlInput = { pitch: 0, roll: 0, yaw: 0, throttle_rate: 0, brake: 0 }
+  private lastInput: ControlInput = { pitch: 0, roll: 0, yaw: 0, throttle_rate: 0, brake: 0, reverse: 0 }
   private lastInputSent = 0
   readonly ready: Promise<void>
   snapshotsReceived = 0
@@ -80,9 +80,9 @@ class SimClient {
     this.snapshotsReceived++
     const now = performance.now() / 1000
     if (s[S.GENERATION] !== this.latest[S.GENERATION]) {
-      this.history.length = 0
+      this.count = 0
     }
-    this.latest.set(s)
+    this.latest.set(s.subarray(0, S.LEN))
     // Track the local-clock minus sim-clock offset. Snap down immediately
     // (earliest arrival = least delayed), drift up slowly to follow pauses.
     const off = now - s[S.TIME]
@@ -91,30 +91,37 @@ class SimClient {
     } else {
       this.clockOffset += (off - this.clockOffset) * 0.01
     }
-    this.history.push({ data: Float64Array.from(s) })
-    if (this.history.length > HISTORY) this.history.shift()
+    this.head = (this.head + 1) % HISTORY
+    this.ring[this.head].set(s.subarray(0, S.LEN))
+    this.count = Math.min(this.count + 1, HISTORY)
+  }
+
+  /** i-th snapshot from oldest (0) to newest (count - 1). */
+  private at(i: number): Float64Array {
+    return this.ring[(this.head - (this.count - 1 - i) + HISTORY) % HISTORY]
   }
 
   /** Computes the interpolated render state for the current display time. */
   sample(): RenderState {
     const r = this.render
-    const h = this.history
-    if (h.length === 0 || this.clockOffset === null) {
+    const n = this.count
+    if (n === 0 || this.clockOffset === null) {
       r.valid = false
       return r
     }
     const t = performance.now() / 1000 - this.clockOffset - RENDER_DELAY
-    let a = h[0].data
-    let b = h[h.length - 1].data
+    let a = this.at(0)
+    let b = this.at(n - 1)
     let f = 1
     if (t <= a[S.TIME]) {
       b = a
       f = 0
     } else if (t < b[S.TIME]) {
-      for (let i = h.length - 1; i > 0; i--) {
-        if (h[i - 1].data[S.TIME] <= t) {
-          a = h[i - 1].data
-          b = h[i].data
+      for (let i = n - 1; i > 0; i--) {
+        const prev = this.at(i - 1)
+        if (prev[S.TIME] <= t) {
+          a = prev
+          b = this.at(i)
           const span = b[S.TIME] - a[S.TIME]
           f = span > 1e-6 ? (t - a[S.TIME]) / span : 1
           break
@@ -159,9 +166,10 @@ class SimClient {
       Math.abs(p.roll - input.roll) < 1e-3 &&
       Math.abs(p.yaw - input.yaw) < 1e-3 &&
       p.throttle_rate === input.throttle_rate &&
-      p.brake === input.brake
+      p.brake === input.brake &&
+      p.reverse === input.reverse
     if (same && now - this.lastInputSent < 250) return
-    this.lastInput = { ...input }
+    Object.assign(this.lastInput, input)
     this.lastInputSent = now
     this.transport.sendInput(input)
   }

@@ -13,10 +13,10 @@ use sim_core::{snap, ControlInput, FixedStepper, SimCommand, SimEvent, Simulatio
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::State;
 
-/// Snapshot publication interval.
+/// Snapshot publication interval (~60 Hz; the frontend interpolates between them).
 const PUBLISH_INTERVAL: Duration = Duration::from_micros(16_667);
-/// Loop tick; physics is decoupled from this by the fixed stepper.
-const TICK: Duration = Duration::from_millis(2);
+/// Upper bound on a single wait so a quiet channel never stalls the loop.
+const MAX_WAIT: Duration = Duration::from_millis(8);
 
 enum HostMsg {
     Input(ControlInput),
@@ -37,22 +37,50 @@ fn spawn_sim_thread() -> Sender<HostMsg> {
     tx
 }
 
+type Subscribers = (Channel<InvokeResponseBody>, Channel<Vec<SimEvent>>);
+
+/// Applies one host message.
+fn handle(msg: HostMsg, sim: &mut Simulation, subscribers: &mut Option<Subscribers>) {
+    match msg {
+        HostMsg::Input(i) => sim.set_input(i),
+        HostMsg::Command(c) => sim.command(c),
+        HostMsg::Subscribe { snapshots, events } => *subscribers = Some((snapshots, events)),
+    }
+}
+
+/// Serializes the snapshot as little-endian `f64`s into a fresh buffer (the IPC
+/// channel takes ownership, so one allocation per publish is unavoidable).
+fn encode_snapshot(snapshot: &[f64]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(snapshot.len() * 8);
+    for v in snapshot {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    bytes
+}
+
 fn sim_loop(rx: Receiver<HostMsg>) {
     let mut sim = Simulation::new();
     let mut stepper = FixedStepper::default();
-    let mut subscribers: Option<(Channel<InvokeResponseBody>, Channel<Vec<SimEvent>>)> = None;
+    let mut subscribers: Option<Subscribers> = None;
     let mut snapshot = vec![0.0f64; snap::LEN];
-    let mut bytes = Vec::with_capacity(snap::LEN * 8);
     let mut last = Instant::now();
-    let mut last_publish = Instant::now() - PUBLISH_INTERVAL;
+    let mut next_publish = Instant::now();
 
     loop {
-        // Drain all pending messages without blocking.
+        // Sleep until the next physics step or publish is due, waking early
+        // for pilot input so it lands in the very next step.
+        let now = Instant::now();
+        let step_due = now + Duration::from_secs_f64(stepper.time_to_next_step());
+        let wake = step_due.min(next_publish).min(now + MAX_WAIT);
+        match rx.recv_timeout(wake.saturating_duration_since(now)) {
+            Ok(msg) => handle(msg, &mut sim, &mut subscribers),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+        // Drain anything else that queued up.
         loop {
             match rx.try_recv() {
-                Ok(HostMsg::Input(i)) => sim.set_input(i),
-                Ok(HostMsg::Command(c)) => sim.command(c),
-                Ok(HostMsg::Subscribe { snapshots, events }) => subscribers = Some((snapshots, events)),
+                Ok(msg) => handle(msg, &mut sim, &mut subscribers),
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => return,
             }
@@ -62,16 +90,16 @@ fn sim_loop(rx: Receiver<HostMsg>) {
         stepper.advance(&mut sim, (now - last).as_secs_f64());
         last = now;
 
-        if now - last_publish >= PUBLISH_INTERVAL {
-            last_publish = now;
+        if now >= next_publish {
+            // Keep a steady cadence; resync if we fell far behind (e.g. app suspended).
+            next_publish += PUBLISH_INTERVAL;
+            if next_publish < now {
+                next_publish = now + PUBLISH_INTERVAL;
+            }
             if let Some((snap_ch, event_ch)) = &subscribers {
                 sim.write_snapshot(&mut snapshot);
-                bytes.clear();
-                for v in &snapshot {
-                    bytes.extend_from_slice(&v.to_le_bytes());
-                }
                 let events = sim.take_events();
-                let ok = snap_ch.send(InvokeResponseBody::Raw(bytes.clone())).is_ok()
+                let ok = snap_ch.send(InvokeResponseBody::Raw(encode_snapshot(&snapshot))).is_ok()
                     && (events.is_empty() || event_ch.send(events).is_ok());
                 if !ok {
                     // Webview reloaded or closed; wait for a new subscription.
@@ -79,8 +107,6 @@ fn sim_loop(rx: Receiver<HostMsg>) {
                 }
             }
         }
-
-        thread::sleep(TICK);
     }
 }
 

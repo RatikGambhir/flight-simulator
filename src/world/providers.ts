@@ -23,7 +23,7 @@ import {
   UnloadTilesPlugin,
   XYZTilesOverlay,
 } from '3d-tiles-renderer/plugins'
-import type { WebGLRenderer } from 'three'
+import { LinearFilter, LinearMipmapLinearFilter, type Mesh, type MeshBasicMaterial, type Object3D, type WebGLRenderer } from 'three'
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
 import type { Quality, Settings } from '../state/store'
 
@@ -78,6 +78,33 @@ function photogrammetryPlugins(tiles: TilesRenderer) {
   tiles.registerPlugin(new UnloadTilesPlugin({ delay: 4000 }))
 }
 
+/**
+ * Draped imagery arrives without mipmaps or anisotropic filtering, which makes
+ * the ground shimmer and smear towards the horizon. Enable both as tiles load.
+ */
+function sharpenImagery(tiles: TilesRenderer, renderer: WebGLRenderer) {
+  const anisotropy = Math.min(16, renderer.capabilities.getMaxAnisotropy())
+  tiles.addEventListener('load-model', (e) => {
+    ;(e as unknown as { scene: Object3D }).scene.traverse((o) => {
+      const material = (o as Mesh).material
+      if (!material) return
+      for (const m of Array.isArray(material) ? material : [material]) {
+        const map = (m as MeshBasicMaterial).map
+        if (!map || map.isRenderTargetTexture) continue
+        // GLTF maps usually already have mipmaps, but still need anisotropy.
+        // Compressed textures carry their own mip chain; do not regenerate it.
+        if (!('isCompressedTexture' in map)) {
+          map.generateMipmaps = true
+          map.minFilter = LinearMipmapLinearFilter
+        }
+        map.magFilter = LinearFilter
+        map.anisotropy = anisotropy
+        map.needsUpdate = true
+      }
+    })
+  })
+}
+
 export const IMAGERY = {
   esri: {
     label: 'Esri World Imagery',
@@ -102,6 +129,7 @@ export function createLayers(settings: Settings, renderer: WebGLRenderer): { lay
       const tiles = new TilesRenderer()
       tiles.registerPlugin(new GoogleCloudAuthPlugin({ apiToken: settings.googleApiKey.trim(), autoRefreshToken: true }))
       photogrammetryPlugins(tiles)
+      sharpenImagery(tiles, renderer)
       tune(tiles, q)
       return { layers: [{ tiles, ground: true, bvh: true, label: 'Google Photorealistic 3D Tiles' }], attributions: [] }
     }
@@ -111,6 +139,7 @@ export function createLayers(settings: Settings, renderer: WebGLRenderer): { lay
         const tiles = new TilesRenderer()
         tiles.registerPlugin(new CesiumIonAuthPlugin({ apiToken: token, assetId: '2275207', autoRefreshToken: true }))
         photogrammetryPlugins(tiles)
+        sharpenImagery(tiles, renderer)
         tune(tiles, q)
         return { layers: [{ tiles, ground: true, bvh: true, label: 'Google Photorealistic 3D Tiles (via Cesium ion)' }], attributions: [] }
       }
@@ -120,10 +149,12 @@ export function createLayers(settings: Settings, renderer: WebGLRenderer): { lay
         new ImageOverlayPlugin({ renderer, overlays: [new CesiumIonOverlay({ assetId: 2, apiToken: token, autoRefreshToken: true })] }),
       )
       terrain.registerPlugin(new UnloadTilesPlugin({ delay: 4000 }))
+      sharpenImagery(terrain, renderer)
       tune(terrain, q)
       const buildings = new TilesRenderer()
       buildings.registerPlugin(new CesiumIonAuthPlugin({ apiToken: token, assetId: '96188', autoRefreshToken: true }))
       photogrammetryPlugins(buildings)
+      sharpenImagery(buildings, renderer)
       tune(buildings, q)
       buildings.errorTarget = QUALITY[q].errorTarget * 1.5
       return {
@@ -144,6 +175,10 @@ export function createLayers(settings: Settings, renderer: WebGLRenderer): { lay
       )
       tiles.registerPlugin(new UnloadTilesPlugin({ delay: 4000 }))
       tune(tiles, q)
+      sharpenImagery(tiles, renderer)
+      // A terrain tile's "parse" step is mostly waiting on its elevation and imagery
+      // downloads, so the default of 4 concurrent parses throttles the network.
+      tiles.parseQueue.maxJobs = 16
       // The terrain mesh plugin is efficient; allow a little more detail.
       tiles.errorTarget = Math.max(2, QUALITY[q].errorTarget * 0.6)
       return {

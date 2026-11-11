@@ -7,6 +7,7 @@ import { LocationSelect } from './LocationSelect'
 import { Settings } from './Settings'
 import { useAircraftList } from './useAircraftList'
 import { useWorldStatus } from '../scene/worldStatus'
+import { RoutePlanner } from './RoutePlanner'
 
 const PROVIDER_LABEL = { google: 'Google Photorealistic 3D Tiles', cesium: 'Cesium ion', open: 'Open data terrain + imagery' }
 
@@ -15,6 +16,7 @@ export function MainMenu() {
   const setScreen = useApp((s) => s.setScreen)
   const aircraftId = useApp((s) => s.aircraftId)
   const spawn = useApp((s) => s.spawn)
+  const destination = useApp((s) => s.destination)
   const setSpawn = useApp((s) => s.setSpawn)
   const settings = useApp((s) => s.settings)
   const list = useAircraftList()
@@ -62,6 +64,11 @@ export function MainMenu() {
           <span className="muted">Change</span>
         </div>
 
+        <button className="summary-card glass destination-card" onClick={() => setScreen('destination')}>
+          <span style={{ fontSize: 26 }}>✈</span>
+          <div><div className="k">Destination</div><div className="v">{destination?.airport.name ?? 'Choose an arrival airport'}</div><div className="s">{destination ? `${destination.airport.ident} · View route` : 'Optional · Preview your flight route'}</div></div>
+        </button>
+
         {!ready ? (
           <div className="notice">
             {settings.provider === 'google' ? 'Add your Google Maps Platform API key' : 'Add your Cesium ion token'} in Settings to stream photorealistic scenery, or switch to the open-data
@@ -98,6 +105,7 @@ export function MainMenu() {
 
       {screen === 'aircraft' ? <AircraftSelect onClose={() => setScreen('home')} /> : null}
       {screen === 'location' ? <LocationSelect initial={spawn} confirmLabel="Set departure" onConfirm={chooseLocation} onClose={() => setScreen('home')} /> : null}
+      {screen === 'destination' ? <RoutePlanner onClose={() => setScreen('home')} /> : null}
       {screen === 'settings' ? <Settings onClose={() => setScreen('home')} /> : null}
       {screen === 'controls' ? <ControlsHelp onClose={() => setScreen('home')} /> : null}
     </div>

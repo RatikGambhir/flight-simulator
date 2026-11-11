@@ -8,6 +8,67 @@ import { ControlsHelp } from './ControlsHelp'
 import { Hud } from './Hud'
 import { LocationSelect } from './LocationSelect'
 import { Settings } from './Settings'
+import { useAircraftList } from './useAircraftList'
+import { RoutePlanner } from './RoutePlanner'
+import { SkipTo } from './SkipTo'
+
+type GuideStep = { key: string; text: string }
+
+/**
+ * Step-by-step takeoff coach shown after starting on the ground. It reads the
+ * live state (4 Hz) and advances as each step is done, then gets out of the way.
+ */
+function TakeoffGuide() {
+  const list = useAircraftList()
+  const invert = useApp((s) => s.settings.invertPitch)
+  const [step, setStep] = useState<GuideStep | null>(null)
+  const done = useRef(false)
+  const gen = useRef(-1)
+  useEffect(() => {
+    const id = setInterval(() => {
+      const s = sim.latest
+      const flags = s[S.FLAGS] | 0
+      if (s[S.GENERATION] !== gen.current) {
+        gen.current = s[S.GENERATION]
+        // Coach every flight that starts on the ground.
+        done.current = (flags & Flags.ON_GROUND) === 0
+      }
+      const spec = list[s[S.AIRCRAFT_INDEX] | 0]
+      if (done.current || !spec || flags & (Flags.AWAITING_GROUND | Flags.CRASHED)) {
+        setStep((p) => (p === null ? p : null))
+        return
+      }
+      const onGround = (flags & Flags.ON_GROUND) !== 0
+      const ias = s[S.IAS_KT]
+      const vr = spec.v_rotate_kt
+      const pull = invert ? '↑' : 'S / ↓'
+      let next: GuideStep
+      if (onGround && flags & Flags.PARKING_BRAKE) next = { key: 'N', text: 'Release the parking brake' }
+      else if (onGround && s[S.THROTTLE] < 0.9) next = { key: '⇧R', text: 'Full throttle to start the takeoff roll' }
+      else if (onGround && ias < vr - 8) next = { key: 'J / E', text: `Keep it straight. Rotate at ${Math.round(vr)} kt (now ${Math.round(ias)})` }
+      else if (onGround) next = { key: pull, text: `Rotate: hold ${pull} to lift the nose about 10°, then release` }
+      else if (s[S.AGL_FT] < 150 && s[S.VS_FPM] > 0) next = { key: '', text: 'Positive climb — let it climb away' }
+      else if (spec.retractable_gear && s[S.GEAR] > 0.5) next = { key: 'G', text: 'Gear up' }
+      else if ((s[S.FLAPS_INDEX] | 0) > 0 && s[S.AGL_FT] < 1000) next = { key: '', text: 'Climb to 1,000 ft, then raise the flaps' }
+      else if ((s[S.FLAPS_INDEX] | 0) > 0) next = { key: '[', text: 'Flaps up, one notch at a time as speed builds' }
+      else {
+        done.current = true
+        next = { key: 'Z', text: 'Airborne! Press Z for the autopilot, or fly it yourself' }
+        setTimeout(() => setStep(null), 6000)
+      }
+      setStep((p) => (p && p.key === next.key && p.text === next.text ? p : next))
+    }, 250)
+    return () => clearInterval(id)
+  }, [list, invert])
+  if (!step) return null
+  return (
+    <div className="takeoff-guide glass">
+      <span className="hud-unit">TAKEOFF</span>
+      {step.key ? <kbd>{step.key}</kbd> : null}
+      <span>{step.text}</span>
+    </div>
+  )
+}
 
 function CameraBar() {
   const camera = useApp((s) => s.camera)
@@ -41,6 +102,7 @@ function LoadingIndicator() {
   const progress = useWorldStatus((s) => s.progress)
   const error = useWorldStatus((s) => s.error)
   const [awaiting, setAwaiting] = useState(true)
+  const behind = useRef(false)
   useEffect(() => {
     const id = setInterval(() => setAwaiting(((sim.latest[S.FLAGS] | 0) & Flags.AWAITING_GROUND) !== 0), 250)
     return () => clearInterval(id)
@@ -52,7 +114,11 @@ function LoadingIndicator() {
       </div>
     )
   }
-  if (!awaiting && progress >= 0.999) return null
+  // In flight there are always a few tiles in transit; only surface the banner
+  // when streaming has really fallen behind, and keep it up until it recovers.
+  if (progress < 0.5) behind.current = true
+  else if (progress > 0.9) behind.current = false
+  if (!awaiting && !behind.current) return null
   return (
     <div className="loading glass">
       <div className="spinner" />
@@ -158,6 +224,10 @@ function CrashOverlay({ reason }: { reason: string }) {
 }
 
 export function FlightChrome() {
+  const skipToOpen = useApp((s) => s.skipToOpen)
+  const routeOpen = useApp((s) => s.routeOpen)
+  const destination = useApp((s) => s.destination)
+  const markerVisible = useApp((s) => s.destinationMarkerVisible)
   const hudVisible = useApp((s) => s.hudVisible)
   const pauseMenu = useApp((s) => s.pauseMenu)
   const crashed = useApp((s) => s.crashed)
@@ -172,11 +242,19 @@ export function FlightChrome() {
         </>
       ) : null}
       <Toasts />
+      {!pauseMenu && !crashed ? <div className="navigation-actions glass">
+        <button className="btn ghost" onClick={() => useApp.getState().setRouteOpen(!routeOpen)}>Route map <kbd>M</kbd></button>
+        <button className="btn ghost" onClick={() => useApp.getState().setSkipToOpen(true)}>Skip to <kbd>Q</kbd></button>
+        <button className="btn ghost" disabled={!destination} aria-pressed={markerVisible} onClick={() => useApp.getState().toggleDestinationMarker()}>Airport marker {markerVisible ? 'on' : 'off'} <kbd>⇧ ~</kbd></button>
+      </div> : null}
       <LoadingIndicator />
+      {hudVisible && !pauseMenu ? <TakeoffGuide /> : null}
       {showFps ? <Fps /> : null}
       {help ? <ControlsHelp full onClose={() => useApp.getState().setHelpOverlay(false)} /> : null}
       {crashed && !pauseMenu ? <CrashOverlay reason={crashed} /> : null}
       {pauseMenu ? <PauseMenu /> : null}
+      {routeOpen && !pauseMenu ? <RoutePlanner full onClose={() => useApp.getState().setRouteOpen(false)} /> : null}
+      {skipToOpen ? <SkipTo /> : null}
     </>
   )
 }

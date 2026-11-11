@@ -15,8 +15,10 @@ serde_json = "1"
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+# Whole-program optimization across sim-core, Tauri and their dependencies.
+lto = "fat"
 codegen-units = 1
+strip = true
 
 [profile.dev.package."*"]
 opt-level = 2

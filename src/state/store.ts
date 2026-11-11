@@ -1,12 +1,12 @@
 import { create } from 'zustand'
-import type { RunwaySpawnKind, SpawnMode } from '../sim/protocol'
+import type { AirportDetail, RunwaySpawnKind, SpawnMode } from '../sim/protocol'
 
 export type Provider = 'google' | 'cesium' | 'open'
 export type CesiumMode = 'photorealistic' | 'terrain'
 export type OpenImagery = 'esri' | 'eox'
 export type Quality = 'low' | 'medium' | 'high' | 'ultra'
 export type CameraMode = 'chase' | 'cockpit' | 'wing' | 'free' | 'cinematic' | 'flyby'
-export type Screen = 'home' | 'aircraft' | 'location' | 'settings' | 'controls'
+export type Screen = 'home' | 'aircraft' | 'location' | 'destination' | 'settings' | 'controls'
 
 export const CAMERA_MODES: { id: CameraMode; label: string; key: string }[] = [
   { id: 'chase', label: 'Exterior', key: '1' },
@@ -36,6 +36,15 @@ export interface Settings {
   showFps: boolean
   shadows: boolean
   timeScale: number
+  /** Direction the surface wind blows from (degrees true). */
+  windFromDeg: number
+  windSpeedKt: number
+  /** 0 calm .. 1 severe. */
+  turbulence: number
+  /** Master volume 0..1. */
+  volume: number
+  /** Spoken radio-altitude and GPWS callouts (jets). */
+  callouts: boolean
 }
 
 const env = import.meta.env
@@ -57,6 +66,11 @@ const DEFAULTS: Settings = {
   showFps: false,
   shadows: true,
   timeScale: 1,
+  windFromDeg: 270,
+  windSpeedKt: 8,
+  turbulence: 0.15,
+  volume: 0.7,
+  callouts: true,
 }
 
 const STORAGE_KEY = 'geoflight.settings.v1'
@@ -98,6 +112,14 @@ interface AppState {
   screen: Screen
   aircraftId: string
   spawn: SpawnChoice
+  destination: AirportDetail | null
+  routeOpen: boolean
+  skipToOpen: boolean
+  setSkipToOpen: (open: boolean) => void
+  destinationMarkerVisible: boolean
+  setDestination: (destination: AirportDetail | null) => void
+  setRouteOpen: (routeOpen: boolean) => void
+  toggleDestinationMarker: () => void
   settings: Settings
   camera: CameraMode
   hudVisible: boolean
@@ -126,6 +148,14 @@ export const useApp = create<AppState>((set, get) => ({
   phase: 'menu',
   screen: 'home',
   aircraftId: 'b737',
+  destination: null,
+  routeOpen: false,
+  skipToOpen: false,
+  setSkipToOpen: (skipToOpen) => set({ skipToOpen }),
+  destinationMarkerVisible: false,
+  setDestination: (destination) => set({ destination }),
+  setRouteOpen: (routeOpen) => set({ routeOpen }),
+  toggleDestinationMarker: () => set((s) => ({ destinationMarkerVisible: !s.destinationMarkerVisible })),
   spawn: { kind: 'runway', airport: 'KORD', airportName: "Chicago O'Hare International Airport", runway: '28R', mode: 'takeoff' },
   settings: loadSettings(),
   camera: 'chase',
@@ -135,7 +165,7 @@ export const useApp = create<AppState>((set, get) => ({
   toasts: [],
   crashed: null,
   setScreen: (screen) => set({ screen }),
-  setPhase: (phase) => set({ phase, pauseMenu: false, crashed: null }),
+  setPhase: (phase) => set({ phase, pauseMenu: false, routeOpen: false, skipToOpen: false, crashed: null }),
   setAircraft: (aircraftId) => set({ aircraftId }),
   setSpawn: (spawn) => set({ spawn }),
   updateSettings: (patch) =>

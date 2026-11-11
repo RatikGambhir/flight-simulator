@@ -50,7 +50,17 @@ export const S = {
   VEL_N: 46,
   VEL_U: 47,
   TIME_SCALE: 48,
-  LEN: 49,
+  /** Specific force in body axes (g): x forward, y right, z up (1 in level flight). */
+  NX: 49,
+  NY: 50,
+  NZ: 51,
+  /** Wind at the aircraft incl. gusts (local east/north/up, m/s). */
+  WIND_E: 52,
+  WIND_N: 53,
+  WIND_U: 54,
+  REVERSER: 55,
+  GROUND_EFFECT: 56,
+  LEN: 57,
 } as const
 
 export const Flags = {
@@ -76,6 +86,16 @@ export interface ControlInput {
   yaw: number
   throttle_rate: number
   brake: number
+  /** Hold (1) for reverse thrust on the ground at idle. */
+  reverse: number
+}
+
+export interface WeatherRequest {
+  /** Direction the wind blows from, degrees true. */
+  wind_from_deg: number
+  wind_speed_kt: number
+  /** 0 (calm) .. 1 (severe). */
+  turbulence: number
 }
 
 export type SpawnMode = 'ground' | 'air'
@@ -125,6 +145,7 @@ export type SimCommand =
   | { type: 'ground'; lat: number; lon: number; height: number | null }
   | { type: 'set_time_scale'; scale: number }
   | { type: 'collision'; what: string }
+  | ({ type: 'set_weather' } & WeatherRequest)
 
 export type SimEvent =
   | { type: 'spawned'; generation: number }
@@ -212,6 +233,7 @@ export interface AircraftSpec {
   engine: 'jet' | 'propeller'
   engine_count: number
   max_thrust_n: number
+  alpha_stall_deg: number
   flap_detents: string[]
   v_rotate_kt: number
   v_approach_kt: number

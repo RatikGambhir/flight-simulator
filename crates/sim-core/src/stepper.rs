@@ -31,4 +31,25 @@ impl FixedStepper {
         }
         n
     }
+
+    /// Seconds of wall time until the next fixed step is due.
+    #[inline]
+    pub fn time_to_next_step(&self) -> f64 {
+        (self.step - self.accumulator).max(0.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn steps_are_fixed_and_remainder_is_kept() {
+        let mut sim = Simulation::new();
+        let mut st = FixedStepper::default();
+        assert_eq!(st.advance(&mut sim, 2.5 / SIM_HZ), 2);
+        assert!((st.time_to_next_step() - 0.5 / SIM_HZ).abs() < 1e-12);
+        // Long stalls are clamped.
+        assert_eq!(st.advance(&mut sim, 10.0), (0.25 * SIM_HZ) as usize);
+    }
 }

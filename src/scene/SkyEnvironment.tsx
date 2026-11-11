@@ -33,6 +33,9 @@ void main() {
   gl_FragColor = vec4(col, 1.0);
 }`
 
+const _sun = new Vector3()
+const UP = new Vector3(0, 1, 0)
+
 export function SkyEnvironment({ atmosphere }: { atmosphere: React.RefObject<AtmosphereApi | null> }) {
   const gl = useThree((s) => s.gl)
   const scene = useThree((s) => s.scene)
@@ -75,11 +78,13 @@ export function SkyEnvironment({ atmosphere }: { atmosphere: React.RefObject<Atm
     const atm = atmosphere.current
     if (!atm) return
     const now = performance.now()
-    const sun = new Vector3().copy(atm.sunDirection).applyQuaternion(frame.worldFromEcefRot).normalize()
-    const up = new Vector3(0, 1, 0)
+    const sun = _sun.copy(atm.sunDirection).applyQuaternion(frame.worldFromEcefRot).normalize()
+    const up = UP
     const elev = sun.dot(up)
-    if (now - last.current.t < 3000 && Math.abs(elev - last.current.elev) < 0.02) return
-    last.current = { t: now, elev }
+    const l = last.current
+    if (now - l.t < 3000 && Math.abs(elev - l.elev) < 0.02) return
+    l.t = now
+    l.elev = elev
     const day = Math.max(0, Math.min(1, (elev + 0.08) / 0.4))
     const golden = Math.max(0, 1 - Math.abs(elev - 0.08) / 0.18)
     const u = material.uniforms

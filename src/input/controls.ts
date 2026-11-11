@@ -1,6 +1,7 @@
 // Universal control scheme shared by every aircraft: keyboard (smoothed
 // axes), mouse (camera) and standard-mapping gamepads.
 
+import { sound } from '../audio/sound'
 import { sim } from '../sim/simClient'
 import type { ControlInput } from '../sim/protocol'
 import { CAMERA_MODES, useApp } from '../state/store'
@@ -12,15 +13,27 @@ export interface Binding {
 
 export const BINDINGS: { group: string; items: Binding[] }[] = [
   {
+    group: '737 cockpit',
+    items: [
+      { keys: 'Click CMD A', action: 'Autopilot on / off' },
+      { keys: 'Click / Shift-click knobs', action: 'Increase / decrease autopilot speed, heading or altitude' },
+      { keys: 'Click / Shift-click throttles', action: 'Throttle +10% / −10%' },
+      { keys: 'Click gear / speed-brake lever', action: 'Toggle landing gear / speed brakes' },
+      { keys: 'Click / Shift-click flap lever', action: 'Flaps down / up one notch' },
+      { keys: 'Other switches', action: 'Decorative; drag to look around as usual' },
+    ],
+  },
+  {
     group: 'Flight',
     items: [
       { keys: 'W / ↑', action: 'Nose down' },
       { keys: 'S / ↓', action: 'Nose up' },
       { keys: 'A / ←', action: 'Roll left' },
       { keys: 'D / →', action: 'Roll right' },
-      { keys: 'Q / E', action: 'Rudder left / right (steer on ground)' },
+      { keys: 'J / E', action: 'Rudder left / right (steer on ground)' },
       { keys: 'R / F', action: 'Throttle up / down' },
       { keys: '⇧R / ⇧F', action: 'Full throttle / idle' },
+      { keys: 'X (hold)', action: 'Reverse thrust (jets, on the ground at idle)' },
     ],
   },
   {
@@ -29,7 +42,7 @@ export const BINDINGS: { group: string; items: Binding[] }[] = [
       { keys: 'G', action: 'Landing gear up / down' },
       { keys: '[ / ]', action: 'Flaps up / down' },
       { keys: '/', action: 'Speed brakes' },
-      { keys: 'Space (hold)', action: 'Wheel brakes' },
+      { keys: 'Space / . (hold)', action: 'Wheel brakes' },
       { keys: 'N', action: 'Parking brake' },
       { keys: 'T', action: 'Assisted flight on / off' },
     ],
@@ -53,6 +66,9 @@ export const BINDINGS: { group: string; items: Binding[] }[] = [
       { keys: 'Scroll', action: 'Zoom' },
       { keys: 'Double-click', action: 'Reset view' },
       { keys: 'H', action: 'Hide / show HUD' },
+      { keys: 'M', action: 'Destination & route map' },
+      { keys: 'Q', action: 'Skip to a distance from your destination' },
+      { keys: 'Shift + ~', action: 'Show / hide destination airport in the world' },
       { keys: 'P', action: 'Pause' },
       { keys: 'Esc', action: 'Menu' },
       { keys: '?', action: 'Controls help' },
@@ -60,14 +76,28 @@ export const BINDINGS: { group: string; items: Binding[] }[] = [
   },
 ]
 
-const AXIS_ATTACK = 2.6
-const AXIS_RELEASE = 4.5
+// Keyboard axes ramp while a key is held, so a tap is a small correction and
+// holding the key builds up to full deflection, like moving a real yoke.
+const AXIS_ATTACK = { pitch: 0.8, roll: 1.4, yaw: 1.8 } as const
+const AXIS_RELEASE = 3.5
+/** Reversing direction recentres quickly before building the other way. */
+const AXIS_REVERSE = 6
+
+/** Softens the centre of an axis for fine corrections while keeping full travel. */
+function expo(v: number, k = 0.55) {
+  return v * (1 - k + k * v * v)
+}
+
+const AXES = ['pitch', 'roll', 'yaw'] as const
+const KEY_CAPTURE = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Slash', 'Period'])
 
 class Controls {
   private down = new Set<string>()
   private axes = { pitch: 0, roll: 0, yaw: 0 }
   private attached = false
   private gamepadButtons: boolean[] = []
+  private readonly targets = { pitch: 0, roll: 0, yaw: 0 }
+  private readonly out: ControlInput = { pitch: 0, roll: 0, yaw: 0, throttle_rate: 0, brake: 0, reverse: 0 }
   /** Camera look input from a gamepad right stick (consumed by the camera rig). */
   readonly look = { x: 0, y: 0 }
 
@@ -94,11 +124,20 @@ class Controls {
   }
 
   private onKeyDown = (e: KeyboardEvent) => {
+    const app = useApp.getState()
+    // The native Skip-to dialog owns Escape, Enter, typing and focus while open.
+    if (app.skipToOpen) return
+    if (e.key === 'Escape' && app.routeOpen) {
+      app.setRouteOpen(false)
+      e.preventDefault()
+      return
+    }
     const t = e.target as HTMLElement | null
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
-    const app = useApp.getState()
     if (app.phase !== 'flying') return
     if (e.metaKey || e.ctrlKey) return
+    // A key press is a user gesture: make sure audio is running.
+    sound.unlock()
     const code = e.code
     if (e.key === 'Escape') {
       app.setPauseMenu(!app.pauseMenu)
@@ -107,7 +146,26 @@ class Controls {
       return
     }
     if (app.pauseMenu) return
-    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Slash'].includes(code)) e.preventDefault()
+    if (code === 'KeyQ' && !app.routeOpen && !app.helpOverlay && !app.crashed) {
+      e.preventDefault()
+      if (!e.repeat) { this.down.clear(); app.setSkipToOpen(true) }
+      return
+    }
+    if (code === 'KeyM') {
+      if (!e.repeat) { this.down.clear(); app.setRouteOpen(!app.routeOpen) }
+      e.preventDefault()
+      return
+    }
+    if (app.routeOpen) return
+    if (e.shiftKey && (code === 'Backquote' || e.key === '~')) {
+      e.preventDefault()
+      if (!e.repeat) {
+        if (app.destination) app.toggleDestinationMarker()
+        else app.toast('Choose a destination first — press M to open the route map.')
+      }
+      return
+    }
+    if (KEY_CAPTURE.has(code)) e.preventDefault()
     // Autopilot target adjustments.
     if (e.shiftKey && code.startsWith('Arrow')) {
       const ap =
@@ -186,68 +244,77 @@ class Controls {
     return codes.some((c) => this.down.has(c))
   }
 
-  /** Advances smoothed axes and returns the input to send this frame. */
+  /** Advances smoothed axes and returns the input to send this frame (reused object). */
   update(dt: number): ControlInput {
-    const { settings, pauseMenu } = useApp.getState()
+    const { settings, pauseMenu, routeOpen, skipToOpen } = useApp.getState()
     const shift = this.down.has('ShiftLeft') || this.down.has('ShiftRight')
     const alt = this.down.has('AltLeft') || this.down.has('AltRight')
-    const blocked = pauseMenu
-    const up = !blocked && !shift && this.key('KeyW', 'ArrowUp')
-    const dn = !blocked && !shift && this.key('KeyS', 'ArrowDown')
-    const lf = !blocked && !shift && this.key('KeyA', 'ArrowLeft')
-    const rt = !blocked && !shift && this.key('KeyD', 'ArrowRight')
-    const inv = settings.invertPitch ? -1 : 1
-    const targets = {
-      pitch: ((dn ? 1 : 0) - (up ? 1 : 0)) * inv,
-      roll: (rt ? 1 : 0) - (lf ? 1 : 0),
-      yaw: (!blocked && this.key('KeyE') ? 1 : 0) - (!blocked && this.key('KeyQ') ? 1 : 0),
+    const blocked = pauseMenu || routeOpen || skipToOpen
+    if (skipToOpen) {
+      this.down.clear()
+      this.axes.pitch = this.axes.roll = this.axes.yaw = 0
     }
+    const free = !blocked && !shift
+    const up = free && this.key('KeyW', 'ArrowUp')
+    const dn = free && this.key('KeyS', 'ArrowDown')
+    const lf = free && this.key('KeyA', 'ArrowLeft')
+    const rt = free && this.key('KeyD', 'ArrowRight')
+    const inv = settings.invertPitch ? -1 : 1
+    const targets = this.targets
+    targets.pitch = ((dn ? 1 : 0) - (up ? 1 : 0)) * inv
+    targets.roll = (rt ? 1 : 0) - (lf ? 1 : 0)
+    targets.yaw = (!blocked && this.key('KeyE') ? 1 : 0) - (!blocked && this.key('KeyJ') ? 1 : 0)
     let throttleRate = 0
     if (!blocked && !shift && !alt) {
       if (this.key('KeyR', 'Equal', 'PageUp')) throttleRate += 1
       if (this.key('KeyF', 'Minus', 'PageDown')) throttleRate -= 1
     }
-    let brake = !blocked && this.key('Space') ? 1 : 0
+    let brake = !blocked && this.key('Space', 'Period') ? 1 : 0
+    const reverse = !blocked && this.key('KeyX', 'F2') ? 1 : 0
 
-    for (const k of ['pitch', 'roll', 'yaw'] as const) {
+    for (const k of AXES) {
       const target = targets[k]
       const cur = this.axes[k]
-      const rate = Math.abs(target) > Math.abs(cur) || Math.sign(target) !== Math.sign(cur) ? AXIS_ATTACK : AXIS_RELEASE
+      let rate: number
+      if (target === 0) rate = AXIS_RELEASE
+      else if (cur !== 0 && Math.sign(target) !== Math.sign(cur)) rate = AXIS_REVERSE
+      else rate = AXIS_ATTACK[k]
       const step = rate * dt
       this.axes[k] = Math.abs(target - cur) <= step ? target : cur + Math.sign(target - cur) * step
     }
     const sens = settings.sensitivity
-    const out: ControlInput = {
-      pitch: this.axes.pitch * sens,
-      roll: this.axes.roll * sens,
-      yaw: this.axes.yaw * sens,
-      throttle_rate: throttleRate,
-      brake,
-    }
+    const out = this.out
+    out.pitch = expo(this.axes.pitch) * sens
+    out.roll = expo(this.axes.roll) * sens
+    out.yaw = this.axes.yaw * sens
+    out.throttle_rate = throttleRate
+    out.brake = brake
+    out.reverse = reverse
 
     // Gamepad (standard mapping) overrides the keyboard when deflected.
-    const pads = typeof navigator.getGamepads === 'function' ? navigator.getGamepads() : []
-    const pad = pads && Array.from(pads).find((p) => p && p.connected && p.mapping === 'standard')
     this.look.x = 0
     this.look.y = 0
-    if (pad && !blocked) {
+    const pad = blocked ? null : firstStandardPad()
+    if (pad) {
       const dz = (v: number) => (Math.abs(v) < 0.12 ? 0 : (v - Math.sign(v) * 0.12) / 0.88)
       const rx = dz(pad.axes[0] ?? 0)
       const ry = dz(pad.axes[1] ?? 0)
-      if (rx !== 0) out.roll = rx
-      if (ry !== 0) out.pitch = ry * inv
+      if (rx !== 0) out.roll = expo(rx, 0.4)
+      if (ry !== 0) out.pitch = expo(ry, 0.4) * inv
       this.look.x = dz(pad.axes[2] ?? 0)
       this.look.y = dz(pad.axes[3] ?? 0)
-      const b = pad.buttons.map((x) => x.pressed)
-      const lt = pad.buttons[6]?.value ?? 0
-      const rtv = pad.buttons[7]?.value ?? 0
+      const btn = pad.buttons
+      const lt = btn[6]?.value ?? 0
+      const rtv = btn[7]?.value ?? 0
       if (rtv > 0.05) out.throttle_rate = rtv
       if (lt > 0.05) out.throttle_rate = -lt
-      if (b[4]) out.yaw = -1
-      if (b[5]) out.yaw = 1
-      if (b[12]) brake = 1
+      if (btn[4]?.pressed) out.yaw = -1
+      if (btn[5]?.pressed) out.yaw = 1
+      if (btn[12]?.pressed) brake = 1
+      if (btn[13]?.pressed) out.reverse = 1
       out.brake = Math.max(out.brake, brake)
-      const pressed = (i: number) => b[i] && !this.gamepadButtons[i]
+      const prev = this.gamepadButtons
+      const pressed = (i: number) => !!btn[i]?.pressed && !prev[i]
       const app = useApp.getState()
       if (pressed(0)) sim.command({ type: 'toggle_gear' })
       if (pressed(1)) sim.command({ type: 'flaps_down' })
@@ -258,10 +325,18 @@ class Controls {
         app.setPauseMenu(!app.pauseMenu)
         sim.command({ type: 'set_paused', paused: !app.pauseMenu })
       }
-      this.gamepadButtons = b
+      prev.length = btn.length
+      for (let i = 0; i < btn.length; i++) prev[i] = !!btn[i]?.pressed
     }
     return out
   }
+}
+
+function firstStandardPad(): Gamepad | null {
+  if (typeof navigator.getGamepads !== 'function') return null
+  const pads = navigator.getGamepads()
+  for (const p of pads) if (p && p.connected && p.mapping === 'standard') return p
+  return null
 }
 
 export const controls = new Controls()

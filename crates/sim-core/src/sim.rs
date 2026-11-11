@@ -16,17 +16,20 @@ use crate::atmosphere::{isa, G0, RHO_SL};
 use crate::autopilot::{ApInputs, Autopilot};
 use crate::geo::{self, ecef_to_geodetic, geodetic_to_ecef, EnuFrame, FT_TO_M, KT_TO_MS, MS_TO_KT, M_TO_FT};
 use crate::protocol::{snap, ControlInput, RunwaySpawnKind, SimCommand, SimEvent, SpawnMode, SpawnRequest};
+use crate::weather::{Weather, WeatherSettings};
 use crate::world;
 
 const MS_TO_FPM: f64 = M_TO_FT * 60.0;
 /// How far the aircraft may move from the last ground sample before it is considered stale.
 const GROUND_SAMPLE_RANGE_M: f64 = 1_500.0;
 
+#[inline]
 fn smoothstep(x: f64) -> f64 {
     let t = x.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
 
+#[inline]
 fn approach(current: f64, target: f64, max_step: f64) -> f64 {
     if (target - current).abs() <= max_step { target } else { current + max_step.copysign(target - current) }
 }
@@ -65,6 +68,7 @@ struct Derived {
     heading: f64,
     pitch: f64,
     roll: f64,
+    /// True airspeed (relative to the moving air mass), m/s.
     tas: f64,
     ias_kt: f64,
     gs: f64,
@@ -76,6 +80,7 @@ struct Derived {
     track: f64,
     fpa: f64,
     vel_enu: DVec3,
+    wind_enu: DVec3,
     ground_height: f64,
 }
 
@@ -116,12 +121,19 @@ pub struct Simulation {
     spoilers_cmd: bool,
     parking_brake: bool,
     surfaces: DVec3,
+    /// Thrust reverser deployment 0..1.
+    reverser: f64,
     input: ControlInput,
     assist: bool,
     alpha_trim: f64,
     /// Flight path angle captured when the pitch stick returns to neutral (assisted mode).
     gamma_ref: Option<f64>,
     pub autopilot: Autopilot,
+    weather: Weather,
+    /// Low-passed specific force in body axes (x fwd, y left, z up), in g.
+    spec_force: DVec3,
+    /// Ground-effect strength 0..1 from the last step.
+    ground_effect: f64,
 
     on_ground: bool,
     crashed: bool,
@@ -167,11 +179,15 @@ impl Simulation {
             spoilers_cmd: false,
             parking_brake: false,
             surfaces: DVec3::ZERO,
+            reverser: 0.0,
             input: ControlInput::default(),
             assist: true,
             alpha_trim: 0.04,
             gamma_ref: None,
             autopilot: Autopilot::default(),
+            weather: Weather::default(),
+            spec_force: DVec3::Z,
+            ground_effect: 0.0,
             on_ground: true,
             crashed: false,
             paused: false,
@@ -204,6 +220,7 @@ impl Simulation {
             yaw: c(input.yaw, -1.0),
             throttle_rate: c(input.throttle_rate, -1.0),
             brake: c(input.brake, 0.0),
+            reverse: c(input.reverse, 0.0),
         };
     }
 
@@ -311,6 +328,11 @@ impl Simulation {
                     self.time_scale = scale.clamp(0.25, 8.0);
                 }
             }
+            SimCommand::SetWeather(w) => self.weather.set(WeatherSettings {
+                wind_from_deg: w.wind_from_deg,
+                wind_speed_ms: w.wind_speed_kt * KT_TO_MS,
+                turbulence: w.turbulence,
+            }),
         }
     }
 
@@ -347,6 +369,9 @@ impl Simulation {
         self.spoilers = 0.0;
         self.parking_brake = false;
         self.surfaces = DVec3::ZERO;
+        self.reverser = 0.0;
+        self.spec_force = DVec3::Z;
+        self.weather.reset_gusts();
         self.autopilot.engaged = false;
         self.gamma_ref = None;
         self.ground = None;
@@ -402,11 +427,26 @@ impl Simulation {
                 let msl = height - world::geoid_undulation(lat_deg, lon_deg);
                 let rho = isa(msl).density;
                 let tas = ias_kt * KT_TO_MS / (rho / RHO_SL).sqrt();
-                let (alpha, lever) = self.trim(tas, gamma, msl);
+                // `heading` and `gamma` describe the path over the ground (e.g. an ILS
+                // glideslope). Find the air-relative path that produces it in this wind:
+                // crab into the crosswind and steepen/shallow for head/tailwind.
+                let agl = (height - self.ground_fallback).max(0.0);
+                let wind = self.weather.wind_enu(agl);
+                let (sh, ch) = hdg.sin_cos();
+                let w_along = wind.x * sh + wind.y * ch;
+                let w_cross = wind.x * ch - wind.y * sh;
+                let mut gamma_air = gamma;
+                for _ in 0..4 {
+                    gamma_air = (gamma.tan() * (gamma_air.cos() + w_along / tas)).clamp(-0.5, 0.5).asin();
+                }
+                let crab = -(w_cross / (tas * gamma_air.cos())).clamp(-0.5, 0.5).asin();
+                let hdg_air = hdg + crab;
+                let (alpha, lever) = self.trim(tas, gamma_air, msl);
                 self.alpha_trim = alpha;
-                let dir = enu.to_ecef(DVec3::new(hdg.sin() * gamma.cos(), hdg.cos() * gamma.cos(), gamma.sin()));
-                self.vel = dir * tas;
-                self.att = attitude_from_hpr(&enu, hdg, gamma + alpha, 0.0);
+                let dir = enu.to_ecef(DVec3::new(hdg_air.sin() * gamma_air.cos(), hdg_air.cos() * gamma_air.cos(), gamma_air.sin()));
+                // Fly with the air mass: ground velocity = air velocity + wind.
+                self.vel = dir * tas + enu.to_ecef(wind);
+                self.att = attitude_from_hpr(&enu, hdg_air, gamma_air + alpha, 0.0);
                 self.on_ground = false;
                 self.lever = lever;
                 self.engine = lever;
@@ -508,6 +548,7 @@ impl Simulation {
         }
         let total = dt * self.time_scale;
         let n = self.time_scale.ceil().max(1.0) as usize;
+        let v0 = self.vel;
         for _ in 0..n {
             self.integrate(total / n as f64);
             if self.crashed {
@@ -515,6 +556,20 @@ impl Simulation {
             }
         }
         self.update_derived();
+        self.update_specific_force(v0, total);
+    }
+
+    /// Specific force (what an accelerometer / the pilot's inner ear feels) in body axes.
+    fn update_specific_force(&mut self, v0: DVec3, dt: f64) {
+        if self.crashed || dt <= 0.0 {
+            return;
+        }
+        let up = geo::EnuFrame::at(self.d.lat.to_radians(), self.d.lon.to_radians()).up;
+        let f = (self.vel - v0) / dt + up * G0;
+        let body = self.att.conjugate() * f / G0;
+        // Light smoothing removes single-step spikes from ground snapping.
+        let k = (dt / 0.05).min(1.0);
+        self.spec_force += (body - self.spec_force) * k;
     }
 
     fn ground_height_at(&self, lat_deg: f64, lon_deg: f64) -> f64 {
@@ -558,8 +613,30 @@ impl Simulation {
             Some(t) => self.lever = t,
             None => self.lever = (self.lever + self.input.throttle_rate * 0.6 * dt).clamp(0.0, 1.0),
         }
+        // Thrust reversers (jets): deploy on the ground with the levers at idle while
+        // reverse is held; the engines only spool up once the sleeves are open, and
+        // the sleeves only stow once the engines are back near idle.
+        let want_rev = s.engine == EngineKind::Jet && self.on_ground && self.input.reverse > 0.5 && self.lever < 0.05;
+        let rev_target = if want_rev {
+            1.0
+        } else if self.engine > 0.12 {
+            // Hold the sleeves where they are until the engines spool down.
+            self.reverser
+        } else {
+            0.0
+        };
+        self.reverser = approach(self.reverser, rev_target, dt / 1.6);
+        let n1_target = if want_rev && self.reverser > 0.95 {
+            0.72
+        } else if self.reverser > 0.0 {
+            0.0
+        } else {
+            self.lever
+        };
+        // Turbofans accelerate slowly from idle and quickly near the top of the range.
         let spool_tau = (s.spool_time_s / 3.0).max(0.05);
-        self.engine += (self.lever - self.engine) * (dt / spool_tau).min(1.0);
+        let tau = if n1_target > self.engine { spool_tau * (1.5 - self.engine) } else { spool_tau * 0.8 };
+        self.engine += (n1_target - self.engine) * (dt / tau).min(1.0);
 
         if s.retractable_gear {
             self.gear = approach(self.gear, if self.gear_cmd_down { 1.0 } else { 0.0 }, dt / 6.0);
@@ -585,10 +662,15 @@ impl Simulation {
         let mass = s.mass_kg;
         let area = s.wing_area_m2;
 
-        let v = self.vel;
+        // ---- Air mass ----------------------------------------------------
+        // Aerodynamics see the velocity relative to the (moving, gusty) air.
+        let h_above_ground = (geo0.height - self.ground_height_at(geo0.lat_deg(), geo0.lon_deg())).max(0.0);
+        self.weather.step(dt, self.d.tas, h_above_ground, s.wingspan_m);
+        let wind = enu.to_ecef(self.weather.wind_enu(h_above_ground));
+        let v = self.vel - wind;
         let speed = v.length();
         let (xb, yb, zb) = (self.att * DVec3::X, self.att * DVec3::Y, self.att * DVec3::Z);
-        let vb = self.att.inverse() * v;
+        let vb = self.att.conjugate() * v;
         let (alpha, beta) = if speed > 0.5 { ((-vb.z).atan2(vb.x), (vb.y / speed).clamp(-1.0, 1.0)) } else { (0.0, 0.0) };
         let qbar = 0.5 * rho * speed * speed;
         let eff = (qbar / s.full_authority_q).clamp(0.0, 1.0);
@@ -614,9 +696,16 @@ impl Simulation {
         // ---- Aerodynamics ------------------------------------------------
         let flap = self.flaps;
         let spoil = self.spoilers;
+        // Ground effect (McCormick): within about one span of the surface the
+        // wingtip vortices are suppressed, cutting induced drag and adding lift.
+        let wing_h = (h_above_ground - self.contact_height() * 0.6).max(0.05);
+        let r = 16.0 * wing_h / s.wingspan_m;
+        let phi = (r * r) / (1.0 + r * r);
+        self.ground_effect = 1.0 - phi;
+        let cl_alpha = s.cl_alpha * (1.0 + 0.12 * self.ground_effect);
         let alpha_stall = s.alpha_stall_deg.to_radians() - flap * 2f64.to_radians();
         let cl_base = s.cl0 + s.flap_cl * flap + s.spoiler_cl * spoil;
-        let cl_lin = |a: f64| cl_base + s.cl_alpha * a;
+        let cl_lin = |a: f64| cl_base + cl_alpha * a;
         let (cl, post_stall) = if alpha > alpha_stall {
             let x = (alpha - alpha_stall) / 0.15;
             (cl_lin(alpha_stall) * (1.0 - 0.45 * smoothstep(x)), alpha - alpha_stall)
@@ -627,7 +716,7 @@ impl Simulation {
             (cl_lin(alpha), 0.0)
         };
         let cd = s.cd0
-            + s.induced_k() * cl * cl
+            + s.induced_k() * phi * cl * cl
             + s.gear_cd * self.gear
             + s.flap_cd * flap
             + s.spoiler_cd * spoil
@@ -636,7 +725,8 @@ impl Simulation {
         let lift_dir = vhat.cross(yb).try_normalize().unwrap_or(zb);
         let mut force = (lift_dir * cl - vhat * cd) * (qbar * area);
         force -= yb * (beta * qbar * area * 0.9);
-        let thrust = self.thrust_at(self.engine, speed, rho, mach);
+        // Reversers redirect the fan stream forward (about 45 % of forward thrust).
+        let thrust = self.thrust_at(self.engine, speed, rho, mach) * (1.0 - 1.45 * self.reverser);
         force += xb * thrust;
         let accel_aero = force / mass;
         let accel = accel_aero - up * G0;
@@ -682,7 +772,8 @@ impl Simulation {
 
         // Pitch
         let q_des = if airborne && flying_speed {
-            let gamma = vhat.dot(up).clamp(-1.0, 1.0).asin();
+            // Path hold uses the inertial flight path so gusts don't drag the reference around.
+            let gamma = self.vel.try_normalize().map_or(0.0, |vi| vi.dot(up).clamp(-1.0, 1.0).asin());
             if assisted {
                 let cphi = roll.cos().max(0.35);
                 let stick = self.surfaces.y;
@@ -748,6 +839,11 @@ impl Simulation {
 
         let omega_des = DVec3::new(p_des, -q_des, -r_des);
         self.omega += (omega_des - self.omega) * (dt / tau).min(1.0);
+        if airborne {
+            // Rotational gusts nudge the airframe; the control law then works against them.
+            let g = self.weather.rotational_gust();
+            self.omega += DVec3::new(g.x, -g.y, -g.z) * (dt / tau).min(1.0);
+        }
 
         // ---- Integrate ---------------------------------------------------
         self.vel += accel * dt;
@@ -838,7 +934,8 @@ impl Simulation {
         let mut vs = vh.dot(side_h);
         if self.gear > 0.95 {
             let brake = if self.parking_brake { 1.0 } else { self.input.brake };
-            let mu = 0.015 + 0.55 * brake;
+            // Rolling resistance plus anti-skid braking (max ~0.4 g on a dry runway).
+            let mu = 0.015 + 0.42 * brake;
             vf = approach(vf, 0.0, mu * normal_force / mass * dt);
             vs *= (-dt * 10.0).exp();
         } else {
@@ -873,16 +970,15 @@ impl Simulation {
         let (heading, pitch, roll) = hpr_from_attitude(&enu, self.att);
         let geoid = world::geoid_undulation(g.lat_deg(), g.lon_deg());
         let air = isa(g.height - geoid);
-        let tas = self.vel.length();
         let vel_enu = enu.to_local(self.vel);
         let gs = (vel_enu.x * vel_enu.x + vel_enu.y * vel_enu.y).sqrt();
-        let vb = self.att.inverse() * self.vel;
-        let alpha = if tas > 1.0 { (-vb.z).atan2(vb.x) } else { 0.0 };
         let ground_h = self.ground_height_at(g.lat_deg(), g.lon_deg());
-        let s = self.spec;
-        let q = 0.5 * air.density * tas * tas;
-        let cl = s.cl0 + s.cl_alpha * alpha + s.flap_cl * self.flaps + s.spoiler_cl * self.spoilers;
-        let g_load = if self.on_ground { 1.0 } else { (q * s.wing_area_m2 * cl / (s.mass_kg * G0)).clamp(-3.0, 6.0) };
+        let wind_enu = self.weather.wind_enu((g.height - ground_h).max(0.0));
+        let air_vel = self.vel - enu.to_ecef(wind_enu);
+        let tas = air_vel.length();
+        let vb = self.att.conjugate() * air_vel;
+        let alpha = if tas > 1.0 { (-vb.z).atan2(vb.x) } else { 0.0 };
+        let g_load = self.spec_force.z.clamp(-3.0, 6.0);
         self.d = Derived {
             lat: g.lat_deg(),
             lon: g.lon_deg(),
@@ -900,8 +996,12 @@ impl Simulation {
             g_load,
             agl: g.height - ground_h - self.contact_height(),
             track: vel_enu.x.atan2(vel_enu.y),
-            fpa: if tas > 1.0 { (vel_enu.z / tas).clamp(-1.0, 1.0).asin() } else { 0.0 },
+            fpa: {
+                let v = vel_enu.length();
+                if v > 1.0 { (vel_enu.z / v).clamp(-1.0, 1.0).asin() } else { 0.0 }
+            },
             vel_enu,
+            wind_enu,
             ground_height: ground_h,
         };
     }
@@ -976,6 +1076,14 @@ impl Simulation {
         out[VEL_N] = d.vel_enu.y;
         out[VEL_U] = d.vel_enu.z;
         out[TIME_SCALE] = self.time_scale;
+        out[NX] = self.spec_force.x;
+        out[NY] = -self.spec_force.y;
+        out[NZ] = self.spec_force.z;
+        out[WIND_E] = d.wind_enu.x;
+        out[WIND_N] = d.wind_enu.y;
+        out[WIND_U] = d.wind_enu.z;
+        out[REVERSER] = self.reverser;
+        out[GROUND_EFFECT] = self.ground_effect;
     }
 
     pub fn snapshot(&self) -> Vec<f64> {
@@ -1130,5 +1238,167 @@ mod tests {
             assert!(!ev.iter().any(|e| matches!(e, SimEvent::Crashed { .. })), "crashed: {ev:?}");
         }
         assert!(landed, "never touched down");
+    }
+
+    fn air_spawn(sim: &mut Simulation, ac: &str, agl_ft: f64, heading: f64) {
+        sim.command(SimCommand::SetAircraft { id: ac.into() });
+        sim.command(SimCommand::Spawn(SpawnRequest {
+            lat: 41.88,
+            lon: -87.63,
+            heading,
+            mode: SpawnMode::Air,
+            agl_ft: Some(agl_ft),
+            speed_kt: None,
+            ground_elevation_ft: Some(600.0),
+        }));
+        settle(sim);
+    }
+
+    /// Rolls a landing 737 at `ias` knots on the runway and returns the stopping distance (m).
+    fn stopping_distance(reverse: bool) -> f64 {
+        let mut sim = Simulation::new();
+        settle(&mut sim);
+        // Accelerate to 120 kt, then brake.
+        sim.command(SimCommand::SetThrottle { value: 1.0 });
+        let dt = 1.0 / 120.0;
+        while read(&sim, snap::GS_KT) < 120.0 {
+            sim.step(dt);
+            let s = sim.snapshot();
+            sim.command(SimCommand::Ground { lat: s[snap::LAT], lon: s[snap::LON], height: Some(sim.ground_fallback) });
+        }
+        sim.command(SimCommand::SetThrottle { value: 0.0 });
+        let start = sim.pos;
+        for _ in 0..(120 * 120) {
+            sim.set_input(ControlInput { brake: 0.6, reverse: if reverse { 1.0 } else { 0.0 }, ..Default::default() });
+            sim.step(dt);
+            let s = sim.snapshot();
+            sim.command(SimCommand::Ground { lat: s[snap::LAT], lon: s[snap::LON], height: Some(sim.ground_fallback) });
+            if s[snap::GS_KT] < 1.0 {
+                break;
+            }
+        }
+        (sim.pos - start).length()
+    }
+
+    #[test]
+    fn thrust_reversers_shorten_the_landing_roll() {
+        let plain = stopping_distance(false);
+        let rev = stopping_distance(true);
+        assert!(rev < plain * 0.9, "reverse {rev:.0} m vs brakes only {plain:.0} m");
+    }
+
+    #[test]
+    fn headwind_reduces_groundspeed_not_airspeed() {
+        let mut sim = Simulation::new();
+        sim.command(SimCommand::SetWeather(crate::protocol::WeatherRequest { wind_from_deg: 90.0, wind_speed_kt: 30.0, turbulence: 0.0 }));
+        air_spawn(&mut sim, "b737", 5000.0, 90.0);
+        for _ in 0..(120 * 20) {
+            sim.step(1.0 / 120.0);
+        }
+        let ias = read(&sim, snap::TAS_KT);
+        let gs = read(&sim, snap::GS_KT);
+        assert!(ias - gs > 35.0, "tas {ias:.0} gs {gs:.0}");
+        let wind_e = read(&sim, snap::WIND_E);
+        assert!(wind_e < -15.0, "wind blows west: {wind_e}");
+    }
+
+    #[test]
+    fn crosswind_makes_the_track_drift_from_the_heading() {
+        let mut sim = Simulation::new();
+        sim.command(SimCommand::SetWeather(crate::protocol::WeatherRequest { wind_from_deg: 180.0, wind_speed_kt: 25.0, turbulence: 0.0 }));
+        air_spawn(&mut sim, "c172", 3000.0, 90.0);
+        for _ in 0..(120 * 20) {
+            sim.step(1.0 / 120.0);
+        }
+        let hdg = read(&sim, snap::HEADING);
+        let trk = read(&sim, snap::TRACK);
+        // South wind pushes the aircraft north: track left of heading.
+        assert!(hdg - trk > 8.0, "hdg {hdg:.1} trk {trk:.1}");
+    }
+
+    #[test]
+    fn turbulence_is_survivable_hands_off() {
+        for ac in ["b737", "c172"] {
+            let mut sim = Simulation::new();
+            sim.command(SimCommand::SetWeather(crate::protocol::WeatherRequest { wind_from_deg: 300.0, wind_speed_kt: 20.0, turbulence: 0.7 }));
+            air_spawn(&mut sim, ac, 4000.0, 0.0);
+            let alt0 = read(&sim, snap::ALT_MSL_FT);
+            let mut max_g: f64 = 1.0;
+            let mut min_g: f64 = 1.0;
+            for _ in 0..(120 * 90) {
+                sim.step(1.0 / 120.0);
+                max_g = max_g.max(read(&sim, snap::NZ));
+                min_g = min_g.min(read(&sim, snap::NZ));
+            }
+            let flags = read(&sim, snap::FLAGS) as u32;
+            assert_eq!(flags & snap::flags::CRASHED, 0, "{ac} crashed");
+            let alt1 = read(&sim, snap::ALT_MSL_FT);
+            assert!((alt1 - alt0).abs() < 900.0, "{ac}: alt {alt0} -> {alt1}");
+            assert!(read(&sim, snap::ROLL).abs() < 30.0, "{ac}: roll {}", read(&sim, snap::ROLL));
+            // Bumps should be felt, but stay within the structural envelope.
+            assert!(max_g > 1.1 && min_g < 0.9, "{ac}: g {min_g:.2}..{max_g:.2}");
+            assert!(max_g < 2.5 && min_g > -0.5, "{ac}: g {min_g:.2}..{max_g:.2}");
+        }
+    }
+
+    #[test]
+    fn specific_force_reads_one_g_at_rest_and_in_level_flight() {
+        let mut sim = Simulation::new();
+        settle(&mut sim);
+        for _ in 0..240 {
+            sim.step(1.0 / 120.0);
+        }
+        assert!((read(&sim, snap::NZ) - 1.0).abs() < 0.05, "ground nz {}", read(&sim, snap::NZ));
+        air_spawn(&mut sim, "a320", 5000.0, 0.0);
+        for _ in 0..(120 * 10) {
+            sim.step(1.0 / 120.0);
+        }
+        assert!((read(&sim, snap::NZ) - 1.0).abs() < 0.08, "air nz {}", read(&sim, snap::NZ));
+    }
+
+    #[test]
+    fn ground_effect_builds_near_the_runway() {
+        let mut sim = Simulation::new();
+        settle(&mut sim);
+        sim.step(1.0 / 120.0);
+        assert!(read(&sim, snap::GROUND_EFFECT) > 0.5);
+        air_spawn(&mut sim, "b737", 3000.0, 0.0);
+        sim.step(1.0 / 120.0);
+        assert!(read(&sim, snap::GROUND_EFFECT) < 0.01);
+    }
+
+    #[test]
+    fn approach_spawn_crabs_onto_a_three_degree_ground_path() {
+        let mut sim = Simulation::new();
+        sim.command(SimCommand::SetWeather(crate::protocol::WeatherRequest { wind_from_deg: 220.0, wind_speed_kt: 15.0, turbulence: 0.0 }));
+        sim.command(SimCommand::SpawnRunway { airport: "KORD".into(), runway: Some("28R".into()), kind: RunwaySpawnKind::Approach });
+        let rwy = read(&sim, snap::HEADING);
+        let s = sim.snapshot();
+        sim.command(SimCommand::Ground { lat: s[snap::LAT], lon: s[snap::LON], height: Some(sim.ground_fallback) });
+        sim.step(1.0 / 120.0);
+        let track = read(&sim, snap::TRACK);
+        let fpa = read(&sim, snap::FPA);
+        let hdg = read(&sim, snap::HEADING);
+        // Track follows the runway (~270°) while the nose points into the wind (left).
+        assert!((geo::wrap_deg_180(track - 270.0)).abs() < 3.0, "track {track} (rwy hdg at spawn {rwy})");
+        assert!(geo::wrap_deg_180(hdg - track) < -2.0, "crab hdg {hdg} trk {track}");
+        assert!((fpa + 3.0).abs() < 0.3, "fpa {fpa}");
+    }
+
+    #[test]
+    fn approach_attitudes_are_realistic() {
+        // Stabilised on a 3° glideslope at Vref with landing flaps.
+        for (ac, lo, hi) in [("b737", 1.0, 4.5), ("a320", 1.0, 4.5), ("bizjet", 0.5, 5.0), ("c172", -4.0, 1.5)] {
+            let mut sim = Simulation::new();
+            sim.command(SimCommand::SetAircraft { id: ac.into() });
+            sim.command(SimCommand::SpawnRunway { airport: "KORD".into(), runway: Some("28R".into()), kind: RunwaySpawnKind::Approach });
+            let s = sim.snapshot();
+            sim.command(SimCommand::Ground { lat: s[snap::LAT], lon: s[snap::LON], height: Some(sim.ground_fallback) });
+            for _ in 0..(120 * 10) {
+                sim.step(1.0 / 120.0);
+            }
+            let pitch = read(&sim, snap::PITCH);
+            assert!((lo..hi).contains(&pitch), "{ac}: approach pitch {pitch:.1}°");
+        }
     }
 }

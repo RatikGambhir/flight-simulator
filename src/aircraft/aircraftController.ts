@@ -9,6 +9,7 @@ import {
   PlaneGeometry,
   Quaternion,
   Scene,
+  ShaderMaterial,
   Vector3,
   WebGLRenderTarget,
   type Material,
@@ -19,6 +20,7 @@ import { S } from '../sim/protocol'
 import { BODY_FROM_MODEL, frame, geodeticToEcef } from '../world/frame'
 import { buildCockpit, type Cockpit } from './cockpit'
 import { buildAircraft, type AircraftModel } from './models'
+import { setHingeAngle } from './geometry'
 
 export const LIGHTING_MASK_LAYER = 10
 
@@ -26,6 +28,46 @@ const _v = new Vector3()
 const _up = new Vector3()
 const _e = new Vector3()
 const _n = new Vector3()
+const _a = new Vector3()
+const _b = new Vector3()
+const _c = new Vector3()
+
+// Ground shadow: the silhouette blurred by a penumbra that widens with height,
+// as the sun's half-degree disc does to a real aircraft's shadow.
+const SHADOW_VERT = /* glsl */ `
+#include <common>
+#include <logdepthbuf_pars_vertex>
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  #include <logdepthbuf_vertex>
+}`
+
+const SHADOW_FRAG = /* glsl */ `
+#include <common>
+#include <logdepthbuf_pars_fragment>
+uniform sampler2D silhouette;
+uniform float opacity;
+uniform float radius;
+varying vec2 vUv;
+void main() {
+  #include <logdepthbuf_fragment>
+  // 16 taps on a golden-angle spiral.
+  float a = 0.0;
+  for (int i = 0; i < 16; i++) {
+    float f = (float(i) + 0.5) / 16.0;
+    float t = float(i) * 2.39996323;
+    a += texture2D(silhouette, vUv + vec2(cos(t), sin(t)) * sqrt(f) * radius).g;
+  }
+  a /= 16.0;
+  // Fade to nothing at the quad's edge so a wide penumbra never shows a hard border.
+  vec2 e = smoothstep(vec2(0.0), vec2(0.04), vUv) * smoothstep(vec2(0.0), vec2(0.04), 1.0 - vUv);
+  gl_FragColor = vec4(0.0, 0.0, 0.0, a * opacity * e.x * e.y);
+}`
+
+/** Padding around the silhouette so the blurred edge stays inside the quad. */
+const SHADOW_PAD = 1.5
 
 export class AircraftController {
   readonly container = new Group()
@@ -49,8 +91,14 @@ export class AircraftController {
     this.model.root.add(this.cockpit.root)
     this.container.add(this.model.root)
     this.shadowTarget = this.renderSilhouette(renderer)
-    const mat = new MeshBasicMaterial({ color: new Color('#000000'), alphaMap: this.shadowTarget.texture, transparent: true, opacity: 0.5, depthWrite: false })
-    const size = Math.max(this.model.span, this.model.length) * 1.15
+    const mat = new ShaderMaterial({
+      vertexShader: SHADOW_VERT,
+      fragmentShader: SHADOW_FRAG,
+      uniforms: { silhouette: { value: this.shadowTarget.texture }, opacity: { value: 0.5 }, radius: { value: 0.002 } },
+      transparent: true,
+      depthWrite: false,
+    })
+    const size = Math.max(this.model.span, this.model.length) * SHADOW_PAD
     this.shadow = new Mesh(new PlaneGeometry(size, size), mat)
     this.shadow.renderOrder = 2
     this.shadow.frustumCulled = false
@@ -67,8 +115,8 @@ export class AircraftController {
 
   /** Renders a top-down silhouette of the exterior into a small texture for the ground shadow. */
   private renderSilhouette(renderer: WebGLRenderer) {
-    const size = Math.max(this.model.span, this.model.length) * 1.15
-    const rt = new WebGLRenderTarget(256, 256)
+    const size = Math.max(this.model.span, this.model.length) * SHADOW_PAD
+    const rt = new WebGLRenderTarget(1024, 1024, { samples: 4, depthBuffer: true })
     const cam = new OrthographicCamera(-size / 2, size / 2, size / 2, -size / 2, 0.1, 100)
     cam.position.set(0, 50, 0)
     cam.lookAt(0, 0, 0)
@@ -135,7 +183,7 @@ export class AircraftController {
           theta = r.spoilers * sfc.max * sfc.sign
           break
       }
-      sfc.pivot.rotation.x = theta
+      setHingeAngle(sfc.pivot, sfc.restQuaternion, theta)
     }
     for (const g of m.gear) {
       const a = (1 - r.gear) * g.retracted
@@ -176,19 +224,24 @@ export class AircraftController {
     geodeticToEcef(s[S.LAT], s[S.LON], s[S.GROUND_HEIGHT] + 0.25, _v)
     frame.ecefToWorld(_v.x, _v.y, _v.z, sh.position)
     // Project along the sun direction onto the ground plane.
-    const height = this.position.clone().sub(sh.position).dot(_up)
-    const horiz = sun.clone().sub(_up.clone().multiplyScalar(elev))
+    const height = _a.copy(this.position).sub(sh.position).dot(_up)
+    const horiz = _b.copy(sun).addScaledVector(_up, -elev)
     sh.position.addScaledVector(horiz, -height / elev)
     // Orient: plane normal = up, texture "up" (−z of the silhouette camera) = aircraft forward.
-    const fwd = new Vector3(0, 0, -1).applyQuaternion(this.quaternion)
-    fwd.sub(_up.clone().multiplyScalar(fwd.dot(_up))).normalize()
-    const right = fwd.clone().cross(_up).normalize()
+    const fwd = _a.set(0, 0, -1).applyQuaternion(this.quaternion)
+    fwd.addScaledVector(_up, -fwd.dot(_up)).normalize()
+    const right = _c.copy(fwd).cross(_up).normalize()
     // Basis: x = right, y = forward (texture up), z = up (normal).
     const m = sh.matrix
     m.makeBasis(right, fwd, _up)
     sh.quaternion.setFromRotationMatrix(m)
     const fade = Math.max(0, 1 - agl / 250)
-    ;(sh.material as MeshBasicMaterial).opacity = 0.55 * fade * Math.min(1, elev * 4)
+    const u = (sh.material as ShaderMaterial).uniforms
+    u.opacity.value = 0.62 * fade * Math.min(1, elev * 4)
+    // Penumbra width = slant distance to the ground x the sun's angular radius (~0.27 deg),
+    // in UV units of the shadow quad; a small floor hides texel stair-stepping.
+    const quad = Math.max(this.model.span, this.model.length) * SHADOW_PAD
+    u.radius.value = Math.min(0.12, 0.0012 + ((Math.max(0, height) / elev) * 0.0047) / quad)
   }
 
   dispose() {

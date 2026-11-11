@@ -1,8 +1,13 @@
 // High-level flight actions shared by the menus and in-flight UI.
 
+import { sound } from './audio/sound'
 import { sim } from './sim/simClient'
 import type { SimCommand } from './sim/protocol'
-import { useApp, type SpawnChoice } from './state/store'
+import { useApp, type Settings, type SpawnChoice } from './state/store'
+
+export function weatherCommand(s: Settings): SimCommand {
+  return { type: 'set_weather', wind_from_deg: s.windFromDeg, wind_speed_kt: s.windSpeedKt, turbulence: s.turbulence }
+}
 
 export function spawnCommand(s: SpawnChoice): SimCommand {
   if (s.kind === 'runway') return { type: 'spawn_runway', airport: s.airport, runway: s.runway, kind: s.mode }
@@ -24,12 +29,15 @@ export function applySelection(opts: { paused: boolean }) {
   sim.command({ type: 'set_aircraft', id: aircraftId })
   sim.command({ type: 'set_assist', enabled: settings.assist })
   sim.command({ type: 'set_time_scale', scale: settings.timeScale })
+  sim.command(weatherCommand(settings))
   sim.command(spawnCommand(spawn))
   sim.command({ type: 'set_paused', paused: opts.paused })
 }
 
 export function startFlight() {
   const app = useApp.getState()
+  // Called from the "Fly now" click, so the browser allows audio to start.
+  sound.unlock()
   applySelection({ paused: false })
   app.setCamera('chase')
   app.setPhase('flying')
@@ -47,7 +55,9 @@ export function relocate(spawn: SpawnChoice) {
 export function restartFlight() {
   const app = useApp.getState()
   app.setCrashed(null)
-  sim.command({ type: 'reset' })
+  // Skip-to changes the sim's last spawn, but "restart from departure" should
+  // still return to the departure selected by the user.
+  sim.command(spawnCommand(app.spawn))
   sim.command({ type: 'set_paused', paused: false })
   app.setPauseMenu(false)
 }

@@ -13,6 +13,7 @@ pub mod geo;
 pub mod protocol;
 pub mod sim;
 pub mod stepper;
+pub mod weather;
 pub mod world;
 
 pub use protocol::{snap, ControlInput, SimCommand, SimEvent};

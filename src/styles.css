@@ -670,6 +670,47 @@ input[type='checkbox'] {
   transform: translateX(-50%);
 }
 
+.destination-card { width: 100%; color: inherit; text-align: left; font: inherit; }
+.skip-dialog { position: fixed; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; padding: 24px; border: 0; background: transparent; color: var(--text); overflow: auto; }
+.skip-dialog[open] { display: grid; place-items: center; }
+.skip-dialog::backdrop { background: transparent; }
+.skip-dialog.editing::backdrop { background: rgba(3, 7, 12, 0.6); backdrop-filter: blur(5px); }
+.skip-card { width: min(460px, 100%); max-height: calc(100dvh - 48px); overflow: auto; text-align: left; gap: 14px; }
+.skip-card h2 { margin: 0; font-size: 30px; }
+.skip-card p { margin: 0; line-height: 1.6; }
+.skip-card label { font-size: 14px; font-weight: 600; }
+.skip-eyebrow { font-size: 10px; letter-spacing: 0.15em; color: var(--accent-2); }
+.skip-distance { position: relative; }
+.skip-distance input { width: 100%; padding-right: 55px; font-size: 26px; font-family: var(--hud-font); }
+.skip-distance > span { position: absolute; right: 36px; top: 50%; transform: translateY(-50%); color: var(--muted); }
+.skip-error { color: var(--bad); font-size: 13px; min-height: 1em; }
+.skip-blackout { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; transition: opacity 450ms ease-in-out; z-index: 1; }
+.skip-blackout.opaque { opacity: 1; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { .skip-blackout { transition-duration: 100ms; } }
+.route-planner { z-index: 20; }
+.route-search-label { display: block; margin-bottom: 8px; color: var(--muted); }
+.route-planner .input { width: 100%; }
+.route-results { max-height: 200px; overflow-y: auto; margin-top: 12px; }
+.route-results .result { width: 100%; }
+.route-map { border: 1px solid var(--panel-border); border-radius: 12px; overflow: hidden; }
+.route-map svg { width: 100%; display: block; }
+.route-legend, .route-stats { display: flex; flex-wrap: wrap; gap: 18px; padding: 12px; font-size: 12px; }
+.route-legend { background: #0b1b27; color: #b4c8cf; }
+.route-stats { color: var(--accent-2); padding-left: 0; }
+.navigation-actions { position: absolute; top: 130px; right: 20px; display: flex; flex-direction: column; padding: 4px; }
+.navigation-actions .btn { font-size: 12px; justify-content: space-between; gap: 12px; }
+.hud-heading.heading-with-destination { height: 74px; }
+.heading-with-destination .pointer { bottom: 28px; }
+.compass-destination { position: absolute; top: 37px; transform: translateX(-50%); flex-direction: column; align-items: center; color: #7cf0c5; font-size: 15px; }
+.compass-destination b { font-size: 10px; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.destination-heading-hint { position: absolute; top: 119px; left: 50%; transform: translateX(-50%); font-size: 11px; color: #7cf0c5; white-space: nowrap; }
+.destination-beacon { position: absolute; pointer-events: none; z-index: 1; flex-direction: column; align-items: center; transform: translate(-50%, calc(-100% + 16px)); color: #7cf0c5; text-shadow: 0 1px 3px #000; }
+.beacon-label { display: flex; flex-direction: column; align-items: center; gap: 4px; max-width: 270px; padding: 9px 12px; background: rgba(5, 18, 28, 0.85); border: 1px solid #7cf0c566; border-radius: 8px; text-align: center; font-size: 12px; }
+.beacon-label span { font: 11px var(--hud-font); }
+.beacon-stem { height: 28px; width: 1px; background: #7cf0c5; }
+.beacon-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; border: 2px solid #7cf0c5; background: #091c2ccc; font-size: 21px; }
+
 .hud-side {
   position: absolute;
   top: 50%;
@@ -789,7 +830,7 @@ input[type='checkbox'] {
 
 .hud-status {
   position: absolute;
-  top: 74px;
+  top: 145px;
   left: 50%;
   transform: translateX(-50%);
   font-size: 12px;
@@ -825,7 +866,7 @@ input[type='checkbox'] {
 
 .toasts {
   position: absolute;
-  top: 120px;
+  top: 280px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -881,6 +922,29 @@ input[type='checkbox'] {
 
 .modal h2 {
   margin: 0 0 6px;
+}
+
+.takeoff-guide {
+  position: absolute;
+  left: 50%;
+  top: 218px;
+  transform: translateX(-50%);
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  max-width: calc(100vw - 32px);
+  pointer-events: none;
+}
+
+.takeoff-guide kbd {
+  font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 3px 7px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.1);
+  white-space: nowrap;
 }
 
 .loading {

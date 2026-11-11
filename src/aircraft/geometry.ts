@@ -1,7 +1,7 @@
 // Procedural geometry generators for aircraft parts.
 // Model axes: x = right, y = up, z = aft (the nose points toward -z).
 
-import { BufferGeometry, Float32BufferAttribute, LatheGeometry, Matrix4, Quaternion, Vector2, Vector3 } from 'three'
+import { BufferGeometry, Float32BufferAttribute, LatheGeometry, Matrix4, Quaternion, Vector2, Vector3, type Object3D } from 'three'
 
 export interface Station {
   /** Longitudinal position (m, -z = forward). */
@@ -140,6 +140,16 @@ export function wingPoint(w: WingParams, e: number, c: number, side: 1 | -1 = 1,
   return out.set(ys * side, lift + camber, zLe + c * chord)
 }
 
+/** Upper skin, including the local taper and airfoil thickness. */
+export function wingUpperPoint(w: WingParams, e: number, c: number, side: 1 | -1 = 1, out = new Vector3()) {
+  wingPoint(w, e, c, side, out)
+  const chord = w.rootChord + (w.tipChord - w.rootChord) * e
+  const thickness = w.thicknessRoot + (w.thicknessTip - w.thicknessRoot) * e
+  if (w.vertical) out.x += nacaThickness(c, thickness) * chord
+  else out.y += nacaThickness(c, thickness) * chord
+  return out
+}
+
 /**
  * Lofted wing panel between span fractions [e0,e1] and chord fractions [c0,c1].
  * Closed at all edges. `side` mirrors to the left (-x) with correct winding.
@@ -174,16 +184,25 @@ export function wingPanelGeometry(w: WingParams, e0: number, e1: number, c0 = 0,
     }
   }
   for (let i = 0; i < spanSegs; i++) {
-    for (let k = 0; k < ringLen - 1; k++) {
+    for (let k = 0; k < ringLen; k++) {
       const a = i * ringLen + k
       const b = a + ringLen
-      if (side === 1 !== !!w.vertical) idx.push(a, b, a + 1, a + 1, b, b + 1)
-      else idx.push(a, a + 1, b, a + 1, b + 1, b)
+      const next = i * ringLen + (k + 1) % ringLen
+      // Close the cut trailing face too. Omitting last -> first left the wing
+      // box open at the flap/elevator hinge, visible as jagged dark gaps aft.
+      if (!w.vertical && side === 1) idx.push(a, b, next, next, b, next + ringLen)
+      else idx.push(a, next, b, next, next + ringLen, b)
     }
   }
   // End caps (fan triangulation around the ring centroid).
   const cap = (ringIndex: number, flip: boolean) => {
-    const start = ringIndex * ringLen
+    const source = ringIndex * ringLen
+    // Separate vertices keep the end-cap normals out of the smooth airfoil skin.
+    const start = pos.length / 3
+    for (let k = 0; k < ringLen; k++) {
+      pos.push(pos[(source + k) * 3], pos[(source + k) * 3 + 1], pos[(source + k) * 3 + 2])
+      uvs.push(uvs[(source + k) * 2], uvs[(source + k) * 2 + 1])
+    }
     let cx = 0
     let cy = 0
     let cz = 0
@@ -194,15 +213,16 @@ export function wingPanelGeometry(w: WingParams, e0: number, e1: number, c0 = 0,
     }
     const center = pos.length / 3
     pos.push(cx / ringLen, cy / ringLen, cz / ringLen)
-    uvs.push(0.5, ringIndex === 0 ? 0 : 1)
-    for (let k = 0; k < ringLen - 1; k++) {
-      if (flip) idx.push(center, start + k + 1, start + k)
-      else idx.push(center, start + k, start + k + 1)
+    uvs.push(cs.reduce((sum, c) => sum + c, 0) / cs.length, ringIndex === 0 ? e0 : e1)
+    for (let k = 0; k < ringLen; k++) {
+      const next = start + (k + 1) % ringLen
+      if (flip) idx.push(center, next, start + k)
+      else idx.push(center, start + k, next)
     }
   }
-  const flipBase = side === 1 !== !!w.vertical
-  cap(0, flipBase)
-  cap(spanSegs, !flipBase)
+  const flipBase = !w.vertical && side === 1
+  cap(0, !flipBase)
+  cap(spanSegs, flipBase)
   const g = new BufferGeometry()
   g.setAttribute('position', new Float32BufferAttribute(pos, 3))
   g.setAttribute('uv', new Float32BufferAttribute(uvs, 2))
@@ -215,12 +235,20 @@ export function wingPanelGeometry(w: WingParams, e0: number, e1: number, c0 = 0,
  * Builds a hinge frame for a control surface: returns the hinge origin and a
  * rotation that maps local +X onto the hinge line (from e0 to e1 at chord c).
  */
-export function hingeFrame(w: WingParams, e0: number, e1: number, c: number, side: 1 | -1) {
-  const a = wingPoint(w, e0, c, side)
-  const b = wingPoint(w, e1, c, side)
+export function hingeFrame(w: WingParams, e0: number, e1: number, c: number, side: 1 | -1, upper = false) {
+  const point = upper ? wingUpperPoint : wingPoint
+  const a = point(w, e0, c, side)
+  const b = point(w, e1, c, side)
   const axis = b.clone().sub(a).normalize()
   const q = new Quaternion().setFromUnitVectors(new Vector3(1, 0, 0), axis)
   return { origin: a, quat: q, axis }
+}
+
+/** Apply deflection around the hinge's local X without changing its alignment. */
+export function setHingeAngle(pivot: Object3D, rest: Quaternion, angle: number) {
+  // Replacing an Euler component destroys the swept/mirrored hinge alignment.
+  pivot.quaternion.copy(rest)
+  pivot.rotateX(angle)
 }
 
 /** Re-expresses geometry relative to a hinge frame so it can rotate about local X. */

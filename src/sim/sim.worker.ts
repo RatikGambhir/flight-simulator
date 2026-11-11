@@ -10,7 +10,7 @@ interface SimExports {
   sim_advance(elapsed: number): number
   sim_snapshot(): number
   sim_snapshot_len(): number
-  sim_input(pitch: number, roll: number, yaw: number, throttleRate: number, brake: number): void
+  sim_input(pitch: number, roll: number, yaw: number, throttleRate: number, brake: number, reverse: number): void
   sim_command(): number
   sim_events(): number
   world_query(): number
@@ -64,7 +64,7 @@ ctx.onmessage = async (ev: MessageEvent) => {
       }
       case 'input': {
         const i = m.input
-        wasm.sim_input(i.pitch, i.roll, i.yaw, i.throttle_rate, i.brake)
+        wasm.sim_input(i.pitch, i.roll, i.yaw, i.throttle_rate, i.brake, i.reverse ?? 0)
         break
       }
       case 'command':

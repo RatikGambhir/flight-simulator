@@ -4,6 +4,7 @@
 import { BoxGeometry, CylinderGeometry, DoubleSide, Group, Mesh, MeshStandardMaterial, Object3D, PlaneGeometry, TorusGeometry, Vector3, type Material } from 'three'
 import { drawEICAS, drawND, drawPFD, drawSixPack, InstrumentCanvas } from './instruments'
 import type { AircraftModel } from './models'
+import { build737Cockpit } from './cockpit737'
 
 export interface Cockpit {
   root: Group
@@ -51,6 +52,7 @@ function windowFrame(parent: Object3D, mat: Material, eye: Vector3, width: numbe
 }
 
 export function buildCockpit(model: AircraftModel): Cockpit {
+  if (model.id === 'b737') return build737Cockpit(model)
   const root = new Group()
   root.name = 'cockpit'
   const eye = model.eye
