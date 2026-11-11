@@ -40,6 +40,8 @@ const MAGENTA = '#ff4dff'
 const CYAN = '#3ad7ff'
 const AMBER = '#ffb020'
 const WHITE = '#f2f5f7'
+/** Panel paint behind the light-aircraft gauges (shared with the panel texture). */
+export const GA_PANEL = '#2b2d30'
 
 /** Primary flight display. */
 export function drawPFD(g: CanvasRenderingContext2D, s: Float64Array, w: number, h: number) {
@@ -400,9 +402,9 @@ function ticks(g: CanvasRenderingContext2D, x: number, y: number, r: number, fro
   }
 }
 
-/** Classic "six-pack" plus tachometer for the light aircraft. */
+/** Classic "six-pack" of flight instruments for the light aircraft. */
 export function drawSixPack(g: CanvasRenderingContext2D, s: Float64Array, w: number, h: number) {
-  g.fillStyle = '#1d1f22'
+  g.fillStyle = GA_PANEL
   g.fillRect(0, 0, w, h)
   const r = h * 0.21
   const cols = [w * 0.17, w * 0.5, w * 0.83]
@@ -543,11 +545,111 @@ export function drawSixPack(g: CanvasRenderingContext2D, s: Float64Array, w: num
     ticks(g, x, y, r, -Math.PI / 2 - Math.PI * 0.9, -Math.PI / 2 + Math.PI * 0.9, 8, (i) => String(Math.abs(i - 4) * 5))
     needle(g, x, y, r * 0.82, map(s[S.VS_FPM]))
   }
-  // Tach & flaps strip
+}
+
+/** Small arc gauge with a coloured normal range, as used for fuel and oil. */
+function miniGauge(g: CanvasRenderingContext2D, x: number, y: number, r: number, label: string, value: number, green: [number, number], unit: string) {
+  dial(g, x, y, r, '')
+  const a0 = -Math.PI * 0.7
+  const a1 = Math.PI * 0.7
+  const at = (v: number) => a0 + (a1 - a0) * Math.min(1, Math.max(0, v))
+  g.lineWidth = r * 0.12
+  g.strokeStyle = '#2fbf4f'
+  g.beginPath()
+  g.arc(x, y, r * 0.84, at(green[0]) - Math.PI / 2, at(green[1]) - Math.PI / 2)
+  g.stroke()
+  g.strokeStyle = '#e03030'
+  g.beginPath()
+  g.arc(x, y, r * 0.84, at(0.96) - Math.PI / 2, at(1) - Math.PI / 2)
+  g.stroke()
+  ticks(g, x, y, r, a0, a1, 4)
+  g.fillStyle = '#ddd'
+  g.font = font(r * 0.24)
+  g.textAlign = 'center'
+  g.fillText(label, x, y + r * 0.48)
+  g.font = font(r * 0.18, 500)
+  g.fillText(unit, x, y - r * 0.38)
+  needle(g, x, y, r * 0.74, at(value), Math.max(3, r * 0.06))
+  g.fillStyle = '#111'
+  g.beginPath()
+  g.arc(x, y, r * 0.12, 0, Math.PI * 2)
+  g.fill()
+}
+
+/** Tachometer with fuel and oil gauges for the piston single. */
+export function drawGaEngine(g: CanvasRenderingContext2D, s: Float64Array, w: number, h: number) {
+  g.fillStyle = GA_PANEL
+  g.fillRect(0, 0, w, h)
+  const eng = s[S.ENGINE]
+  const rpm = 700 + eng * 1950
+  // Tachometer
+  const x = w * 0.5
+  const y = h * 0.34
+  const r = h * 0.3
+  dial(g, x, y, r, 'RPM')
+  const a0 = -Math.PI * 0.75
+  const a1 = Math.PI * 0.75
+  const at = (v: number) => a0 + ((a1 - a0) * Math.min(3500, Math.max(0, v))) / 3500
+  g.lineWidth = r * 0.07
+  g.strokeStyle = '#2fbf4f'
+  g.beginPath()
+  g.arc(x, y, r * 0.87, at(2100) - Math.PI / 2, at(2700) - Math.PI / 2)
+  g.stroke()
+  g.strokeStyle = '#e03030'
+  g.beginPath()
+  g.arc(x, y, r * 0.87, at(2700) - Math.PI / 2, at(2760) - Math.PI / 2)
+  g.stroke()
+  ticks(g, x, y, r, a0, a1, 35, (i) => (i % 5 === 0 ? String(i) : ''))
+  g.fillStyle = '#bbb'
+  g.font = font(r * 0.11, 500)
+  g.fillText('× 100', x, y - r * 0.3)
+  // Hour meter
+  g.fillStyle = '#000'
+  g.fillRect(x - r * 0.3, y + r * 0.58, r * 0.6, r * 0.17)
   g.fillStyle = WHITE
-  g.font = font(h * 0.04)
-  g.textAlign = 'left'
-  g.fillText(`RPM ${Math.round(700 + s[S.ENGINE] * 1950)}`, w * 0.02, h * 0.98)
-  g.textAlign = 'right'
-  g.fillText(`FLAPS ${Math.round(s[S.FLAPS] * 30)}°`, w * 0.98, h * 0.98)
+  g.font = font(r * 0.13)
+  g.fillText('1284.6', x, y + r * 0.67)
+  needle(g, x, y, r * 0.8, at(rpm), 6)
+  g.fillStyle = '#111'
+  g.beginPath()
+  g.arc(x, y, r * 0.09, 0, Math.PI * 2)
+  g.fill()
+  // Fuel and oil
+  const rr = h * 0.105
+  const yy = h * 0.83
+  miniGauge(g, w * 0.14, yy, rr, 'FUEL L', 0.72, [0.08, 1], 'GAL')
+  miniGauge(g, w * 0.38, yy, rr, 'FUEL R', 0.7, [0.08, 1], 'GAL')
+  miniGauge(g, w * 0.62, yy, rr, 'OIL T', 0.38 + eng * 0.22, [0.3, 0.9], '°F')
+  miniGauge(g, w * 0.86, yy, rr, 'OIL P', 0.3 + eng * 0.38, [0.35, 0.8], 'PSI')
+}
+
+/** Magnetic "whiskey" compass card seen through its window. */
+export function drawWhiskeyCompass(g: CanvasRenderingContext2D, s: Float64Array, w: number, h: number) {
+  g.fillStyle = '#050607'
+  g.fillRect(0, 0, w, h)
+  const hdg = s[S.HEADING]
+  const ppd = w / 70
+  g.fillStyle = WHITE
+  g.strokeStyle = WHITE
+  g.textAlign = 'center'
+  g.textBaseline = 'middle'
+  g.font = font(h * 0.36, 700)
+  g.lineWidth = 2
+  const first = Math.floor((hdg - 40) / 5) * 5
+  for (let d = first; d <= hdg + 40; d += 5) {
+    // The card reads backwards: higher headings appear to the left.
+    const x = w / 2 - (d - hdg) * ppd
+    const n = ((d % 360) + 360) % 360
+    g.beginPath()
+    g.moveTo(x, h * 0.62)
+    g.lineTo(x, h * (n % 10 === 0 ? 0.86 : 0.76))
+    g.stroke()
+    if (n % 30 === 0) g.fillText(['N', '3', '6', 'E', '12', '15', 'S', '21', '24', 'W', '30', '33'][n / 30], x, h * 0.33)
+  }
+  g.strokeStyle = '#ffb020'
+  g.lineWidth = 3
+  g.beginPath()
+  g.moveTo(w / 2, 0)
+  g.lineTo(w / 2, h)
+  g.stroke()
 }

@@ -1,13 +1,136 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { CloudsEffect } from '@takram/three-clouds'
-import { Object3D, PerspectiveCamera, Vector3 } from 'three'
+import { BoxGeometry, Color, Group, Matrix4, Mesh, MeshBasicMaterial, MeshStandardMaterial, Object3D, PerspectiveCamera, Texture, Vector3 } from 'three'
+import { EffectPass } from 'postprocessing'
 import { readFileSync } from 'node:fs'
 import { CloudHistory, stabilizeClouds } from '../src/scene/cloudRendering.ts'
 import { hingeFrame, setHingeAngle, wingPanelGeometry, wingPoint, wingUpperPoint } from '../src/aircraft/geometry.ts'
 import { FlightPrefetch } from '../src/world/flightPrefetch.ts'
 import { buildLakeGeometry, distanceToLake, lakeGeoid } from '../src/scene/lakeGeometry.ts'
 import { ecefToGeodetic } from '../src/world/frame.ts'
+import { MAX_LAMPS, NightEffect } from '../src/scene/NightEffect.ts'
+import { CockpitLighting } from '../src/aircraft/cockpitLighting.ts'
+
+test('night cockpit lighting dims shared materials once and restores original daytime values', () => {
+  const root = new Group(), geometry = new BoxGeometry(), texture = new Texture()
+  const panel = new MeshStandardMaterial({ emissiveIntensity: 0.22 })
+  const display = new MeshBasicMaterial({ map: texture, color: '#e0e0e0' })
+  const original = display.color.clone()
+  root.add(new Mesh(geometry, [panel, display]), new Mesh(geometry, [panel, display]))
+  const lighting = new CockpitLighting(root)
+  try {
+    lighting.update(1)
+    assert.ok(panel.emissiveIntensity > 0 && panel.emissiveIntensity < 0.05)
+    assert.ok(display.color.r > 0 && display.color.r < original.r * 0.2)
+    const dim = display.color.clone()
+    lighting.update(1)
+    assert.ok(display.color.equals(dim), 'repeated frames must not compound dimming')
+    lighting.update(0.5)
+    assert.ok(display.color.r > dim.r && display.color.r < original.r)
+    lighting.update(0)
+    assert.equal(panel.emissiveIntensity, 0.22)
+    assert.ok(display.color.equals(original))
+  } finally { geometry.dispose(); panel.dispose(); display.dispose(); texture.dispose() }
+})
+
+test('night lamps use native log depth so nearby geometry actually hides them', () => {
+  const effect = new NightEffect()
+  const camera = new PerspectiveCamera(58, 1.6, 0.3, 2e7)
+  camera.updateMatrixWorld()
+  const lamp = { position: new Vector3(0, 0, -50), color: new Color('red'), intensity: 1, size: 1 }
+  const pass = new EffectPass(camera, effect)
+  try {
+    effect.setFrame(camera, 1, 0, new Vector3(0, 1, 0), [lamp])
+    const at = effect.uniforms.get('lampAt').value[0]
+    const logDepth = distance => Math.log2(1 + distance) / Math.log2(camera.far + 1)
+    assert.ok(at.z > logDepth(40), 'an aircraft surface 10m in front must hide the lamp')
+    assert.ok(at.z < logDepth(60), 'terrain behind the lamp must not hide it')
+    assert.ok(at.z < logDepth(50), 'the emitter bias must clear its own housing')
+    // Verify the compiled effect compares the same representation, rather than
+    // postprocessing's readDepth(), which silently returns perspective depth.
+    pass.recompile()
+    const shader = pass.fullscreenMaterial.fragmentShader
+    assert.match(shader, /step\(at.z,\s*\w*SceneDepth\(at.xy\)\)/)
+    assert.match(shader, /depth < 1.0/)
+    assert.match(shader, /texture2D\(\w*SceneAlbedo, uv\)/)
+    assert.equal(effect.uniforms.get('sceneAlbedo').value, effect.albedoPass.texture)
+    assert.doesNotMatch(shader, /smoothstep\(0.0, -0.03/)
+    assert.ok(logDepth(100000) < 1, '100km terrain remains geometry, not sky')
+  } finally { pass.dispose() }
+})
+
+test('lamp projection follows the camera, rejects offscreen lights and clears stale lamps', () => {
+  const effect = new NightEffect()
+  const camera = new PerspectiveCamera(70, 2, 0.3, 2000)
+  camera.position.set(100, 200, 300)
+  camera.rotateY(0.7)
+  camera.updateMatrixWorld()
+  const lamp = (x, y, z, intensity = 1) => ({
+    position: new Vector3(x, y, z).applyMatrix4(camera.matrixWorld),
+    color: new Color('red'), intensity, size: 1,
+  })
+  try {
+    const visible = lamp(8, 4, -50)
+    effect.setFrame(camera, 1, 0, new Vector3(0, 1, 0), [
+      lamp(0, 0, 10), lamp(500, 0, -50), lamp(0, 0, -3000), lamp(0, 0, -50, 0), visible,
+    ])
+    assert.equal(effect.uniforms.get('lampCount').value, 1)
+    const projected = visible.position.clone().project(camera)
+    const at = effect.uniforms.get('lampAt').value[0]
+    assert.ok(Math.abs(at.x - (projected.x + 1) / 2) < 1e-12)
+    assert.ok(Math.abs(at.y - (projected.y + 1) / 2) < 1e-12)
+    effect.setFrame(camera, 1, 1, new Vector3(0, 1, 0), Array(MAX_LAMPS + 5).fill(visible))
+    assert.equal(effect.uniforms.get('lampCount').value, MAX_LAMPS)
+    assert.equal(effect.albedoPass.enabled, true)
+    effect.setFrame(camera, 0, 1, new Vector3(0, 1, 0), [])
+    assert.equal(effect.uniforms.get('lampCount').value, 0)
+    assert.equal(effect.uniforms.get('night').value, 0)
+    assert.equal(effect.albedoPass.enabled, false)
+  } finally { effect.dispose() }
+})
+
+test('terrain night fill shares the lighting mask and releases it on unmount', () => {
+  const effect = new NightEffect(), texture = new Texture()
+  try {
+    effect.setLightingMask(texture)
+    assert.equal(effect.uniforms.get('lightingMask').value, texture)
+    assert.equal(effect.uniforms.get('hasLightingMask').value, true)
+    effect.setLightingMask(null)
+    assert.equal(effect.uniforms.get('lightingMask').value, null)
+    assert.equal(effect.uniforms.get('hasLightingMask').value, false)
+  } finally { effect.dispose(); texture.dispose() }
+})
+
+test('night terrain reconstruction keeps city lights fixed through a floating-origin shift', () => {
+  const ecefFromWorld = new Matrix4().makeTranslation(6378137, 0, 0)
+  const effect = new NightEffect(ecefFromWorld)
+  const camera = new PerspectiveCamera(58, 1.6, 0.3, 2e7)
+  const target = new Vector3(12, -3600, -16000)
+  const up = new Vector3(0, 1, 0)
+  const expectedEcef = target.clone().applyMatrix4(ecefFromWorld)
+  const uniform = key => effect.uniforms.get(key).value
+  try {
+    for (const shift of [0, 3000]) {
+      ecefFromWorld.makeTranslation(6378137, 0, shift)
+      camera.position.set(20, 5, -shift)
+      camera.updateMatrixWorld()
+      const point = target.clone().sub(new Vector3(0, 0, shift))
+      effect.setFrame(camera, 1, 0, up, [], null, 3600)
+      const ndc = point.clone().project(camera)
+      const logDepth = Math.log2(1 - point.clone().applyMatrix4(camera.matrixWorldInverse).z) / uniform('logFar')
+      const reconstructed = uniform('viewForward').clone()
+        .addScaledVector(uniform('viewRight'), ndc.x)
+        .addScaledVector(uniform('viewUp'), ndc.y)
+        .multiplyScalar(2 ** (logDepth * uniform('logFar')) - 1)
+        .add(uniform('eyePosition'))
+        .applyMatrix4(uniform('ecefFromWorld'))
+      assert.ok(reconstructed.distanceTo(expectedEcef) < 0.001)
+      assert.equal(uniform('night'), 1, 'city lights remain visible on moonless nights')
+      assert.ok(uniform('horizonDip') > 0.03, 'the horizon drops below eye level at cruise altitude')
+    }
+  } finally { effect.dispose() }
+})
 
 const wing = { span: 17, rootChord: 6, tipChord: 1.5, sweep: 28, dihedral: 5, thicknessRoot: 0.14, thicknessTip: 0.1 }
 
@@ -218,4 +341,66 @@ test('turning clouds back on rejects the previous effect’s history', () => {
     effect.dispose()
     replacement.dispose()
   }
+})
+
+test('city lamp grid coordinates are identical before and after a floating-origin shift', () => {
+  // A world frame rotated and placed on the Earth's surface, like the real one.
+  const place = (origin) => {
+    const up = origin.clone().normalize()
+    const east = new Vector3(-up.y, up.x, 0).normalize()
+    const north = up.clone().cross(east)
+    return new Matrix4().makeBasis(east, up, north.clone().negate()).setPosition(origin)
+  }
+  const ecefFromWorld = place(new Vector3(195000, -4745000, 4246000))
+  const effect = new NightEffect(ecefFromWorld)
+  const camera = new PerspectiveCamera(58, 1.6, 0.3, 2e7)
+  const pointEcef = new Vector3(196200, -4744100, 4246900)
+  const uniform = (key) => effect.uniforms.get(key).value
+  const ground = () => {
+    const world = pointEcef.clone().applyMatrix4(ecefFromWorld.clone().invert())
+    return [uniform('lightOrigin').x + world.dot(uniform('lightEast')), uniform('lightOrigin').y + world.dot(uniform('lightNorth'))]
+  }
+  try {
+    camera.updateMatrixWorld()
+    effect.setFrame(camera, 1, 0, new Vector3(0, 1, 0), [])
+    const before = ground()
+    // Rebase 3 km away: the world axes rotate slightly and the origin moves.
+    ecefFromWorld.copy(place(new Vector3(197800, -4743200, 4247300)))
+    effect.setFrame(camera, 1, 0, new Vector3(0, 1, 0), [])
+    const after = ground()
+    assert.ok(Math.hypot(after[0] - before[0], after[1] - before[1]) < 1e-3, 'lamps must not move when the origin does')
+  } finally { effect.dispose() }
+})
+
+test('landing guide overlay tests depth by hand and never enters the lighting mask', async () => {
+  const { OverlayPass } = await import('../src/scene/OverlayPass.ts')
+  const camera = new PerspectiveCamera(58, 1.6, 0.3, 2e7)
+  const pass = new OverlayPass(camera)
+  const material = new MeshBasicMaterial({ transparent: true, depthWrite: false })
+  try {
+    pass.prepare(material)
+    assert.equal(material.depthTest, false)
+    assert.equal(material.depthWrite, false)
+    const shader = { uniforms: {}, fragmentShader: 'void main() {\n#include <logdepthbuf_fragment>\n#include <opaque_fragment>\n}', vertexShader: '' }
+    material.onBeforeCompile(shader)
+    assert.match(shader.fragmentShader, /#include <packing>/)
+    assert.match(shader.fragmentShader, /overlayFragDepth > sceneDepth/)
+    assert.ok(shader.uniforms.overlayDepth, 'samples a copy of the scene depth')
+    const source = readFileSync(new URL('../src/scene/LandingGuide.tsx', import.meta.url), 'utf8')
+    assert.doesNotMatch(source, /layers\.enable/, 'mask-layer guide meshes leave the terrain behind them unlit (daylight at night)')
+  } finally { material.dispose(); pass.dispose() }
+})
+
+test('cloud overlay upsampling is depth-aware in the installed aerial perspective shader', async () => {
+  const { AerialPerspectiveEffect } = await import('@takram/three-atmosphere')
+  const { stabilizeAerialPerspective } = await import('../src/scene/cloudRendering.ts')
+  const effect = new AerialPerspectiveEffect(new PerspectiveCamera())
+  try {
+    stabilizeAerialPerspective(effect)
+    const once = effect.getFragmentShader()
+    assert.match(once, /vec4 overlay = sampleCloudOverlay\(uv\);/)
+    assert.match(once, /exp\(-abs\(texelDepth - center\)/)
+    stabilizeAerialPerspective(effect)
+    assert.equal(effect.getFragmentShader(), once, 'patching twice must not change the shader')
+  } finally { effect.dispose() }
 })

@@ -26,6 +26,7 @@ export const LIVERIES: Record<string, Livery> = {
   b737: { base: '#f4f6f8', belly: '#c9d1da', stripe: '#13407a', accent: '#e5a823', tail: '#13407a', tailLogo: '#e5a823', title: 'GEOFLIGHT' },
   a320: { base: '#f6f6f4', belly: '#d7dbe0', stripe: '#b3123c', accent: '#2b2f3a', tail: '#b3123c', tailLogo: '#ffffff', title: 'GEOFLIGHT' },
   bizjet: { base: '#f7f7f7', belly: '#2d3440', stripe: '#8a6d3b', accent: '#2d3440', tail: '#f7f7f7', tailLogo: '#8a6d3b', title: 'N350GF' },
+  longitude: { base: '#f8f8f6', belly: '#1c2a3f', stripe: '#1f6f86', accent: '#aeb6c0', tail: '#f8f8f6', tailLogo: '#1f6f86', title: 'N700GF' },
   c172: { base: '#fbfbf8', belly: '#fbfbf8', stripe: '#1f4f9c', accent: '#c8202f', tail: '#fbfbf8', tailLogo: '#1f4f9c', title: 'N172GF' },
 }
 
@@ -59,6 +60,13 @@ export function paintFuselage(p: FuselagePaint): Texture {
   c.height = H
   const g = c.getContext('2d')!
   const L = p.livery
+  // Lit cabin windows for night, in the same UV space (black elsewhere).
+  const ec = document.createElement('canvas')
+  ec.width = W / 2
+  ec.height = H / 2
+  const eg = ec.getContext('2d')!
+  eg.fillStyle = '#000'
+  eg.fillRect(0, 0, ec.width, ec.height)
   // u maps to x (around), v maps to y (along). Top u=0/1, right 0.25, bottom 0.5, left 0.75.
   g.fillStyle = L.base
   g.fillRect(0, 0, W, H)
@@ -103,6 +111,12 @@ export function paintFuselage(p: FuselagePaint): Texture {
       g.beginPath()
       g.roundRect(x, y, W * ww, H * wh, Math.min(W * ww, H * wh) * 0.45)
       g.fill()
+      // A few shades drawn or seats dark, so the row does not look printed on.
+      const lit = [1, 0.85, 1, 0.25, 0.9, 1, 0.7, 1, 0.1, 0.95][(i * 7 + (u < 0.5 ? 0 : 3)) % 10]
+      eg.fillStyle = `rgba(255, 214, 150, ${lit})`
+      eg.beginPath()
+      eg.roundRect(x / 2, y / 2, (W * ww) / 2, (H * wh) / 2, Math.min(W * ww, H * wh) * 0.22)
+      eg.fill()
     }
   }
   // Doors (outlines).
@@ -161,6 +175,10 @@ export function paintFuselage(p: FuselagePaint): Texture {
   tex.colorSpace = SRGBColorSpace
   tex.anisotropy = 8
   tex.wrapS = RepeatWrapping
+  const windows = new CanvasTexture(ec)
+  windows.colorSpace = SRGBColorSpace
+  windows.wrapS = RepeatWrapping
+  tex.userData.windows = windows
   return tex
 }
 
@@ -223,7 +241,8 @@ export function createMaterials(livery: Livery, fuselageMap: Texture, tailMap: T
     new MeshPhysicalMaterial({ color, roughness: rough, metalness: 0.05, clearcoat: 0.7, clearcoatRoughness: 0.18, side: DoubleSide })
   const navMat = (c: string) => new MeshBasicMaterial({ color: new Color(c).multiplyScalar(6), toneMapped: true })
   return {
-    fuselage: new MeshPhysicalMaterial({ map: fuselageMap, roughness: 0.3, metalness: 0.05, clearcoat: 0.8, clearcoatRoughness: 0.15, side: DoubleSide }),
+    // Cabin windows glow at night: the controller raises emissiveIntensity from 0.
+    fuselage: new MeshPhysicalMaterial({ map: fuselageMap, emissive: '#ffffff', emissiveMap: (fuselageMap.userData.windows as Texture | undefined) ?? null, emissiveIntensity: 0, roughness: 0.3, metalness: 0.05, clearcoat: 0.8, clearcoatRoughness: 0.15, side: DoubleSide }),
     paint: paint(livery.base),
     belly: paint(livery.belly),
     tail: new MeshPhysicalMaterial({ map: tailMap, roughness: 0.3, metalness: 0.05, clearcoat: 0.8, clearcoatRoughness: 0.15, side: DoubleSide }),

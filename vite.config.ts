@@ -35,10 +35,12 @@ export default defineConfig({
     chunkSizeWarningLimit: 4000,
     rollupOptions: {
       output: {
+        // Only three.js core gets its own chunk (the menu needs its math classes).
+        // Grouping the atmosphere, postprocessing and 3D Tiles libraries by hand made
+        // the bundler hoist three.js into that group, so the menu's first paint
+        // waited for ~1.7 MB of scene code; left alone, they load with the lazy scene.
         manualChunks(id: string) {
-          if (id.includes('node_modules/three/')) return 'three'
-          if (id.includes('3d-tiles-renderer')) return 'tiles'
-          if (id.includes('@takram') || id.includes('postprocessing')) return 'atmosphere'
+          if (id.includes('node_modules/three/build/')) return 'three'
           return undefined
         },
       },

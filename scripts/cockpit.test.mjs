@@ -83,3 +83,31 @@ test('animated controls follow the simulation, and throttle clicks stay within l
     assert.equal(Math.abs(fixture.cockpit.yoke.rotation.x), 0)
   } finally { fixture.dispose() }
 })
+
+test('Skyhawk cockpit builds with working throttle, flap and yoke controls', async () => {
+  const { build172Cockpit } = await import('../src/aircraft/cockpit172.ts')
+  const cockpit = build172Cockpit({ eye: new Vector3(-0.27, 0.55, -0.05) })
+  const meshes = []
+  cockpit.root.traverse((o) => { if (o instanceof Mesh) meshes.push(o) })
+  try {
+    for (const m of meshes) for (const n of m.geometry.attributes.position.array) assert.ok(Number.isFinite(n))
+    assert.ok(meshes.length < 130, `${meshes.length} draw calls for cockpit`)
+    const commands = new Set(meshes.filter((m) => m.userData.cockpitCommand).map((m) => m.userData.cockpitCommand.type))
+    assert.deepEqual([...commands].sort(), ['flaps_down', 'set_throttle'])
+    const s = new Float64Array(64)
+    cockpit.update(s, { pitch: 0, roll: 0, throttle: 0 })
+    const idle = cockpit.throttles[0].position.z
+    s[S.FLAPS] = 1
+    cockpit.update(s, { pitch: 0.5, roll: -0.5, throttle: 1 })
+    assert.ok(cockpit.throttles[0].position.z < idle, 'throttle pushes in for power')
+    assert.ok(cockpit.yoke.position.z > 0)
+    assert.ok(cockpit.yoke.userData.wheel.rotation.z > 0)
+    const grip = meshes.find((m) => m.userData.cockpitCommand?.type === 'set_throttle')
+    assert.equal(grip.userData.cockpitCommand.value, 1)
+  } finally {
+    cockpit.dispose()
+    const materials = new Set()
+    for (const m of meshes) { m.geometry.dispose(); materials.add(m.material) }
+    for (const m of materials) m.dispose()
+  }
+})

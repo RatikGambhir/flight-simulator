@@ -82,7 +82,9 @@ export class Ocean {
     const r = Math.hypot(_p.x, _p.y)
     const lat = (Math.atan2(_p.z, r * (1 - 0.00669438)) * 180) / Math.PI
     const lon = (Math.atan2(_p.y, _p.x) * 180) / Math.PI
-    geodeticToEcef(lat, lon, geoid, _p)
+    // Keep the ocean below zero-elevation DEM cells so the two surfaces
+    // do not compete for depth or incorrectly mask the terrain lighting.
+    geodeticToEcef(lat, lon, geoid - 0.75, _p)
     frame.ecefToWorld(_p.x, _p.y, _p.z, this.mesh.position)
     frame.enuInWorld(lat, lon, _e, _n, _u)
     this.mesh.quaternion.copy(new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), _u))

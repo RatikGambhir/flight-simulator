@@ -82,7 +82,9 @@ export function SkyEnvironment({ atmosphere }: { atmosphere: React.RefObject<Atm
     const up = UP
     const elev = sun.dot(up)
     const l = last.current
-    if (now - l.t < 3000 && Math.abs(elev - l.elev) < 0.02) return
+    // The gradient only follows the sun's elevation, which changes slowly: refresh on a
+    // real change rather than on a timer (each refresh re-filters a cube map).
+    if (Math.abs(elev - l.elev) < 0.01 && (now - l.t < 30000 || Math.abs(elev - l.elev) < 0.002)) return
     l.t = now
     l.elev = elev
     const day = Math.max(0, Math.min(1, (elev + 0.08) / 0.4))
@@ -94,7 +96,8 @@ export function SkyEnvironment({ atmosphere }: { atmosphere: React.RefObject<Atm
     u.horizon.value.setRGB(0.22 * day + 0.25 * golden + 0.004, 0.3 * day + 0.12 * golden + 0.005, 0.42 * day + 0.04 * golden + 0.01)
     u.ground.value.setRGB(0.06 * day + 0.002, 0.06 * day + 0.002, 0.05 * day + 0.002)
     u.sunColor.value.setRGB(1.0, 0.85 + 0.15 * (1 - golden), 0.7 + 0.3 * (1 - golden)).multiplyScalar(elev > -0.02 ? 1 : 0)
-    const rt = pmrem.fromScene(envScene, 0, 0.1, 100)
+    // A smooth gradient needs no detail: a 64px cube filters ~16x faster than the default 256.
+    const rt = pmrem.fromScene(envScene, 0, 0.1, 100, { size: 64 })
     target.current?.dispose()
     target.current = rt
     scene.environment = rt.texture

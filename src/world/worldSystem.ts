@@ -74,8 +74,18 @@ export class WorldSystem {
    * ellipsoid; lifting those layers by N makes them true ellipsoid heights.
    */
   geoidOffset = 0
+  private syncedVersion = -1
+  private syncedGeoid = NaN
 
+  /**
+   * Places the tile groups in the current floating-origin frame. Forcing a world-matrix
+   * update walks every loaded tile mesh, so it runs only when the origin or geoid moved;
+   * the renderer keeps newly loaded tiles current on its own.
+   */
   syncTransforms() {
+    if (frame.version === this.syncedVersion && this.geoidOffset === this.syncedGeoid) return
+    this.syncedVersion = frame.version
+    this.syncedGeoid = this.geoidOffset
     for (const l of this.layers) {
       l.tiles.group.matrix.copy(frame.worldFromEcef)
       // World Y is "up" at the origin, so this shifts the layer along the local vertical.
@@ -154,9 +164,14 @@ export class WorldSystem {
           _sphere.copy(g.boundingSphere).applyMatrix4(m.matrixWorld)
           if (ray.intersectsSphere(_sphere) && g.attributes.position && g.attributes.position.count > 500) cands.push(m)
         })
-        for (const m of cands) {
+        // A BVH over a dense photogrammetry tile takes several milliseconds. Build at
+        // most one per ray (the probes run 10-30 times a second); unbuilt meshes
+        // still raycast correctly, just without acceleration.
+        if (cands.length > 0) {
+          let largest = cands[0]
+          for (const m of cands) if (m.geometry.attributes.position.count > largest.geometry.attributes.position.count) largest = m
           try {
-            m.geometry.computeBoundsTree()
+            largest.geometry.computeBoundsTree()
           } catch {
             // brute-force raycast fallback
           }

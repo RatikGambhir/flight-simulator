@@ -9,6 +9,7 @@ import {
   Group,
   Mesh,
   Object3D,
+  PointLight,
   SphereGeometry,
   Vector3,
   type BufferGeometry,
@@ -57,6 +58,15 @@ export interface Spinner {
   disc?: Mesh
 }
 
+export type LampKind = 'navRed' | 'navGreen' | 'navWhite' | 'strobe' | 'beacon' | 'landing'
+
+/** A lamp on the airframe, drawn as a glow at night. */
+export interface ModelLamp {
+  kind: LampKind
+  /** Position in model space. */
+  at: Vector3
+}
+
 export interface AircraftModel {
   id: string
   root: Group
@@ -65,6 +75,9 @@ export interface AircraftModel {
   spinners: Spinner[]
   strobes: Mesh[]
   beacons: Mesh[]
+  lamps: ModelLamp[]
+  /** Lights washing the fin at night (off by default). */
+  logoLights: PointLight[]
   /** Hidden in the cockpit view (fuselage shell etc). */
   exteriorOnly: Object3D[]
   eye: Vector3
@@ -283,22 +296,25 @@ function gearLeg(
   model.gear.push({ pivot, axis, retracted })
 }
 
-function navLights(model: AircraftModel, tipR: Vector3, tail: Vector3, top: Vector3, bottom: Vector3) {
+function navLights(model: AircraftModel, tipR: Vector3, tail: Vector3, top: Vector3, bottom: Vector3, extra: { landing?: Vector3[]; logo?: { at: Vector3; reach: number } } = {}) {
   const dot = (r: number) => new SphereGeometry(r, 10, 8)
   const m = model.materials
+  const tipL = tipR.clone().setX(-tipR.x)
   const red = new Mesh(dot(0.09), m.navRed)
-  red.position.copy(tipR).setX(-tipR.x)
+  red.position.copy(tipL)
   const green = new Mesh(dot(0.09), m.navGreen)
   green.position.copy(tipR)
   const white = new Mesh(dot(0.08), m.navWhite)
   white.position.copy(tail)
   model.root.add(red, green, white)
-  for (const p of [tipR.clone(), tipR.clone().setX(-tipR.x), tail.clone()]) {
+  model.lamps.push({ kind: 'navRed', at: tipL.clone() }, { kind: 'navGreen', at: tipR.clone() }, { kind: 'navWhite', at: tail.clone() })
+  for (const p of [tipR.clone(), tipL.clone(), tail.clone()]) {
     const s = new Mesh(dot(0.14), m.strobe)
     s.position.copy(p).add(new Vector3(0, 0, 0.12))
     s.visible = false
     model.root.add(s)
     model.strobes.push(s)
+    model.lamps.push({ kind: 'strobe', at: s.position.clone() })
   }
   for (const p of [top, bottom]) {
     const b = new Mesh(dot(0.12), m.navRed)
@@ -306,6 +322,23 @@ function navLights(model: AircraftModel, tipR: Vector3, tail: Vector3, top: Vect
     b.visible = false
     model.root.add(b)
     model.beacons.push(b)
+    model.lamps.push({ kind: 'beacon', at: p.clone() })
+  }
+  for (const p of extra.landing ?? []) {
+    const lens = new Mesh(dot(0.1), m.navWhite)
+    lens.position.copy(p)
+    lens.scale.set(1, 1, 0.5)
+    model.root.add(lens)
+    model.lamps.push({ kind: 'landing', at: p.clone() })
+  }
+  if (extra.logo) {
+    // One lamp either side, low and outboard, washing the fin like stabilizer-mounted logo lights.
+    for (const side of [1, -1]) {
+      const light = new PointLight('#fff1dc', 0, extra.logo.reach * 2.2, 2)
+      light.position.copy(extra.logo.at).add(new Vector3(side * extra.logo.reach * 0.75, -extra.logo.reach * 0.45, -extra.logo.reach * 0.1))
+      model.root.add(light)
+      model.logoLights.push(light)
+    }
   }
 }
 
@@ -318,6 +351,8 @@ function newModel(id: string, cockpit: AircraftModel['cockpit'], m: AircraftMate
     spinners: [],
     strobes: [],
     beacons: [],
+    lamps: [],
+    logoLights: [],
     exteriorOnly: [],
     eye: new Vector3(),
     cockpit,
@@ -447,7 +482,10 @@ function buildAirliner(s: AirlinerSpec): AircraftModel {
   // Lights
   const tipR = model.wingTipRight.clone()
   tipR.x = s.wingAt.x + s.wing.span + 0.05
-  navLights(model, tipR, new Vector3(0, s.radius * 0.35 + 0.3, s.tailZ + 0.05), new Vector3(0, s.radius + 0.06, 0), new Vector3(0, -s.radius - 0.05, 1))
+  navLights(model, tipR, new Vector3(0, s.radius * 0.35 + 0.3, s.tailZ + 0.05), new Vector3(0, s.radius + 0.06, 0), new Vector3(0, -s.radius - 0.05, 1), {
+    landing: [new Vector3(s.radius + 0.25, s.wingAt.y + 0.12, s.wingAt.z + 0.45), new Vector3(-s.radius - 0.25, s.wingAt.y + 0.12, s.wingAt.z + 0.45), new Vector3(0, -s.radius * 0.95, ng.z - 0.35)],
+    logo: { at: new Vector3(0, s.finAt.y + s.fin.span * 0.5, s.finAt.z + s.fin.rootChord * 0.75), reach: s.fin.span * 0.6 },
+  })
 
   model.eye.set(-0.52, 0.78, s.noseZ + 2.95)
   model.length = L
@@ -576,9 +614,129 @@ function buildBizjet(): AircraftModel {
   gearLeg(model, root, new Vector3(0, -R * 0.7, -7.4), -1.47 + 0.23, 0.23, [-0.12, 0.12], 'x', Math.PI / 2 * 0.97, m)
   const tipR = model.wingTipRight.clone()
   tipR.x = wingAt.x + wing.span + 0.05
-  navLights(model, tipR, finTop.clone().add(new Vector3(0, 0.1, 2.3)), new Vector3(0, R + 0.05, 1), new Vector3(0, -R - 0.03, 0.5))
+  navLights(model, tipR, finTop.clone().add(new Vector3(0, 0.1, 2.3)), new Vector3(0, R + 0.05, 1), new Vector3(0, -R - 0.03, 0.5), {
+    landing: [new Vector3(R + 0.12, wingAt.y + 0.08, wingAt.z + 0.3), new Vector3(-R - 0.12, wingAt.y + 0.08, wingAt.z + 0.3)],
+    logo: { at: new Vector3(0, finAt.y + fin.span * 0.5, finAt.z + fin.rootChord * 0.75), reach: fin.span * 0.6 },
+  })
   model.eye.set(-0.42, 0.42, noseZ + 2.45)
   model.length = L
+  return model
+}
+
+// ---------------------------------------------------------------------------
+// Longitude-style super-midsize business jet: long cabin, high-aspect swept
+// wing with tall canted winglets, big aft-mounted turbofans on airfoil pylons,
+// swept T-tail and twin-wheel main gear. Overall ~22.3 m long, ~21 m span.
+// ---------------------------------------------------------------------------
+
+function buildLongitude(): AircraftModel {
+  const livery = LIVERIES.longitude
+  const noseZ = -10.4
+  const tailZ = 10.7
+  const R = 1.1
+  const L = tailZ - noseZ
+  const v = (z: number) => (z - noseZ) / L
+  const fusTex = paintFuselage({
+    livery,
+    windowFrom: v(noseZ + 4.7),
+    windowTo: v(noseZ + 12.9),
+    windowCount: 8,
+    windowU: 0.212,
+    windowSize: [0.03, 0.03],
+    cockpitV: [v(noseZ + 1.0), v(noseZ + 2.25)],
+    cockpitU: [0.08, 0.21],
+    doors: [v(noseZ + 3.5)],
+    titleV: v(noseZ + 14.6),
+  })
+  const m = createMaterials(livery, fusTex, paintTail(livery))
+  const model = newModel('longitude', 'bizjet', m)
+  const root = model.root
+  const fus = mesh(
+    tubeGeometry(airlinerStations({ noseZ, tailZ, radius: R, noseLen: 3.9, tailLen: 7.4, noseDroop: 0.2, noseBluntness: 0.68, upsweep: 0.38, tailEndRadius: 0.12 }), 64),
+    m.fuselage,
+    root,
+    'fuselage',
+  )
+  model.exteriorOnly.push(fus)
+
+  // Wing: slender and moderately swept, mounted low under the cabin floor.
+  const wing: WingParams = { span: 9.5, rootChord: 4.05, tipChord: 1.15, sweep: 31, dihedral: 3.5, thicknessRoot: 0.13, thicknessTip: 0.1 }
+  const wingAt = new Vector3(0.6, -0.74, -2.9)
+  const fairing = new SphereGeometry(1, 32, 16)
+  fairing.scale(R * 0.92, R * 0.4, wing.rootChord * 0.82)
+  fairing.translate(0, -R * 0.64, wingAt.z + wing.rootChord * 0.52)
+  model.exteriorOnly.push(mesh(fairing, m.belly, root))
+  buildWings(model, root, {
+    params: wing,
+    at: wingAt,
+    flaps: [
+      [0.05, 0.36],
+      [0.38, 0.66],
+    ],
+    aileron: [0.68, 0.95],
+    spoilers: [0.22, 0.64],
+    mat: m.wing,
+    surfaceMat: m.wingDark,
+  })
+  // Tall, raked winglets blended outward.
+  const winglet: WingParams = { span: 1.45, rootChord: 1.15, tipChord: 0.38, sweep: 50, dihedral: 0, thicknessRoot: 0.09, thicknessTip: 0.08, vertical: true }
+  const wingletCant = 0.3
+  for (const side of [1, -1] as const) {
+    const g = new Group()
+    g.position.copy(wingPoint(wing, 1, 0, side).add(new Vector3(wingAt.x * side, wingAt.y, wingAt.z)))
+    g.rotation.z = -side * wingletCant
+    root.add(g)
+    mesh(wingPanelGeometry(winglet, 0, 1, 0, 1, side, 5, 12), m.paint, g)
+  }
+  model.span = 2 * (wingAt.x + wing.span + Math.sin(wingletCant) * winglet.span)
+
+  // Aft-mounted turbofans on short airfoil-section pylons.
+  const engX = 2.02
+  const engY = 0.6
+  const engLen = 3.5
+  const engR = 0.72
+  const pylon: WingParams = { span: 0.85, rootChord: 2.3, tipChord: 1.9, sweep: 12, dihedral: 4, thicknessRoot: 0.11, thicknessTip: 0.11 }
+  for (const side of [1, -1] as const) {
+    turbofan(model, root, new Vector3(engX * side, engY, 3.6), engLen, engR, m)
+    const g = new Group()
+    g.position.set(0.62 * side, engY - 0.08, 4.25)
+    root.add(g)
+    mesh(wingPanelGeometry(pylon, 0, 1, 0, 1, side, 2, 12), m.paint, g)
+  }
+
+  // Swept T-tail with a dorsal fillet ahead of the fin.
+  const fin: WingParams = { span: 3.6, rootChord: 4.2, tipChord: 2.4, sweep: 40, dihedral: 0, thicknessRoot: 0.11, thicknessTip: 0.1, vertical: true }
+  const finAt = new Vector3(0, 0.72, 5.6)
+  tailSurface(model, root, fin, finAt, 'rudder', m.tail, m.tail, 0.72)
+  const dorsal: WingParams = { span: 0.7, rootChord: 3.2, tipChord: 0.5, sweep: 74, dihedral: 0, thicknessRoot: 0.06, thicknessTip: 0.1, vertical: true }
+  const dg = new Group()
+  dg.position.set(0, finAt.y + 0.12, finAt.z - 2.3)
+  root.add(dg)
+  mesh(wingPanelGeometry(dorsal, 0, 1, 0, 1, 1, 3, 10), m.paint, dg)
+  const finTop = wingPoint(fin, 1, 0, 1).add(finAt)
+  const hstab: WingParams = { span: 3.7, rootChord: 2.1, tipChord: 0.95, sweep: 30, dihedral: -1.5, thicknessRoot: 0.1, thicknessTip: 0.09 }
+  tailSurface(model, root, hstab, finTop.clone().add(new Vector3(0, -0.04, 0.08)), 'elevator', m.paint, m.wingDark)
+  // Bullet fairing at the fin/stabilizer junction.
+  const bullet = new SphereGeometry(1, 20, 12)
+  bullet.scale(0.2, 0.17, 1.75)
+  bullet.translate(0, finTop.y - 0.02, finTop.z + 1.1)
+  mesh(bullet, m.paint, root)
+
+  // Gear: twin-wheel mains retracting inboard, twin nose wheels retracting forward.
+  const bottom = 1.65
+  for (const side of [1, -1] as const) {
+    gearLeg(model, root, new Vector3(1.7 * side, -0.7, 0.9), -bottom + 0.36, 0.36, [-0.17, 0.17], 'z', -side * (Math.PI / 2) * 0.98, m)
+  }
+  gearLeg(model, root, new Vector3(0, -R * 0.7, -8.3), -bottom + 0.08 + 0.24, 0.24, [-0.13, 0.13], 'x', (Math.PI / 2) * 0.97, m)
+
+  const tipR = model.wingTipRight.clone()
+  tipR.x = wingAt.x + wing.span + 0.05
+  navLights(model, tipR, new Vector3(0, finTop.y + 0.05, finTop.z + 2.9), new Vector3(0, R + 0.05, 0.5), new Vector3(0, -R - 0.03, 0.8), {
+    landing: [new Vector3(R + 0.12, wingAt.y + 0.08, wingAt.z + 0.3), new Vector3(-R - 0.12, wingAt.y + 0.08, wingAt.z + 0.3)],
+    logo: { at: new Vector3(0, finAt.y + fin.span * 0.5, finAt.z + fin.rootChord * 0.75), reach: fin.span * 0.6 },
+  })
+  model.eye.set(-0.42, 0.42, noseZ + 2.65)
+  model.length = finTop.z + wingPoint(hstab, 1, 1, 1).z + 0.08 - noseZ
   return model
 }
 
@@ -704,7 +862,7 @@ function buildCessna(): AircraftModel {
   const nleg = new CylinderGeometry(0.04, 0.04, 0.55, 8)
   mesh(nleg, m.chrome, root).position.set(0, -0.55, -1.55)
   const tipR = new Vector3(outAt.x + wingOut.span + 0.03, outAt.y + 0.08, -0.3)
-  navLights(model, tipR, new Vector3(0, 1.65, 5.95), new Vector3(0, 1.95, 5.6), new Vector3(0, -0.55, 0.8))
+  navLights(model, tipR, new Vector3(0, 1.65, 5.95), new Vector3(0, 1.95, 5.6), new Vector3(0, -0.55, 0.8), { landing: [new Vector3(0, -0.3, -2.2)] })
   // Pilot eye: left seat.
   model.eye.set(-0.27, 0.55, -0.05)
   model.length = L
@@ -718,6 +876,7 @@ const BUILDERS: Record<string, () => AircraftModel> = {
   },
   a320: () => buildAirliner(A320),
   bizjet: buildBizjet,
+  longitude: buildLongitude,
   c172: buildCessna,
 }
 

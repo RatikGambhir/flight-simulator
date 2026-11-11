@@ -2,8 +2,9 @@
 // and animated yoke/sidestick and throttle levers.
 
 import { BoxGeometry, CylinderGeometry, DoubleSide, Group, Mesh, MeshStandardMaterial, Object3D, PlaneGeometry, TorusGeometry, Vector3, type Material } from 'three'
-import { drawEICAS, drawND, drawPFD, drawSixPack, InstrumentCanvas } from './instruments'
+import { drawEICAS, drawND, drawPFD, InstrumentCanvas } from './instruments'
 import type { AircraftModel } from './models'
+import { build172Cockpit } from './cockpit172'
 import { build737Cockpit } from './cockpit737'
 
 export interface Cockpit {
@@ -53,45 +54,45 @@ function windowFrame(parent: Object3D, mat: Material, eye: Vector3, width: numbe
 
 export function buildCockpit(model: AircraftModel): Cockpit {
   if (model.id === 'b737') return build737Cockpit(model)
+  if (model.cockpit === 'ga') return build172Cockpit(model)
   const root = new Group()
   root.name = 'cockpit'
   const eye = model.eye
-  const ga = model.cockpit === 'ga'
   const sidestick = model.id === 'a320'
-  const shell = new MeshStandardMaterial({ color: ga ? '#4a453f' : '#2b3036', roughness: 0.92, metalness: 0.02, side: DoubleSide, envMapIntensity: 0.3 })
-  const panelMat = new MeshStandardMaterial({ color: ga ? '#1e1f21' : '#22262b', roughness: 0.75, metalness: 0.1, envMapIntensity: 0.3 })
+  const shell = new MeshStandardMaterial({ color: '#2b3036', roughness: 0.92, metalness: 0.02, side: DoubleSide, envMapIntensity: 0.3 })
+  const panelMat = new MeshStandardMaterial({ color: '#22262b', roughness: 0.75, metalness: 0.1, envMapIntensity: 0.3 })
   const glare = new MeshStandardMaterial({ color: '#101113', roughness: 0.97, envMapIntensity: 0.2 })
-  const frameMat = new MeshStandardMaterial({ color: ga ? '#8f8a82' : '#3a4047', roughness: 0.7, side: DoubleSide, envMapIntensity: 0.3 })
-  const seatMat = new MeshStandardMaterial({ color: ga ? '#5a4632' : '#2d3036', roughness: 0.9 })
+  const frameMat = new MeshStandardMaterial({ color: '#3a4047', roughness: 0.7, side: DoubleSide, envMapIntensity: 0.3 })
+  const seatMat = new MeshStandardMaterial({ color: '#2d3036', roughness: 0.9 })
   const blackMat = new MeshStandardMaterial({ color: '#0f1012', roughness: 0.6, metalness: 0.3 })
 
-  const width = ga ? 1.05 : model.cockpit === 'bizjet' ? 1.5 : 1.75
-  const panelDist = ga ? 0.62 : 0.78
-  const panelTop = eye.y - (ga ? 0.24 : 0.3)
-  const panelH = ga ? 0.42 : 0.5
+  const width = model.cockpit === 'bizjet' ? 1.5 : 1.75
+  const panelDist = 0.78
+  const panelTop = eye.y - 0.3
+  const panelH = 0.5
   const zPanel = eye.z - panelDist
-  const centerX = ga ? 0 : 0
+  const centerX = 0
   const instruments: InstrumentCanvas[] = []
 
   // Main panel, slightly tilted back.
   box(width, panelH, 0.06, panelMat, root, centerX, panelTop - panelH / 2, zPanel, -0.12)
   // Glareshield
-  box(width, 0.04, ga ? 0.16 : 0.22, glare, root, centerX, panelTop + 0.02, zPanel - (ga ? 0.06 : 0.09))
+  box(width, 0.04, 0.22, glare, root, centerX, panelTop + 0.02, zPanel - 0.09)
   // Floor, side walls, ceiling and rear bulkhead to enclose the view.
-  const floorY = eye.y - (ga ? 0.95 : 1.15)
-  const ceilY = eye.y + (ga ? 0.42 : 0.5)
+  const floorY = eye.y - 1.15
+  const ceilY = eye.y + 0.5
   const halfW = width / 2 + 0.2
   box(halfW * 2, 0.05, 2.6, shell, root, 0, floorY, eye.z - 0.2)
   for (const s of [1, -1]) box(0.05, eye.y - 0.25 - floorY, 2.6, shell, root, halfW * s, (eye.y - 0.25 + floorY) / 2, eye.z - 0.2)
-  if (!ga) box(halfW * 2, 0.05, 1.6, shell, root, 0, ceilY, eye.z + 0.2)
+  box(halfW * 2, 0.05, 1.6, shell, root, 0, ceilY, eye.z + 0.2)
   box(halfW * 2, ceilY - floorY, 0.05, shell, root, 0, (ceilY + floorY) / 2, eye.z + 1.05)
   // Nose cone below the panel (blocks the view of the fuselage interior).
   box(width, panelTop - panelH - floorY, 0.05, shell, root, 0, (panelTop - panelH + floorY) / 2, zPanel - 0.05)
 
-  windowFrame(root, frameMat, eye, width, panelDist + (ga ? 0.15 : 0.32), ceilY - 0.02, panelTop + 0.06, ga ? 0.55 : 0.25)
+  windowFrame(root, frameMat, eye, width, panelDist + 0.32, ceilY - 0.02, panelTop + 0.06, 0.25)
 
   // Overhead panel (airliners) with switch rows.
-  if (!ga) {
+  {
     const ov = box(width * 0.55, 0.05, 0.8, panelMat, root, 0, ceilY - 0.06, eye.z - 0.25, 0.25)
     for (let i = 0; i < 6; i++) box(width * 0.45, 0.012, 0.02, blackMat, ov, 0, -0.03, -0.3 + i * 0.12)
   }
@@ -99,11 +100,7 @@ export function buildCockpit(model: AircraftModel): Cockpit {
   // Displays
   const tilt = -0.12
   const faceZ = zPanel + 0.035
-  if (ga) {
-    const six = new InstrumentCanvas(1024, 600, drawSixPack)
-    instruments.push(six)
-    screen(six, 0.62, 0.36, root, new Vector3(eye.x + 0.05, panelTop - 0.22, faceZ), tilt)
-  } else {
+  {
     const pfd = new InstrumentCanvas(512, 512, drawPFD)
     const nd = new InstrumentCanvas(512, 512, drawND)
     const eicas = new InstrumentCanvas(512, 512, drawEICAS)
@@ -124,7 +121,7 @@ export function buildCockpit(model: AircraftModel): Cockpit {
   let yoke: Object3D | null = null
   let stick: Object3D | null = null
   const yokes: Object3D[] = []
-  const seats = ga ? [eye.x, -eye.x] : [eye.x, -eye.x]
+  const seats = [eye.x, -eye.x]
   for (const sx of seats) {
     if (sidestick) {
       const st = new Group()
@@ -141,15 +138,15 @@ export function buildCockpit(model: AircraftModel): Cockpit {
       const wheel = new Group()
       wheel.position.set(0, 0.12, 0)
       col.add(wheel)
-      const rim = new Mesh(new TorusGeometry(ga ? 0.13 : 0.15, 0.015, 8, 28, Math.PI * 1.2), blackMat)
+      const rim = new Mesh(new TorusGeometry(0.15, 0.015, 8, 28, Math.PI * 1.2), blackMat)
       rim.rotation.z = Math.PI * -0.1 + Math.PI
       wheel.add(rim)
-      box(ga ? 0.24 : 0.28, 0.04, 0.03, blackMat, wheel, 0, -0.01, 0)
-      const shaft = new Mesh(new CylinderGeometry(0.02, 0.02, ga ? 0.32 : 0.12, 8), blackMat)
+      box(0.28, 0.04, 0.03, blackMat, wheel, 0, -0.01, 0)
+      const shaft = new Mesh(new CylinderGeometry(0.02, 0.02, 0.12, 8), blackMat)
       shaft.rotation.x = Math.PI / 2
-      shaft.position.z = ga ? -0.16 : -0.06
+      shaft.position.z = -0.06
       wheel.add(shaft)
-      if (!ga) box(0.06, 0.55, 0.06, blackMat, col, 0, -0.3, 0)
+      box(0.06, 0.55, 0.06, blackMat, col, 0, -0.3, 0)
       if (sx === eye.x) yoke = col
       yokes.push(col)
     }
@@ -157,13 +154,13 @@ export function buildCockpit(model: AircraftModel): Cockpit {
 
   // Throttle levers
   const throttles: Object3D[] = []
-  const nEng = ga ? 1 : 2
+  const nEng = 2
   for (let i = 0; i < nEng; i++) {
     const lever = new Group()
-    lever.position.set(ga ? 0.02 : (i - 0.5) * 0.08, ga ? panelTop - panelH + 0.06 : floorY + 0.78, ga ? zPanel + 0.05 : eye.z - 0.45)
+    lever.position.set((i - 0.5) * 0.08, floorY + 0.78, eye.z - 0.45)
     root.add(lever)
     box(0.015, 0.22, 0.015, blackMat, lever, 0, 0.11, 0)
-    box(ga ? 0.04 : 0.06, 0.03, 0.03, ga ? new MeshStandardMaterial({ color: '#111' }) : blackMat, lever, 0, 0.23, 0)
+    box(0.06, 0.03, 0.03, blackMat, lever, 0, 0.23, 0)
     throttles.push(lever)
   }
 

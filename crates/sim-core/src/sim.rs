@@ -1152,7 +1152,7 @@ mod tests {
 
     #[test]
     fn cruise_is_stable_hands_off() {
-        for ac in ["b737", "a320", "bizjet", "c172"] {
+        for ac in ["b737", "a320", "bizjet", "longitude", "c172"] {
             let mut sim = Simulation::new();
             sim.command(SimCommand::SetAircraft { id: ac.into() });
             sim.command(SimCommand::Spawn(SpawnRequest {
@@ -1388,7 +1388,7 @@ mod tests {
     #[test]
     fn approach_attitudes_are_realistic() {
         // Stabilised on a 3° glideslope at Vref with landing flaps.
-        for (ac, lo, hi) in [("b737", 1.0, 4.5), ("a320", 1.0, 4.5), ("bizjet", 0.5, 5.0), ("c172", -4.0, 1.5)] {
+        for (ac, lo, hi) in [("b737", 1.0, 4.5), ("a320", 1.0, 4.5), ("bizjet", 0.5, 5.0), ("longitude", 0.5, 5.0), ("c172", -4.0, 1.5)] {
             let mut sim = Simulation::new();
             sim.command(SimCommand::SetAircraft { id: ac.into() });
             sim.command(SimCommand::SpawnRunway { airport: "KORD".into(), runway: Some("28R".into()), kind: RunwaySpawnKind::Approach });

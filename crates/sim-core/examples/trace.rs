@@ -2,7 +2,7 @@
 use sim_core::{snap, ControlInput, SimCommand, Simulation};
 
 fn main() {
-    for ac in ["b737", "a320", "bizjet", "c172"] {
+    for ac in ["b737", "a320", "bizjet", "longitude", "c172"] {
         let mut sim = Simulation::new();
         sim.command(SimCommand::SetAircraft { id: ac.into() });
         let s = sim.snapshot();

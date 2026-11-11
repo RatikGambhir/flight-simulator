@@ -4,8 +4,15 @@ import { sound } from './audio/sound'
 import { sim } from './sim/simClient'
 import type { SimCommand } from './sim/protocol'
 import { useApp, type Settings, type SpawnChoice } from './state/store'
+import { simWeather, useWeather } from './weather/liveWeather'
 
+/** Wind and turbulence for the sim: the live report when enabled and available, else the manual settings. */
 export function weatherCommand(s: Settings): SimCommand {
+  const live = s.liveWeather ? useWeather.getState().conditions : null
+  if (live) {
+    const w = simWeather(live)
+    return { type: 'set_weather', wind_from_deg: w.windFromDeg, wind_speed_kt: w.windSpeedKt, turbulence: w.turbulence }
+  }
   return { type: 'set_weather', wind_from_deg: s.windFromDeg, wind_speed_kt: s.windSpeedKt, turbulence: s.turbulence }
 }
 

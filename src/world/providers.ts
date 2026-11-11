@@ -176,6 +176,15 @@ export function createLayers(settings: Settings, renderer: WebGLRenderer): { lay
       tiles.registerPlugin(new UnloadTilesPlugin({ delay: 4000 }))
       tune(tiles, q)
       sharpenImagery(tiles, renderer)
+      // The terrain is raised to its real height in the vertex shader, but three.js culls each
+      // mesh by the bounds of the flat, sea-level grid underneath. Low over high ground (parked at
+      // an airport 200 m up) that flat grid is below the bottom of the view, so the tiles nearest
+      // the camera vanished. The tile renderer already culls by each tile's true volume.
+      tiles.addEventListener('load-model', (e) => {
+        ;(e as unknown as { scene: Object3D }).scene.traverse((o) => {
+          o.frustumCulled = false
+        })
+      })
       // A terrain tile's "parse" step is mostly waiting on its elevation and imagery
       // downloads, so the default of 4 concurrent parses throttles the network.
       tiles.parseQueue.maxJobs = 16

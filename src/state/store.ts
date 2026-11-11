@@ -25,9 +25,13 @@ export interface Settings {
   openImagery: OpenImagery
   quality: Quality
   renderScale: number
+  /** Lower the render resolution automatically while frames run long. */
+  adaptiveResolution: boolean
   clouds: boolean
   cloudCoverage: number
   realTime: boolean
+  /** Clouds, haze, precipitation and wind from the Google Weather API at the aircraft. */
+  liveWeather: boolean
   /** Local solar hour (0-24) when realTime is off. */
   timeOfDay: number
   invertPitch: boolean
@@ -56,9 +60,11 @@ const DEFAULTS: Settings = {
   openImagery: 'esri',
   quality: 'high',
   renderScale: 1,
+  adaptiveResolution: true,
   clouds: true,
   cloudCoverage: 0.35,
-  realTime: false,
+  liveWeather: !!env.VITE_GOOGLE_MAPS_API_KEY,
+  realTime: true,
   timeOfDay: 15.5,
   invertPitch: false,
   sensitivity: 0.75,
@@ -82,7 +88,12 @@ function loadSettings(): Settings {
   let s = DEFAULTS
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) s = { ...DEFAULTS, ...(JSON.parse(raw) as Partial<Settings>) }
+    if (raw) {
+      const stored = JSON.parse(raw) as Partial<Settings>
+      s = { ...DEFAULTS, ...stored }
+      // Settings saved before live weather existed: adopt the real-world defaults once.
+      if (stored.liveWeather === undefined) s = { ...s, realTime: true, liveWeather: s.googleApiKey.trim().length > 10 }
+    }
   } catch {
     // storage unavailable
   }

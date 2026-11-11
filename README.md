@@ -4,7 +4,7 @@ A macOS desktop flight simulator for exploring a real, photorealistic Earth.
 Built with **Tauri 2 + Rust** (simulation) and **React + TypeScript + Three.js /
 React Three Fiber** (rendering and UI).
 
-Pick an aircraft (737‑style, A320‑style, business jet or Cessna‑style single), choose any of
+Pick an aircraft (737‑style, A320‑style, business jet, Longitude‑style super‑midsize jet or Cessna‑style single), choose any of
 ~9,600 real airports or any point on the globe, take off with one simple control
 scheme, and fly over streamed, geographically accurate scenery: Google Photorealistic
 3D Tiles (real buildings and landmarks), Cesium ion, or a free open‑data terrain mode.
@@ -320,7 +320,17 @@ You can drop the original `stbn.bin` in its place.
   below sea level (e.g. Dutch polders, the Dead Sea).
 * **Volumetric clouds** are GPU‑heavy. On older Macs lower *Scenery detail* (which also
   lowers cloud quality) or turn clouds off in Settings.
-* **Weather**: wind and turbulence affect the flight model; precipitation and low
-  visibility are not simulated.
+* **Weather**: with *Live weather* on (Settings → Weather; needs the Weather API enabled on
+  the Google Maps Platform key) cloud cover, haze, rain, snow, wind and turbulence follow
+  the Google Weather API report at the aircraft. The report describes surface conditions:
+  cloud layers sit at fixed heights, precipitation stops above the low deck, and haze is
+  capped so the ground stays visible. Thunderstorms add turbulence but no lightning.
+* **Night** (real time, or the Night preset) uses a subtle cool terrain fill, moon-aware
+  aircraft lighting, airglow and occluded aircraft lamps. City lights are not simulated.
+  Stars retain catalog positions, colors and magnitudes, fade through twilight and dim
+  under moonlight. The Moon uses today’s date and aircraft position for its phase,
+  tilt, angular size and parallax, with a NASA LRO surface map (see
+  [asset attribution](public/atmosphere/README.md)). Manual time keeps today’s date;
+  daylight hours therefore follow the season.
 * **Aircraft** are original procedural models in the style of each type — not licensed
   replicas of manufacturer designs or liveries.

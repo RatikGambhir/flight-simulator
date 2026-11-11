@@ -7,6 +7,8 @@ import { sim } from '../sim/simClient'
 import { useAircraftList } from './useAircraftList'
 import { useApp } from '../state/store'
 import { angleDelta, navigationTo } from '../navigation/route'
+import { landingRunway, lineupHeading } from '../navigation/runwayGuide'
+import { useWeather } from '../weather/liveWeather'
 
 // Intl formatters are expensive to create; build them once.
 const FORMATTERS = [0, 1, 2].map((d) => new Intl.NumberFormat('en-US', { maximumFractionDigits: d, minimumFractionDigits: d }))
@@ -63,12 +65,16 @@ export function Hud() {
       brake: q('brake'),
       gload: q('gload'),
       coords: q('coords'),
+      wx: q('wx'),
       ap: q('ap'),
       apModes: q('apModes'),
       warn: q('warn'),
       status: q('status'),
       assist: q('assist'),
       destination: q('destination'),
+      runway: q('runway'),
+      runwayLabel: q('runwayLabel'),
+      runwayHint: q('runwayHint'),
       destinationLabel: q('destinationLabel'),
       destinationHint: q('destinationHint'),
     }
@@ -91,6 +97,9 @@ export function Hud() {
         strip.appendChild(l)
       }
     }
+    // Local clock at the aircraft, from the time zone in the weather report.
+    let clock: Intl.DateTimeFormat | null = null
+    let clockZone = ''
     let raf = 0
     const tick = () => {
       raf = requestAnimationFrame(tick)
@@ -124,6 +133,27 @@ export function Hud() {
         nodes.destination.style.display = 'none'
         nodes.destinationHint.style.display = 'none'
       }
+      // Runway line-up marker: put the pointer on it to roll out on the extended centreline.
+      const rwy = landingRunway.current
+      const airborne = (flags & Flags.ON_GROUND) === 0
+      const lineup = rwy && sim.snapshotsReceived && airborne ? lineupHeading({ lat: s[S.LAT], lon: s[S.LON] }, rwy) : null
+      if (rwy && lineup && lineup.distanceNm < 50) {
+        const delta = angleDelta(lineup.heading, hdg)
+        const inStrip = Math.abs(delta) <= 50
+        const aligned = Math.abs(delta) < 2 && Math.abs(lineup.offsetM) < 60
+        nodes.runway.style.display = inStrip ? 'block' : 'none'
+        nodes.runway.style.left = `${210 + delta * HEADING_PX_PER_DEG}px`
+        nodes.runway.classList.toggle('aligned', aligned)
+        nodes.runwayHint.classList.toggle('aligned', aligned)
+        text(nodes.runwayLabel, `RWY ${rwy.ident}`)
+        const turn = Math.round(Math.abs(delta))
+        const steer = aligned ? 'lined up' : turn < 1 ? 'hold this heading' : `turn ${delta < 0 ? 'left' : 'right'} ${turn}°`
+        text(nodes.runwayHint, `${!inStrip ? (delta < 0 ? '◀ ' : '') : ''}▮ RWY ${rwy.ident} · ${lineup.distanceNm.toFixed(1)} NM · ${steer}${!inStrip && delta > 0 ? ' ▶' : ''}`)
+        nodes.runwayHint.style.display = 'block'
+      } else {
+        nodes.runway.style.display = 'none'
+        nodes.runwayHint.style.display = 'none'
+      }
       const thr = s[S.THROTTLE]
       ;(nodes.thrBar.firstElementChild as HTMLElement).style.height = `${thr * 100}%`
       const rev = s[S.REVERSER]
@@ -153,6 +183,25 @@ export function Hud() {
       const lat = s[S.LAT]
       const lon = s[S.LON]
       text(nodes.coords, `${Math.abs(lat).toFixed(4)}°${lat >= 0 ? 'N' : 'S'}  ${Math.abs(lon).toFixed(4)}°${lon >= 0 ? 'E' : 'W'}`)
+      const app = useApp.getState()
+      const wx = app.settings.liveWeather ? useWeather.getState().conditions : null
+      let wxText = ''
+      if (wx) {
+        wxText = `${wx.description}${wx.tempC !== null ? ` · ${Math.round(wx.tempC)}°C` : ''}`
+        if (app.settings.realTime && wx.timeZone) {
+          if (clockZone !== wx.timeZone) {
+            clockZone = wx.timeZone
+            try {
+              clock = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: wx.timeZone })
+            } catch {
+              clock = null
+            }
+          }
+          if (clock) wxText += ` · ${clock.format(Date.now())} local`
+        }
+      }
+      text(nodes.wx, wxText)
+      nodes.wx.style.display = wxText ? 'block' : 'none'
       const apOn = (flags & Flags.AP_ENGAGED) !== 0
       text(nodes.ap, apOn ? 'AP ON' : 'AP OFF')
       const apClass = apOn ? 'ap-on' : 'faint'
@@ -183,12 +232,14 @@ export function Hud() {
       <div className="hud-heading box heading-with-destination">
         <div className="strip" data-k="strip" />
         <div className="pointer" />
+        <div className="compass-runway" data-k="runway" style={{ display: 'none' }}><i /><b data-k="runwayLabel" /></div>
         <div className="compass-destination" data-k="destination" style={{ display: 'none' }}><span>✈</span><b data-k="destinationLabel" /></div>
       </div>
       <div className="hud-heading" style={{ height: 'auto', top: 94, width: 'auto', overflow: 'visible' }}>
         <b data-k="hdg" style={{ fontSize: 16 }} />
       </div>
       <div className="destination-heading-hint" data-k="destinationHint" style={{ display: 'none' }} />
+      <div className="runway-heading-hint" data-k="runwayHint" style={{ display: 'none' }} />
       <div className="hud-status" data-k="status" />
       <div className="hud-side left box">
         <div className="hud-unit">AIRSPEED KT</div>
@@ -236,6 +287,7 @@ export function Hud() {
         </div>
       </div>
       <div className="hud-coords box">
+        <div data-k="wx" style={{ display: 'none' }} />
         <div data-k="coords" />
         <div className="faint" data-k="assist" />
       </div>

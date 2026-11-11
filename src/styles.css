@@ -705,6 +705,11 @@ input[type='checkbox'] {
 .compass-destination { position: absolute; top: 37px; transform: translateX(-50%); flex-direction: column; align-items: center; color: #7cf0c5; font-size: 15px; }
 .compass-destination b { font-size: 10px; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .destination-heading-hint { position: absolute; top: 119px; left: 50%; transform: translateX(-50%); font-size: 11px; color: #7cf0c5; white-space: nowrap; }
+.compass-runway { position: absolute; top: 0; width: 0; height: 46px; color: #ffc857; }
+.compass-runway i { position: absolute; left: -2px; top: 0; width: 4px; height: 46px; border-radius: 2px; background: currentColor; box-shadow: 0 0 6px currentColor; }
+.compass-runway b { position: absolute; left: 7px; top: 27px; font-size: 10px; white-space: nowrap; text-shadow: 0 1px 2px #000; }
+.compass-runway.aligned, .runway-heading-hint.aligned { color: #7cf0c5; }
+.runway-heading-hint { position: absolute; top: 136px; left: 50%; transform: translateX(-50%); padding: 3px 10px; border-radius: 6px; background: rgba(5, 18, 28, 0.6); font-size: 13px; font-weight: 600; color: #ffc857; white-space: nowrap; }
 .destination-beacon { position: absolute; pointer-events: none; z-index: 1; flex-direction: column; align-items: center; transform: translate(-50%, calc(-100% + 16px)); color: #7cf0c5; text-shadow: 0 1px 3px #000; }
 .beacon-label { display: flex; flex-direction: column; align-items: center; gap: 4px; max-width: 270px; padding: 9px 12px; background: rgba(5, 18, 28, 0.85); border: 1px solid #7cf0c566; border-radius: 8px; text-align: center; font-size: 12px; }
 .beacon-label span { font: 11px var(--hud-font); }

@@ -2,16 +2,16 @@
 // textures whose effect cleanup has already disposed them, leaving a black sky.
 // @refresh reset
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { EffectComposer, SMAA, ToneMapping } from '@react-three/postprocessing'
-import { AerialPerspective, Atmosphere, LightingMask, Sky, SkyLight, Stars, SunLight, type AtmosphereApi } from '@takram/three-atmosphere/r3f'
+import { EffectComposer, EffectGroup, SMAA, ToneMapping } from '@react-three/postprocessing'
+import { AerialPerspective, Atmosphere, LightingMask, SkyLight, SunLight, type AtmosphereApi } from '@takram/three-atmosphere/r3f'
 import { Clouds } from '@takram/three-clouds/r3f'
 import type { CloudsEffect } from '@takram/three-clouds'
 import { Dithering, LensFlare } from '@takram/three-geospatial-effects/r3f'
-import { SMAAPreset, ToneMappingMode } from 'postprocessing'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { NoToneMapping, PCFShadowMap, Raycaster, Vector2, Vector3, type PerspectiveCamera } from 'three'
+import { SMAAPreset, ToneMappingMode, type Effect } from 'postprocessing'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { MathUtils, NoToneMapping, PCFShadowMap, Raycaster, Vector2, Vector3, type DirectionalLight, type HemisphereLight, type PerspectiveCamera } from 'three'
 import type { LightingMaskPass, SunDirectionalLight, SkyLightProbe } from '@takram/three-atmosphere'
-import type { Points, ShaderMaterial } from 'three'
+import type { ShaderMaterial } from 'three'
 import { AircraftController, LIGHTING_MASK_LAYER } from '../aircraft/aircraftController'
 import { sound } from '../audio/sound'
 import { CameraRig, type AircraftPose } from '../camera/cameraRig'
@@ -27,9 +27,16 @@ import { SkyEnvironment } from './SkyEnvironment'
 import { GradeEffect } from './Grade'
 import { Ocean } from './Ocean'
 import { LakeWater } from './LakeWater'
-import { CloudHistory, stabilizeClouds } from './cloudRendering'
+import { CloudHistory, stabilizeAerialPerspective, stabilizeClouds } from './cloudRendering'
+import { NightEffect } from './NightEffect'
 import { useAtmosphereTextures } from './useAtmosphereTextures'
 import { DestinationMarker } from './DestinationMarker'
+import { PrecipitationEffect } from './Precipitation'
+import { LandingGuide } from './LandingGuide'
+import { OverlayPass } from './OverlayPass'
+import { CelestialSky } from './CelestialSky'
+import { CelestialState, sceneDate } from './celestial'
+import { CLEAR_HAZE, pollWeather, useWeather, visualTargets, type Conditions } from '../weather/liveWeather'
 
 const CLOUD_QUALITY: Record<Quality, 'low' | 'medium' | 'high' | 'ultra'> = {
   low: 'low',
@@ -40,16 +47,26 @@ const CLOUD_QUALITY: Record<Quality, 'low' | 'medium' | 'high' | 'ultra'> = {
 
 // Refresh every cloud pixel each frame, then temporally antialias. The stock
 // 4x4 Bayer reconstruction exposes a grid on moving aircraft/cloud boundaries.
-const CLOUD_RESOLUTION: Record<Quality, number> = { low: 0.375, medium: 0.5, high: 0.5, ultra: 0.75 }
-const CLOUD_STEP: Record<Quality, number> = { low: 80, medium: 50, high: 25, ultra: 10 }
+// The volumetric march is the most expensive pass in the frame: its cost scales
+// with resolution squared and inversely with the step size, and the temporal
+// accumulation hides the extra noise of a coarser march.
+const CLOUD_RESOLUTION: Record<Quality, number> = { low: 0.33, medium: 0.42, high: 0.5, ultra: 0.65 }
+const CLOUD_STEP: Record<Quality, number> = { low: 100, medium: 60, high: 40, ultra: 20 }
 
-/** Cloud shadow cascade resolution; 512 leaves visibly blocky shadow edges on the ground. */
+/**
+ * Cloud shadow cascade resolution; 512 leaves visibly blocky shadow edges on the
+ * ground. Three cascades are ray marched every frame, so the texel count costs as
+ * much as the clouds themselves: 2048 squared was 12.6 million marches a frame.
+ */
 const CLOUD_SHADOW_SIZE: Record<Quality, Vector2> = {
   low: new Vector2(256, 256),
   medium: new Vector2(512, 512),
-  high: new Vector2(1024, 1024),
-  ultra: new Vector2(2048, 2048),
+  high: new Vector2(768, 768),
+  ultra: new Vector2(1280, 1280),
 }
+
+/** Render-resolution steps that adaptive resolution moves between when frames run long. */
+const ADAPTIVE_STEPS = [1, 0.85, 0.72, 0.6]
 
 /**
  * Device-pixel-ratio cap per quality. Volumetric clouds and aerial perspective
@@ -57,18 +74,6 @@ const CLOUD_SHADOW_SIZE: Record<Quality, Vector2> = {
  * roughly 1.8x the GPU time of 1.5x for a barely visible gain.
  */
 const MAX_DPR: Record<Quality, number> = { low: 1, medium: 1.25, high: 1.5, ultra: 2 }
-
-/**
- * Date for the atmosphere: real time, or a chosen local solar hour at the aircraft.
- * The fixed hour is evaluated on the March equinox so the slider gives the same
- * sun height in every season and hemisphere (on today's date, a winter
- * mid-afternoon at mid latitudes is already dusk).
- */
-function sceneDate(realTime: boolean, hour: number, lon: number) {
-  if (realTime) return new Date()
-  const utcHours = hour - lon / 15
-  return new Date(Date.UTC(new Date().getUTCFullYear(), 2, 20) + utcHours * 3600_000)
-}
 
 /**
  * The stock lighting-mask shader decodes depth as if the buffer were linear
@@ -88,7 +93,7 @@ varying vec2 vUv;
 void main() {
   float scene = unpackRGBAToDepth(texture2D(depthBuffer0, vUv));
   float selected = unpackRGBAToDepth(texture2D(depthBuffer1, vUv));
-  bool keep = scene < 1.0 && selected <= scene + 2e-6;
+  bool keep = scene < 1.0 && selected <= scene + 1e-7;
   if (inverted) keep = !keep;
   if (!keep) discard;
   gl_FragColor = texture2D(inputBuffer, vUv);
@@ -102,6 +107,11 @@ function patchLightingMask(pass: LightingMaskPass | null) {
 }
 
 const _sun = new Vector3()
+const _moon = new Vector3()
+const _observer = new Vector3()
+/** Scene-radiance units (the sun is ~1): enough to read the aircraft's shape, no more. */
+const NIGHT_FILL = 0.075
+const MOON_LIGHT = 0.16
 const _probe = new Vector3()
 const _dir = new Vector3()
 const _vel = new Vector3()
@@ -112,6 +122,8 @@ const _we = new Vector3()
 const _wn = new Vector3()
 const _wu = new Vector3()
 const _wind = new Vector3()
+const _air = new Vector3()
+const _eye = new Vector3()
 
 function useWorld(): WorldSystem | null {
   const { gl, camera, scene } = useThree()
@@ -159,15 +171,37 @@ interface LoopProps {
   skyLight: React.RefObject<SkyLightProbe | null>
   ocean: Ocean | null
   lakes: LakeWater | null
-  stars: React.RefObject<Points | null>
+  celestial: CelestialState
   clouds: React.RefObject<CloudsEffect | null>
+  precipitation: PrecipitationEffect
+  night: NightEffect
+  nightFill: React.RefObject<HemisphereLight | null>
+  moonLight: React.RefObject<DirectionalLight | null>
+  guide: OverlayPass
+  /** Fraction of direct sunlight reaching the aircraft through the cloud deck. */
+  sunThrough: React.RefObject<number>
 }
 
-function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, lakes, stars, clouds }: LoopProps) {
+function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, lakes, celestial, clouds, precipitation, night, nightFill, moonLight, guide, sunThrough }: LoopProps) {
   const camera = useThree((s) => s.camera) as PerspectiveCamera
   const gl = useThree((s) => s.gl)
   const rig = useMemo(() => new CameraRig(camera), [camera])
-  const state = useRef({ gen: -1, spawnAt: 0, lastProbe: 0, lastCollision: 0, geoid: 0, lastGeoid: 0, groundSamples: 0, lastSun: -1e9, phase: '' as string })
+  const state = useRef({ gen: -1, spawnAt: 0, lastProbe: 0, lastCollision: 0, geoid: 0, lastGeoid: 0, groundSamples: 0, lastSun: -1e9, phase: '' as string, dark: 0, moon: 0 })
+  // Live weather as currently drawn; eased towards each new report.
+  const weather = useRef({
+    lastPoll: -1e9,
+    report: null as Conditions | null,
+    target: null as ReturnType<typeof visualTargets> | null,
+    effect: null as CloudsEffect | null,
+    coverage: 0,
+    haze: CLEAR_HAZE,
+    precip: 0,
+    snow: 0,
+    // Camera motion through the air, measured from the camera itself so every view is right.
+    eye: new Vector3(),
+    eyeVelocity: new Vector3(),
+    eyeOrigin: -1,
+  })
   // Reused every frame (no per-frame allocation).
   const pose = useMemo<AircraftPose>(
     () => ({
@@ -286,12 +320,13 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
     if (atm) {
       if (now - st.lastSun > 250) {
         st.lastSun = now
-        atm.updateByDate(sceneDate(settings.realTime, settings.timeOfDay, s[S.LON]))
+        celestial.update(sceneDate(settings.realTime, settings.timeOfDay, s[S.LON]), _observer.set(r.x, r.y, r.z))
+        atm.inertialToECEFMatrix.copy(celestial.inertialToECEF)
+        atm.sunDirection.copy(celestial.sunDirection)
+        atm.moonDirection.copy(celestial.moonDirection)
       }
       atm.worldToECEFMatrix.copy(frame.ecefFromWorld)
       sunWorld = _sun.copy(atm.sunDirection).applyQuaternion(frame.worldFromEcefRot)
-      // Stars only once the sun is well below the horizon.
-      if (stars.current) stars.current.visible = sunWorld.dot(frame.upAt(aircraft.position, _u)) < -0.08
     }
 
     // Aircraft and lights.
@@ -306,10 +341,39 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
     }
     aircraft.setInteriorView(mode === 'cockpit')
     aircraft.update(r, dt, sunWorld)
+
+    // Night: moonlight and airglow on the aircraft (the terrain gets its share in NightEffect).
+    {
+      const up = frame.upAt(aircraft.position, _u)
+      const dark = sunWorld ? Math.min(1, Math.max(0, (-sunWorld.dot(up) - 0.02) / 0.16)) : 0
+      let moon = 0
+      if (atm && dark > 0) {
+        _moon.copy(atm.moonDirection).applyQuaternion(frame.worldFromEcefRot)
+        const phase = celestial.illuminatedFraction
+        moon = Math.min(1, Math.max(0, _moon.dot(up) * 4)) * phase
+      }
+      const fill = nightFill.current
+      if (fill) {
+        fill.position.copy(up)
+        fill.intensity = dark * NIGHT_FILL
+      }
+      const ml = moonLight.current
+      if (ml) {
+        ml.position.copy(aircraft.position).addScaledVector(_moon, 400)
+        ml.target.position.copy(aircraft.position)
+        ml.target.updateMatrixWorld()
+        ml.intensity = dark * moon * MOON_LIGHT
+      }
+      st.dark = dark
+      st.moon = moon
+    }
     const sl = sunLight.current
     if (sl) {
       sl.target.position.copy(aircraft.position)
       sl.target.updateMatrixWorld()
+      // Nothing casts a sun shadow at night: stop redrawing the aircraft into the map.
+      // (Toggling castShadow instead would recompile every lit material.)
+      sl.shadow.autoUpdate = st.dark < 0.98
     }
     skyLight.current?.position.copy(aircraft.position)
 
@@ -333,14 +397,67 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
     sound.setActive(app.phase === 'flying' && !app.pauseMenu && (flags & Flags.PAUSED) === 0 && !awaiting)
     sound.update(s, mode === 'cockpit', dt)
 
-    // Cloud shapes drift with the wind (texture offsets are in ECEF metres x repeat).
+    // Live weather: fetch for where we are, then ease the sky towards the report.
+    const wx = weather.current
+    if (now - wx.lastPoll > 2000) {
+      wx.lastPoll = now
+      pollWeather(settings.liveWeather, settings.googleApiKey, s[S.LAT], s[S.LON])
+    }
+    const report = settings.liveWeather ? useWeather.getState().conditions : null
+    if (report !== wx.report) {
+      wx.report = report
+      wx.target = report ? visualTargets(report) : null
+    }
+    const target = wx.target
     const cl = clouds.current
+    // Snap when there is nothing to ease from: manual settings, or a freshly mounted effect.
+    const snap = !target || (cl !== null && cl !== wx.effect)
+    const ease = snap ? 1 : 1 - Math.exp(-dt / 10)
+    wx.coverage += ((target ? target.coverage : settings.cloudCoverage) - wx.coverage) * ease
+    wx.haze += ((target ? target.haze : CLEAR_HAZE) - wx.haze) * ease
+    // Precipitation falls from the low cloud deck: none once we climb through it.
+    const below = 1 - Math.min(1, Math.max(0, (s[S.HEIGHT] - 1300) / 700))
+    wx.precip += ((target ? target.precip * below : 0) - wx.precip) * Math.min(1, dt / 3)
+    if (target && target.precip > 0) wx.snow = target.snow
+    _air.set(0, 0, 0).addScaledVector(_e, s[S.WIND_E]).addScaledVector(_n, s[S.WIND_N]).addScaledVector(_u, s[S.WIND_U])
+    const daylight = sunWorld ? Math.min(1, Math.max(0.1, 0.25 + sunWorld.dot(_u) * 4)) : 1
+    // Skip the frame of a floating-origin rebase or a camera cut, where the position jumps.
+    if (wx.eyeOrigin === frame.version && rawDt > 1e-4) {
+      _eye.subVectors(camera.position, wx.eye).divideScalar(rawDt)
+      if (_eye.lengthSq() < 600 * 600) wx.eyeVelocity.lerp(_eye, Math.min(1, dt * 8))
+    }
+    wx.eye.copy(camera.position)
+    wx.eyeOrigin = frame.version
+    const eyeHeight = s[S.HEIGHT] + _probe.copy(camera.position).sub(aircraft.position).dot(_u)
+    night.setFrame(camera, st.dark, st.moon, _u, aircraft.lamps, cl?.atmosphereOverlay?.map ?? null, eyeHeight)
+    guide.setClouds(cl?.atmosphereOverlay?.map ?? null)
+    precipitation.setFrame(camera, dt, wx.precip, wx.snow, _air, wx.eyeVelocity, _u, daylight * (1 - 0.3 * wx.coverage), gl.domElement.height)
+
+    // Cloud shapes drift with the wind (texture offsets are in ECEF metres x repeat).
     if (cl) {
+      wx.effect = cl
+      cl.coverage = wx.coverage
+      cl.clouds.hazeDensityScale = wx.haze
       enuBasis(s[S.LAT], s[S.LON], _we, _wn, _wu)
       _wind.set(0, 0, 0).addScaledVector(_we, s[S.WIND_E]).addScaledVector(_wn, s[S.WIND_N])
       cl.shapeVelocity.copy(_wind).multiplyScalar(-cl.shapeRepeat.x)
       cl.shapeDetailVelocity.copy(_wind).multiplyScalar(-cl.shapeDetailRepeat.x)
     }
+
+    // Direct sun on the aircraft through the shadow-casting cloud decks above it. The
+    // terrain is shaded by the cloud shadow map in the post-process lighting, but the
+    // aircraft's own sun light knew nothing of clouds: under an overcast it glowed white
+    // over dim, shadowed ground.
+    let through = 1
+    if (cl) {
+      const opacity = MathUtils.smoothstep(wx.coverage, 0.25, 0.8)
+      for (const layer of cl.cloudLayers) {
+        if (!layer.shadow || layer.height <= 0) continue
+        const above = MathUtils.clamp((layer.altitude + layer.height - s[S.HEIGHT]) / layer.height, 0, 1)
+        through *= 1 - 0.85 * opacity * Math.min(1, layer.densityScale * 5) * above
+      }
+    }
+    sunThrough.current += (through - sunThrough.current) * Math.min(1, dt * 1.5)
 
     if (ocean) {
       ocean.update(camera.position, st.geoid, now / 1000)
@@ -414,11 +531,10 @@ function SceneContents() {
   const atmosphere = useRef<AtmosphereApi>(null)
   const sunLight = useRef<SunDirectionalLight>(null)
   const skyLight = useRef<SkyLightProbe>(null)
-  const stars = useRef<Points>(null)
+  const celestial = useMemo(() => new CelestialState(), [])
   const cloudsRef = useRef<CloudsEffect>(null)
   const quality = useApp((s) => s.settings.quality)
   const clouds = useApp((s) => s.settings.clouds)
-  const coverage = useApp((s) => s.settings.cloudCoverage)
   const shadows = useApp((s) => s.settings.shadows)
   const provider = useApp((s) => s.settings.provider)
   const camera = useThree((s) => s.camera)
@@ -426,7 +542,26 @@ function SceneContents() {
   const [ocean, setOcean] = useState<Ocean | null>(null)
   const [lakes, setLakes] = useState<LakeWater | null>(null)
   const grade = useMemo(() => new GradeEffect(), [])
+  const precipitation = useMemo(() => new PrecipitationEffect(), [])
+  const night = useMemo(() => new NightEffect(frame.ecefFromWorld, `${import.meta.env.BASE_URL}atmosphere/city-lights.jpg`), [])
+  useEffect(() => () => night.dispose(), [night])
+  const bindLightingMask = useCallback((pass: LightingMaskPass | null) => {
+    patchLightingMask(pass)
+    night.setLightingMask(pass?.texture ?? null)
+  }, [night])
+  const nightFill = useRef<HemisphereLight>(null)
+  const moonLight = useRef<DirectionalLight>(null)
+  const guide = useMemo(() => new OverlayPass(camera), [camera])
+  useEffect(() => () => guide.dispose(), [guide])
+  const sunThrough = useRef(1)
+  // After the library's SunLight recomputes its color from atmospheric transmittance (0).
+  useFrame(() => {
+    sunLight.current?.color.multiplyScalar(sunThrough.current)
+  }, 0.5)
   const cloudHistory = useMemo(() => new CloudHistory(), [])
+  const bindAerial = useCallback((effect: Effect | null) => {
+    if (effect) stabilizeAerialPerspective(effect)
+  }, [])
   const bindClouds = useCallback((effect: CloudsEffect | null) => {
     if (effect) stabilizeClouds(effect)
     cloudsRef.current = effect
@@ -455,9 +590,12 @@ function SceneContents() {
   const turbulence = useApp((s) => s.settings.turbulence)
   const volume = useApp((s) => s.settings.volume)
   const callouts = useApp((s) => s.settings.callouts)
+  const liveWeather = useApp((s) => s.settings.liveWeather)
+  // Each new live report also changes the wind and turbulence the aircraft feels.
+  const report = useWeather((s) => s.conditions)
   useEffect(() => {
     sim.command(weatherCommand(useApp.getState().settings))
-  }, [windFromDeg, windSpeedKt, turbulence])
+  }, [windFromDeg, windSpeedKt, turbulence, liveWeather, report])
   useEffect(() => sound.configure(volume, callouts), [volume, callouts])
 
   useEffect(() => {
@@ -505,22 +643,25 @@ function SceneContents() {
 
   return (
     <Atmosphere ref={atmosphere} textures={atmosphereTextures} correctAltitude>
-      <Sky />
-      <Stars ref={stars} data={`${import.meta.env.BASE_URL}atmosphere/stars.bin`} background />
+      <Suspense fallback={null}>
+        <CelestialSky atmosphere={atmosphere} celestial={celestial} />
+      </Suspense>
       {aircraft ? <primitive object={aircraft.container} /> : null}
       <SunLight ref={sunLight} distance={400} />
       <SkyLight ref={skyLight} />
+      <hemisphereLight ref={nightFill} args={['#aebfdb', '#262431', 0]} />
+      <directionalLight ref={moonLight} color="#c5d4f2" intensity={0} />
       <SkyEnvironment atmosphere={atmosphere} />
+      <LandingGuide world={world} overlay={guide} />
       {world && aircraft ? (
-        <FlightLoop world={world} aircraft={aircraft} atmosphere={atmosphere} sunLight={sunLight} skyLight={skyLight} ocean={ocean} lakes={lakes} stars={stars} clouds={cloudsRef} />
+        <FlightLoop world={world} aircraft={aircraft} atmosphere={atmosphere} sunLight={sunLight} skyLight={skyLight} ocean={ocean} lakes={lakes} celestial={celestial} clouds={cloudsRef} precipitation={precipitation} night={night} nightFill={nightFill} moonLight={moonLight} guide={guide} sunThrough={sunThrough} />
       ) : null}
-      <EffectComposer multisampling={0} enableNormalPass>
+      <EffectComposer multisampling={0} enableNormalPass={provider !== 'open'}>
         {clouds ? (
           <Clouds
             ref={bindClouds}
             qualityPreset={CLOUD_QUALITY[quality]}
             temporalUpscale={false}
-            coverage={coverage}
             // The camera sees to the horizon and beyond; without a cap the shadow cascades
             // are stretched over that whole range and cloud shadows smear into one sheet.
             shadow-maxFar={6e4}
@@ -534,12 +675,28 @@ function SceneContents() {
         ) : (
           <></>
         )}
-        <LightingMask ref={patchLightingMask} selectionLayer={LIGHTING_MASK_LAYER} />
-        {/* Satellite imagery already has daylight baked in; treating it as raw albedo blows the ground out. */}
-        <AerialPerspective sunLight skyLight albedoScale={0.45} stbnTexture={`${import.meta.env.BASE_URL}clouds/stbn.bin`} />
-        <LensFlare />
-        <ToneMapping mode={ToneMappingMode.AGX} />
-        <primitive object={grade} />
+        <LightingMask ref={bindLightingMask} selectionLayer={LIGHTING_MASK_LAYER} />
+        {/* Save the unlit scenery before aerial lighting. Keep these in separate
+            passes to stay within WebKit's fragment texture limit with clouds enabled. */}
+        <primitive object={night.albedoPass} />
+        <EffectGroup>
+          {/* The normal override pass misses shader-displaced DEM terrain, leaving
+              an unlit strip at the horizon. Its actual depth contains the heights. */}
+          <AerialPerspective ref={bindAerial} reconstructNormal={provider === 'open'} sunLight skyLight albedoScale={0.45} stbnTexture={`${import.meta.env.BASE_URL}clouds/stbn.bin`} />
+        </EffectGroup>
+        <EffectGroup>
+          <primitive object={night} />
+        </EffectGroup>
+        {/* Emissive landing guide over the lit scene (still HDR, before the flare and tone mapping). */}
+        <primitive object={guide} />
+        {/* Finish lighting before the flare samples the image. Precipitation only
+            reads its own pixel, so it rides in the same pass after the grade. */}
+        <EffectGroup>
+          <LensFlare />
+          <ToneMapping mode={ToneMappingMode.AGX} />
+          <primitive object={grade} />
+          <primitive object={precipitation} />
+        </EffectGroup>
         <SMAA preset={quality === 'low' ? SMAAPreset.MEDIUM : SMAAPreset.ULTRA} />
         <Dithering />
       </EffectComposer>
@@ -547,11 +704,74 @@ function SceneContents() {
   )
 }
 
+/**
+ * Steps the render resolution down while the median frame runs long, and back up
+ * once there is headroom. Medians over ~1.5 s ignore one-off hitches (tile parsing,
+ * shader compiles), and a resolution that failed soon after a step up becomes the
+ * ceiling, so the resolution never oscillates (each change reallocates every buffer).
+ */
+function AdaptiveResolution({ step, onStep }: { step: number; onStep: (step: number) => void }) {
+  const st = useRef({ samples: [] as number[], changedAt: 0, raisedAt: -1e9, slow: 0, fast: 0, floor: 0, ceiling: ADAPTIVE_STEPS.length - 1, before: 0 })
+  useFrame((_, dt) => {
+    const s = st.current
+    const app = useApp.getState()
+    if (app.phase !== 'flying' || app.pauseMenu || document.hidden || dt <= 0 || dt > 0.5) {
+      s.samples.length = 0
+      return
+    }
+    s.samples.push(dt)
+    if (s.samples.length < 90) return
+    s.samples.sort((a, b) => a - b)
+    const median = s.samples[s.samples.length >> 1]
+    s.samples.length = 0
+    const now = performance.now()
+    if (now - s.changedAt < 3000) return
+    // The last step down bought nothing: the frame rate is limited elsewhere (CPU,
+    // a 30 Hz power-saving cap). Restore the resolution and stop lowering it.
+    if (s.before > 0) {
+      const helped = median < s.before * 0.9
+      s.before = 0
+      if (!helped && step > 0) {
+        s.ceiling = step - 1
+        s.changedAt = now
+        onStep(step - 1)
+        return
+      }
+    }
+    if (median > 1 / 40) {
+      s.slow++
+      s.fast = 0
+    } else if (median < 1 / 56) {
+      s.fast++
+      s.slow = 0
+    } else {
+      s.slow = s.fast = 0
+    }
+    if (s.slow >= 2 && step < s.ceiling) {
+      // Stepping up did not hold: stay at this resolution from now on.
+      if (now - s.raisedAt < 20000) s.floor = step + 1
+      s.slow = 0
+      s.before = median
+      s.changedAt = now
+      onStep(step + 1)
+    } else if (s.fast >= 4 && step > s.floor) {
+      s.fast = 0
+      s.changedAt = s.raisedAt = now
+      onStep(step - 1)
+    }
+  })
+  return null
+}
+
 export default function FlightScene() {
   const renderScale = useApp((s) => s.settings.renderScale)
   const shadows = useApp((s) => s.settings.shadows)
   const quality = useApp((s) => s.settings.quality)
-  const dpr = Math.min(MAX_DPR[quality], typeof devicePixelRatio === 'number' ? devicePixelRatio : 1) * renderScale
+  const adaptive = useApp((s) => s.settings.adaptiveResolution)
+  const [step, setStep] = useState(0)
+  // A new quality or resolution choice starts again from full resolution.
+  useEffect(() => setStep(0), [quality, renderScale, adaptive])
+  const dpr = Math.min(MAX_DPR[quality], typeof devicePixelRatio === 'number' ? devicePixelRatio : 1) * renderScale * (adaptive ? ADAPTIVE_STEPS[step] : 1)
   return (
     <Canvas
       className="flight-canvas"
@@ -565,7 +785,7 @@ export default function FlightScene() {
     >
       <SceneContents />
       <DestinationMarker />
+      {adaptive ? <AdaptiveResolution step={step} onStep={setStep} /> : null}
     </Canvas>
   )
 }
-
