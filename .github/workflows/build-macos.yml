@@ -1,0 +1,51 @@
+name: Build macOS app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run simulation tests
+        run: cargo test -p sim-core
+
+      - name: Build universal app (Apple Silicon + Intel)
+        run: npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GeoFlight-macOS
+          path: target/universal-apple-darwin/release/bundle/dmg/*.dmg
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: GeoFlight build ${{ github.run_number }}
+          body: |
+            Universal macOS build (Apple Silicon + Intel).
+            Download the .dmg below, drag GeoFlight to Applications, then right-click it and choose Open the first time (the app is not notarized).
+          files: target/universal-apple-darwin/release/bundle/dmg/*.dmg

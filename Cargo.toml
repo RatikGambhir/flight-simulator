@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = ["crates/sim-core", "crates/sim-wasm", "src-tauri"]
+default-members = ["crates/sim-core", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+glam = { version = "0.30", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.dev.package."*"]
+opt-level = 2

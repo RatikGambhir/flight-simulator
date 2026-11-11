@@ -1,0 +1,170 @@
+import { create } from 'zustand'
+import type { RunwaySpawnKind, SpawnMode } from '../sim/protocol'
+
+export type Provider = 'google' | 'cesium' | 'open'
+export type CesiumMode = 'photorealistic' | 'terrain'
+export type OpenImagery = 'esri' | 'eox'
+export type Quality = 'low' | 'medium' | 'high' | 'ultra'
+export type CameraMode = 'chase' | 'cockpit' | 'wing' | 'free' | 'cinematic' | 'flyby'
+export type Screen = 'home' | 'aircraft' | 'location' | 'settings' | 'controls'
+
+export const CAMERA_MODES: { id: CameraMode; label: string; key: string }[] = [
+  { id: 'chase', label: 'Exterior', key: '1' },
+  { id: 'cockpit', label: 'Cockpit', key: '2' },
+  { id: 'wing', label: 'Wing', key: '3' },
+  { id: 'free', label: 'Free look', key: '4' },
+  { id: 'cinematic', label: 'Cinematic', key: '5' },
+  { id: 'flyby', label: 'Flyby', key: '6' },
+]
+
+export interface Settings {
+  provider: Provider
+  googleApiKey: string
+  cesiumToken: string
+  cesiumMode: CesiumMode
+  openImagery: OpenImagery
+  quality: Quality
+  renderScale: number
+  clouds: boolean
+  cloudCoverage: number
+  realTime: boolean
+  /** Local solar hour (0-24) when realTime is off. */
+  timeOfDay: number
+  invertPitch: boolean
+  sensitivity: number
+  assist: boolean
+  showFps: boolean
+  shadows: boolean
+  timeScale: number
+}
+
+const env = import.meta.env
+const DEFAULTS: Settings = {
+  provider: env.VITE_GOOGLE_MAPS_API_KEY ? 'google' : env.VITE_CESIUM_ION_TOKEN ? 'cesium' : 'open',
+  googleApiKey: env.VITE_GOOGLE_MAPS_API_KEY ?? '',
+  cesiumToken: env.VITE_CESIUM_ION_TOKEN ?? '',
+  cesiumMode: 'photorealistic',
+  openImagery: 'esri',
+  quality: 'high',
+  renderScale: 1,
+  clouds: true,
+  cloudCoverage: 0.35,
+  realTime: false,
+  timeOfDay: 15.5,
+  invertPitch: false,
+  sensitivity: 0.75,
+  assist: true,
+  showFps: false,
+  shadows: true,
+  timeScale: 1,
+}
+
+const STORAGE_KEY = 'geoflight.settings.v1'
+
+/** `?lite` (testing on slow/software GPUs): no clouds or shadows, half resolution. */
+const LITE = typeof location !== 'undefined' && new URLSearchParams(location.search).has('lite')
+
+function loadSettings(): Settings {
+  let s = DEFAULTS
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (raw) s = { ...DEFAULTS, ...(JSON.parse(raw) as Partial<Settings>) }
+  } catch {
+    // storage unavailable
+  }
+  return LITE ? { ...s, clouds: false, shadows: false, renderScale: 0.5, quality: 'low' } : s
+}
+
+function saveSettings(s: Settings) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(s))
+  } catch {
+    // storage unavailable
+  }
+}
+
+export type SpawnChoice =
+  | { kind: 'runway'; airport: string; airportName: string; runway: string | null; mode: RunwaySpawnKind }
+  | { kind: 'coords'; label: string; lat: number; lon: number; mode: SpawnMode; aglFt: number; heading: number; elevationFt: number | null }
+
+export interface Toast {
+  id: number
+  text: string
+  tone: 'info' | 'good' | 'warn' | 'bad'
+}
+
+interface AppState {
+  phase: 'menu' | 'flying'
+  screen: Screen
+  aircraftId: string
+  spawn: SpawnChoice
+  settings: Settings
+  camera: CameraMode
+  hudVisible: boolean
+  pauseMenu: boolean
+  helpOverlay: boolean
+  toasts: Toast[]
+  crashed: string | null
+  setScreen: (s: Screen) => void
+  setPhase: (p: 'menu' | 'flying') => void
+  setAircraft: (id: string) => void
+  setSpawn: (s: SpawnChoice) => void
+  updateSettings: (patch: Partial<Settings>) => void
+  setCamera: (c: CameraMode) => void
+  cycleCamera: (dir?: 1 | -1) => void
+  toggleHud: () => void
+  setPauseMenu: (open: boolean) => void
+  setHelpOverlay: (open: boolean) => void
+  toast: (text: string, tone?: Toast['tone']) => void
+  dismissToast: (id: number) => void
+  setCrashed: (reason: string | null) => void
+}
+
+let toastId = 1
+
+export const useApp = create<AppState>((set, get) => ({
+  phase: 'menu',
+  screen: 'home',
+  aircraftId: 'b737',
+  spawn: { kind: 'runway', airport: 'KORD', airportName: "Chicago O'Hare International Airport", runway: '28R', mode: 'takeoff' },
+  settings: loadSettings(),
+  camera: 'chase',
+  hudVisible: true,
+  pauseMenu: false,
+  helpOverlay: false,
+  toasts: [],
+  crashed: null,
+  setScreen: (screen) => set({ screen }),
+  setPhase: (phase) => set({ phase, pauseMenu: false, crashed: null }),
+  setAircraft: (aircraftId) => set({ aircraftId }),
+  setSpawn: (spawn) => set({ spawn }),
+  updateSettings: (patch) =>
+    set((st) => {
+      const settings = { ...st.settings, ...patch }
+      saveSettings(settings)
+      return { settings }
+    }),
+  setCamera: (camera) => set({ camera }),
+  cycleCamera: (dir = 1) => {
+    const i = CAMERA_MODES.findIndex((c) => c.id === get().camera)
+    const n = CAMERA_MODES.length
+    set({ camera: CAMERA_MODES[(i + dir + n) % n].id })
+  },
+  toggleHud: () => set((st) => ({ hudVisible: !st.hudVisible })),
+  setPauseMenu: (pauseMenu) => set({ pauseMenu }),
+  setHelpOverlay: (helpOverlay) => set({ helpOverlay }),
+  toast: (text, tone = 'info') => {
+    const id = toastId++
+    set((st) => ({ toasts: [...st.toasts.slice(-3), { id, text, tone }] }))
+    setTimeout(() => get().dismissToast(id), 4200)
+  },
+  dismissToast: (id) => set((st) => ({ toasts: st.toasts.filter((t) => t.id !== id) })),
+  setCrashed: (crashed) => set({ crashed }),
+}))
+
+/** True when the user has supplied what the selected provider needs. */
+export function providerReady(s: Settings): boolean {
+  if (s.provider === 'google') return s.googleApiKey.trim().length > 10
+  if (s.provider === 'cesium') return s.cesiumToken.trim().length > 10
+  return true
+}

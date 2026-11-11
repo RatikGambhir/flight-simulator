@@ -1,0 +1,47 @@
+{
+  "name": "geoflight",
+  "version": "0.1.0",
+  "description": "GeoFlight — a Tauri + Rust + React + Three.js flight simulator over a photorealistic, geographically accurate Earth.",
+  "scripts": {
+    "dev": "vite",
+    "dev:web": "npm run build:wasm && vite",
+    "build": "tsc --noEmit && vite build",
+    "build:wasm": "cargo build -p sim-wasm --target wasm32-unknown-unknown --release && node scripts/copy_wasm.mjs",
+    "typecheck": "tsc --noEmit",
+    "test:rust": "cargo test -p sim-core",
+    "tauri": "tauri",
+    "app:dev": "tauri dev",
+    "app:build": "tauri build --bundles app,dmg",
+    "data": "echo 'See scripts/README.md for regenerating bundled datasets'"
+  },
+  "dependencies": {
+    "@react-three/drei": "^10.7.9",
+    "@react-three/fiber": "^9.8.2",
+    "@react-three/postprocessing": "^3.2.2",
+    "@takram/three-atmosphere": "^0.19.1",
+    "@takram/three-clouds": "^0.7.6",
+    "@takram/three-geospatial": "^0.9.1",
+    "@takram/three-geospatial-effects": "^0.6.4",
+    "@tauri-apps/api": "^2.12.4",
+    "3d-tiles-renderer": "^0.5.4",
+    "postprocessing": "^6.39.6",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "three": "^0.187.0",
+    "three-mesh-bvh": "^0.9.18",
+    "zustand": "^5.1.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/three": "^0.187.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.7"
+  },
+  "private": true,
+  "type": "module",
+  "license": "MIT"
+}
