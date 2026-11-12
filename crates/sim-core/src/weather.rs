@@ -181,12 +181,16 @@ impl Weather {
     /// requested turbulence with mechanical turbulence from surface wind.
     fn sigma_w(&self, agl_m: f64) -> f64 {
         let s = &self.settings;
-        // Light ~0.25, moderate ~0.5, severe ~1.0 of the 20 ft wind scale.
+        // The turbulence setting on its own: Light (0.2) ≈ 0.5, Moderate (0.45)
+        // ≈ 1.8, Severe (0.8) ≈ 4.8 m/s.
         let convective = s.turbulence * s.turbulence * 6.0 + s.turbulence * 1.2;
-        // Mechanical turbulence fades out above ~2000 ft.
-        let mech_fade = (1.0 - agl_m / (2000.0 * FT_TO_M)).clamp(0.0, 1.0);
-        let mechanical = 0.1 * s.wind_speed_ms * 1.3 * mech_fade;
-        (convective + mechanical).max(0.0)
+        // Wind-driven turbulence, MIL-F-8785C low altitude: σw = 0.1·W20 (the
+        // mean wind at 20 ft) up to 1000 ft, fading out by 2000 ft.
+        let h_ft = agl_m / FT_TO_M;
+        let mech_fade = ((2000.0 - h_ft) / 1000.0).clamp(0.0, 1.0);
+        let mechanical = 0.1 * self.steady_speed(20.0 * FT_TO_M) * mech_fade;
+        // Independent sources add in variance.
+        convective.hypot(mechanical)
     }
 
     /// RMS vertical gust (m/s) at a height above ground: the gust intensity a
@@ -346,6 +350,37 @@ mod tests {
                 assert!(err.abs() < 0.1, "span {b} at {h_ft} ft, axis {i}: simulated rms {:.4} vs spectrum {:.4} rad/s", rms[i], expected[i]);
             }
         }
+    }
+
+    #[test]
+    fn wind_alone_gives_the_mil_low_altitude_intensity() {
+        // MIL-F-8785C: σw = 0.1·W20, with W20 = 15/30/45 kt for light,
+        // moderate and severe low-altitude turbulence.
+        let kt = 0.514_444;
+        for (w20_kt, sigma_kt) in [(15.0, 1.5), (30.0, 3.0), (45.0, 4.5)] {
+            let w10 = w20_kt * kt / (20.0 * FT_TO_M / REF_HEIGHT_M).powf(PROFILE_EXP);
+            let mut w = Weather::default();
+            w.set(WeatherSettings { wind_from_deg: 0.0, wind_speed_ms: w10, turbulence: 0.0 });
+            for h_ft in [10.0, 50.0, 500.0, 1000.0] {
+                let s = w.sigma_w(h_ft * FT_TO_M);
+                assert!((s - sigma_kt * kt).abs() < 1e-6, "W20 {w20_kt} kt at {h_ft} ft: σw {s}");
+            }
+            assert!((w.sigma_w(1500.0 * FT_TO_M) - 0.5 * sigma_kt * kt).abs() < 1e-6);
+            assert_eq!(w.sigma_w(2000.0 * FT_TO_M), 0.0);
+        }
+    }
+
+    #[test]
+    fn turbulence_and_wind_add_in_variance() {
+        let sigma = |kt: f64, turbulence: f64| {
+            let mut w = Weather::default();
+            w.set(WeatherSettings { wind_from_deg: 250.0, wind_speed_ms: kt * 0.514_444, turbulence });
+            w.sigma_w(10.0)
+        };
+        let (both, turb, wind) = (sigma(15.0, 0.45), sigma(0.0, 0.45), sigma(15.0, 0.0));
+        assert!((both * both - turb * turb - wind * wind).abs() < 1e-9);
+        // Moderate turbulence plus 15 kt: between MIL moderate and severe.
+        assert!(both > 1.6 && both < 2.2, "σw {both}");
     }
 
     #[test]
