@@ -55,6 +55,9 @@ pub struct SpawnRequest {
     /// Known ground elevation in feet MSL, if any (e.g. airport elevation).
     #[serde(default)]
     pub ground_elevation_ft: Option<f64>,
+    /// Keep the autopilot flying after the move (e.g. "skip to" along the route).
+    #[serde(default)]
+    pub keep_autopilot: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +102,17 @@ pub enum SimCommand {
     Collision { what: String },
     /// Surface wind and turbulence.
     SetWeather(WeatherRequest),
+    /// Destination airport the autopilot flies to and lands at (`None` clears it).
+    /// `runway` optionally names a preferred landing runway end.
+    SetDestination {
+        #[serde(default)]
+        airport: Option<String>,
+        #[serde(default)]
+        runway: Option<String>,
+    },
+    /// Highest terrain or obstacle the renderer found ahead along the flight
+    /// path (meters above the ellipsoid), for the autopilot's terrain awareness.
+    TerrainAhead { height: Option<f64> },
 }
 
 /// Weather settings sent by the UI.
@@ -140,6 +154,8 @@ pub enum SimEvent {
     Crashed { reason: String },
     Stall,
     Message { text: String },
+    /// The autopilot chose (or changed) its landing runway.
+    ApRunway { airport: String, runway: String },
 }
 
 /// Snapshot field indices. Keep in sync with `src/sim/protocol.ts`.
@@ -209,7 +225,13 @@ pub mod snap {
     pub const GROUND_EFFECT: usize = 56;
     /// Afterburner stage 0..1 (0 = not lit).
     pub const AFTERBURNER: usize = 57;
-    pub const LEN: usize = 58;
+    /// Autopilot flight phase (`autopilot::Phase` code; 0 = off).
+    pub const AP_PHASE: usize = 58;
+    /// Autopilot lateral mode (`autopilot::Lateral` code).
+    pub const AP_LATERAL: usize = 59;
+    /// Distance remaining along the autopilot's route (nm; -1 when not navigating).
+    pub const AP_DIST_NM: usize = 60;
+    pub const LEN: usize = 61;
 
     pub mod flags {
         pub const ON_GROUND: u32 = 1;
@@ -228,5 +250,7 @@ pub mod snap {
         pub const HEADING: u32 = 1;
         pub const ALTITUDE: u32 = 2;
         pub const AUTOTHROTTLE: u32 = 4;
+        /// Managed flight: navigating to a destination.
+        pub const MANAGED: u32 = 8;
     }
 }

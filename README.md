@@ -92,7 +92,7 @@ else (airports, cities, landmarks) is searched offline from bundled data.
 | `/` | Speed brakes |
 | `Space` or `.` (hold) / `N` | Wheel brakes / parking brake |
 | `T` | Assisted flight on/off |
-| `Z` | Autopilot (holds heading, altitude, speed); `⇧←/→` heading ±5°, `⇧↑/↓` altitude ±500 ft, `⌥R/⌥F` speed ±5 kt |
+| `Z` | Autopilot on/off at any moment. With a destination it flies the whole flight (see below); without one it holds heading, altitude and speed. `⇧←/→` heading ±5°, `⇧↑/↓` altitude ±500 ft, `⌥R/⌥F` speed ±5 kt (cruise level/speed when navigating) |
 | `C`, `V`, `1`–`6` | Cycle cameras, cockpit↔exterior, Exterior / Cockpit / Wing / Free / Cinematic / Flyby |
 | Mouse drag / scroll / double‑click | Look around or orbit / zoom / reset view |
 | `H`, `P`, `Esc`, `?` | HUD, pause, menu, controls help |
@@ -135,6 +135,41 @@ bumpers rudder, A gear, B/X flaps, Y camera, D‑pad down reverse thrust, Start 
 rotate speed shown on the aircraft card, then `G` (gear up) and `[` (flaps up). `Z` hands
 over to the autopilot.
 
+### Autopilot
+
+Choose a destination (`M`), then press `Z` — parked on a runway, mid-climb, in a turn, on
+final or rolling out. The autopilot assesses the aircraft's state and flies the rest of the
+flight through the same controls you use (stick, throttle, rudder/nosewheel, brakes,
+reversers, gear, flaps), never by moving the aircraft:
+
+* **Ground:** taxis straight to a nearby runway if you are not on one, lines up, sets
+  takeoff flaps and power, tracks the centreline, rotates at Vr and lifts off.
+* **Climb and cruise:** retracts gear and flaps on schedule, climbs to a cruise level sized
+  to the trip (short hops stay low), observes 250 kt below 10,000 ft and a Mach limit, and
+  flies a great-circle route.
+* **Descent:** starts at the top of descent on a 3° profile with a level segment to slow
+  down and configure before the glideslope.
+* **Approach and landing:** picks the runway from the wind, length and arrival direction
+  (the landing guide shows it), flies a straight-in or a downwind/base pattern, intercepts
+  the extended centreline and a 3° glidepath, lowers gear and flaps, adds a wind/gust
+  speed additive, flares, lands, deploys spoilers and reversers, autobrakes and stops with
+  the parking brake set.
+* **Safety:** it goes around if the approach is not stable at 1,000 ft (500 ft in light
+  aircraft), sinks too fast, is not lined up at 100 ft, floats or bounces, and tries
+  again; after three attempts it holds and asks you to take over. In severe turbulence,
+  gusts beyond what an automatic landing can handle, or crosswinds/tailwinds beyond the
+  aircraft's limits, it circles the field instead of landing. Terrain reported ahead by
+  the renderer raises the minimum altitude, with a climb-away if it gets close.
+* **Hand-back:** press `Z` again, or move the stick firmly (or brake during the takeoff
+  roll) to take over; nothing changes abruptly. Using the throttle in flight only turns
+  the autothrottle off.
+
+The HUD shows the active phase (TAKEOFF, CLIMB, CRUISE, DESCENT, APPROACH, FINAL, FLARE,
+ROLLOUT, LANDED, GO-AROUND …), the route and the targets; the 737's PFD shows matching
+flight modes. Without a destination, `Z` on the runway takes off and holds runway heading
+5,000 ft (3,000 ft for light aircraft) above the field; choosing a destination later hands
+over to full navigation.
+
 ---
 
 ## Architecture
@@ -158,7 +193,9 @@ over to the autopilot.
 ```
 
 * **`crates/sim-core`** — platform‑independent Rust: WGS84 geodesy, ISA atmosphere,
-  aircraft specs, flight dynamics, autopilot, fixed‑step driver, and the bundled world
+  aircraft specs, flight dynamics, autopilot (`autopilot/`: flight-phase state machine,
+  per-aircraft performance model, runway/route geometry and rate-limited control laws,
+  run inside the fixed physics step), fixed‑step driver, and the bundled world
   database (OurAirports airports/runways, Natural Earth cities, curated landmarks,
   EGM96 geoid). Fully unit tested (`cargo test -p sim-core`).
 * **`src-tauri`** — the desktop host. A dedicated thread runs the simulation at a fixed
@@ -262,6 +299,20 @@ cargo test -p sim-core
 
 ```bash
 cargo run -p sim-core --example maneuver
+```
+
+```bash
+cargo run -p sim-core --release --example autoflight -- b737 KORD 28R KMKE
+```
+
+The `autoflight` example flies a complete autopilot flight and prints a trace (`-- c172
+approach KORD 28R 270 15 0.2` starts on final with wind and turbulence; `-- stats b737 270
+15 0.2 20` flies many approaches and summarises the touchdowns and go-arounds).
+End-to-end autopilot flights are part of `cargo test -p sim-core`
+(`crates/sim-core/tests/autopilot_e2e.rs`).
+
+```bash
+npm run test:autopilot # snapshot/protocol sync with Rust, HUD autopilot annunciator
 ```
 
 ```bash

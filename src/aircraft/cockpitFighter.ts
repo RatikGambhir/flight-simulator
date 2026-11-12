@@ -4,7 +4,8 @@
 // Coordinates are metres in model space (x right, y up, nose toward -z).
 
 import { BoxGeometry, DoubleSide, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, PlaneGeometry, TorusGeometry, Vector3, type Material, type Object3D } from 'three'
-import { ApModes, Flags, S } from '../sim/protocol'
+import { phaseName } from '../sim/autopilotStatus'
+import { Flags, S } from '../sim/protocol'
 import type { Cockpit } from './cockpit'
 import { drawND, InstrumentCanvas } from './instruments'
 import type { AircraftModel } from './models'
@@ -146,9 +147,8 @@ function drawHud(g: CanvasRenderingContext2D, s: Float64Array, w: number, h: num
   if (s[S.GEAR] > 0.5) g.fillText('GEAR', w * 0.98, cy + 92)
   if (s[S.AFTERBURNER] > 0) g.fillText('AB', w * 0.98, cy + 126)
   if (flags & Flags.AP_ENGAGED) {
-    const m = s[S.AP_MODES] | 0
     g.textAlign = 'center'
-    g.fillText(`AP ${m & ApModes.ALTITUDE ? 'ALT' : ''} ${m & ApModes.HEADING ? 'HDG' : ''}`.trim(), cx, h * 0.9)
+    g.fillText(`AP ${phaseName(s[S.AP_PHASE])}`, cx, h * 0.9)
   }
   // Warnings.
   g.font = font(36, 800)

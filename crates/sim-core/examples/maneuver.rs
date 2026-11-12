@@ -10,7 +10,7 @@ fn main() {
             sim.command(SimCommand::SetAssist { enabled: assist });
             sim.command(SimCommand::Spawn(SpawnRequest {
                 lat: 41.88, lon: -87.63, heading: 0.0, mode: SpawnMode::Air,
-                agl_ft: Some(5000.0), speed_kt: None, ground_elevation_ft: Some(600.0),
+                agl_ft: Some(5000.0), speed_kt: None, ground_elevation_ft: Some(600.0), keep_autopilot: false,
             }));
             let s = sim.snapshot();
             sim.command(SimCommand::Ground { lat: s[snap::LAT], lon: s[snap::LON], height: Some(150.0) });

@@ -32,3 +32,12 @@ export function routePoints(from: GeoPoint, to: GeoPoint, steps = 128): GeoPoint
   }
   return points
 }
+
+/** Point reached from `from` along an initial great-circle bearing (degrees) after `meters`. */
+export function destinationPoint(from: GeoPoint, bearingDeg: number, meters: number): GeoPoint {
+  const d = meters / 6371008.8
+  const a = from.lat * RAD, lon = from.lon * RAD, b = bearingDeg * RAD
+  const lat = Math.asin(Math.max(-1, Math.min(1, Math.sin(a) * Math.cos(d) + Math.cos(a) * Math.sin(d) * Math.cos(b))))
+  const lon2 = lon + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(a), Math.cos(d) - Math.sin(a) * Math.sin(lat))
+  return { lat: lat / RAD, lon: ((lon2 / RAD + 540) % 360) - 180 }
+}

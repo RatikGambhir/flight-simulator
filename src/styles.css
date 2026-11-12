@@ -810,8 +810,67 @@ input[type='checkbox'] {
   padding: 8px 12px;
   font-size: 12px;
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  min-width: 168px;
+  max-width: 330px;
+  --ap-tone: var(--good);
+}
+
+.hud-ap[data-tone='off'] {
+  --ap-tone: var(--muted);
+}
+
+.hud-ap[data-tone='caution'] {
+  --ap-tone: var(--warn);
+}
+
+.hud-ap[data-tone='complete'] {
+  --ap-tone: var(--accent);
+}
+
+.hud-ap .ap-head {
+  display: flex;
   align-items: center;
+  gap: 10px;
+}
+
+.hud-ap .ap-head b {
+  color: var(--ap-tone);
+  letter-spacing: 0.08em;
+}
+
+.hud-ap .ap-phase {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--ap-tone);
+  border: 1px solid var(--ap-tone);
+  border-radius: 6px;
+  padding: 1px 7px;
+}
+
+.hud-ap[data-tone='off'] .ap-phase {
+  font-weight: 500;
+  border-style: dashed;
+}
+
+.hud-ap .ap-line {
+  font-size: 11px;
+  color: #b9d3e8;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.hud-ap .ap-line:empty {
+  display: none;
+}
+
+.hud-ap .ap-targets {
+  color: var(--muted);
 }
 
 .ap-on {

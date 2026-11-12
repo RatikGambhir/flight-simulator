@@ -2,7 +2,7 @@
 
 import { sound } from './audio/sound'
 import { sim } from './sim/simClient'
-import type { SimCommand } from './sim/protocol'
+import type { AirportDetail, SimCommand } from './sim/protocol'
 import { useApp, type Settings, type SpawnChoice } from './state/store'
 import { simWeather, useWeather } from './weather/liveWeather'
 
@@ -14,6 +14,25 @@ export function weatherCommand(s: Settings): SimCommand {
     return { type: 'set_weather', wind_from_deg: w.windFromDeg, wind_speed_kt: w.windSpeedKt, turbulence: w.turbulence }
   }
   return { type: 'set_weather', wind_from_deg: s.windFromDeg, wind_speed_kt: s.windSpeedKt, turbulence: s.turbulence }
+}
+
+/** The destination the autopilot navigates to (null: hold / climb out only). */
+export function destinationCommand(d: AirportDetail | null): SimCommand {
+  return { type: 'set_destination', airport: d?.airport.ident ?? null }
+}
+
+/**
+ * Keeps the simulation's destination in step with the one chosen in the UI.
+ * (The initial value goes with `applySelection`, once the simulation is ready.)
+ */
+export function syncDestination() {
+  return useApp.subscribe((s, prev) => {
+    if (s.destination !== prev.destination) {
+      if (!s.destination) useApp.getState().setAutopilotRunway(null)
+      const cmd = destinationCommand(s.destination)
+      sim.ready.then(() => sim.command(cmd)).catch(() => {})
+    }
+  })
 }
 
 export function spawnCommand(s: SpawnChoice): SimCommand {
@@ -32,8 +51,9 @@ export function spawnCommand(s: SpawnChoice): SimCommand {
 
 /** Applies the menu selection to the simulation (used for the live preview too). */
 export function applySelection(opts: { paused: boolean }) {
-  const { aircraftId, spawn, settings } = useApp.getState()
+  const { aircraftId, spawn, settings, destination } = useApp.getState()
   sim.command({ type: 'set_aircraft', id: aircraftId })
+  sim.command(destinationCommand(destination))
   sim.command({ type: 'set_assist', enabled: settings.assist })
   sim.command({ type: 'set_time_scale', scale: settings.timeScale })
   sim.command(weatherCommand(settings))

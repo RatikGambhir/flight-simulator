@@ -63,7 +63,7 @@ export function SkipTo() {
         wait: (ms) => delay(ms, signal),
         spawn: () => {
           useApp.getState().setCrashed(null)
-          sim.command({ type: 'spawn', ...target, mode: 'air', agl_ft: agl, speed_kt: null, ground_elevation_ft: null })
+          sim.command({ type: 'spawn', ...target, mode: 'air', agl_ft: agl, speed_kt: null, ground_elevation_ft: null, keep_autopilot: true })
         },
         ready: () => {
           const s = sim.latest

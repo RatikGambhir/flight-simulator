@@ -50,10 +50,11 @@ export const BINDINGS: { group: string; items: Binding[] }[] = [
   {
     group: 'Autopilot',
     items: [
-      { keys: 'Z', action: 'Engage / disengage (holds heading, altitude, speed)' },
+      { keys: 'Z', action: 'Engage / disengage. With a destination it takes off, flies there and lands; without one it holds heading, altitude and speed' },
+      { keys: 'M', action: 'Choose the destination the autopilot flies to' },
       { keys: '⇧← / ⇧→', action: 'Heading −5° / +5°' },
-      { keys: '⇧↑ / ⇧↓', action: 'Altitude +500 / −500 ft' },
-      { keys: '⌥R / ⌥F', action: 'Speed +5 / −5 kt' },
+      { keys: '⇧↑ / ⇧↓', action: 'Altitude +500 / −500 ft (cruise level when navigating)' },
+      { keys: '⌥R / ⌥F', action: 'Speed +5 / −5 kt (cruise speed when navigating)' },
     ],
   },
   {

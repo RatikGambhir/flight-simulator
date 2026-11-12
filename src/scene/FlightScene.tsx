@@ -38,6 +38,7 @@ import { OverlayPass } from './OverlayPass'
 import { CelestialSky } from './CelestialSky'
 import { CelestialState, sceneDate } from './celestial'
 import { CLEAR_HAZE, pollWeather, useWeather, visualTargets, type Conditions } from '../weather/liveWeather'
+import { destinationPoint } from '../navigation/route'
 
 const CLOUD_QUALITY: Record<Quality, 'low' | 'medium' | 'high' | 'ultra'> = {
   low: 'low',
@@ -68,6 +69,8 @@ const CLOUD_SHADOW_SIZE: Record<Quality, Vector2> = {
 
 /** Render-resolution steps that adaptive resolution moves between when frames run long. */
 const ADAPTIVE_STEPS = [1, 0.85, 0.72, 0.6]
+/** Distances ahead (m) sampled for the autopilot's terrain awareness. */
+const TERRAIN_AHEAD_M = [1000, 2000, 3500, 5000, 7500, 10000]
 
 /**
  * Device-pixel-ratio cap per quality. Volumetric clouds and aerial perspective
@@ -186,7 +189,7 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
   const camera = useThree((s) => s.camera) as PerspectiveCamera
   const gl = useThree((s) => s.gl)
   const rig = useMemo(() => new CameraRig(camera), [camera])
-  const state = useRef({ gen: -1, spawnAt: 0, lastProbe: 0, lastCollision: 0, geoid: 0, lastGeoid: 0, groundSamples: 0, lastSun: -1e9, realTime: false, timeOfDay: -1, phase: '' as string, dark: 0, moon: 0 })
+  const state = useRef({ gen: -1, spawnAt: 0, lastProbe: 0, lastCollision: 0, lastTerrain: 0, geoid: 0, lastGeoid: 0, groundSamples: 0, lastSun: -1e9, realTime: false, timeOfDay: -1, phase: '' as string, dark: 0, moon: 0 })
   // Live weather as currently drawn; eased towards each new report.
   const weather = useRef({
     lastPoll: -1e9,
@@ -524,6 +527,22 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
         // Ignore near-horizontal surfaces (ground contact is handled by the sim).
         if (n && Math.abs(n.dot(_u)) < 0.75) sim.command({ type: 'collision', what: 'scenery' })
       }
+    }
+
+    // Terrain awareness for the autopilot (2 Hz while it flies): the highest
+    // surface or structure along the ground track out to ~10 km. Coarse tiles
+    // are fine here; the autopilot keeps a generous margin above them.
+    if (!awaiting && !onGround && flags & Flags.AP_ENGAGED && now - st.lastTerrain > 500) {
+      st.lastTerrain = now
+      const from = { lat: s[S.LAT], lon: s[S.LON] }
+      const top = Math.max(s[S.HEIGHT] + 3000, 9500)
+      let highest = -Infinity
+      for (const d of TERRAIN_AHEAD_M) {
+        const p = destinationPoint(from, s[S.TRACK], d)
+        const hit = world.probeGround(p.lat, p.lon, top, 20000)
+        if (hit && hit.height > st.geoid - 450) highest = Math.max(highest, hit.height)
+      }
+      sim.command({ type: 'terrain_ahead', height: Number.isFinite(highest) ? highest : null })
     }
   }, -1)
 

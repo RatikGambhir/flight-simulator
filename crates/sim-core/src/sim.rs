@@ -13,9 +13,10 @@ use glam::{DMat3, DQuat, DVec3};
 
 use crate::aircraft::{self, AircraftSpec, EngineKind};
 use crate::atmosphere::{isa, G0, RHO_SL};
-use crate::autopilot::{ApInputs, Autopilot};
+use crate::autopilot::{ApInputs, ApOutput, Autopilot, NavTarget};
 use crate::engine;
 use crate::geo::{self, ecef_to_geodetic, geodetic_to_ecef, EnuFrame, FT_TO_M, KT_TO_MS, MS_TO_KT, M_TO_FT};
+pub use crate::autopilot::nav::nosewheel_limit;
 use crate::protocol::{snap, ControlInput, RunwaySpawnKind, SimCommand, SimEvent, SpawnMode, SpawnRequest};
 use crate::weather::{Weather, WeatherSettings};
 use crate::world;
@@ -92,6 +93,15 @@ struct GroundSample {
     height: f64,
 }
 
+/// Highest terrain ahead reported by the renderer, and where/when.
+#[derive(Debug, Clone, Copy)]
+struct TerrainAhead {
+    height: f64,
+    lat: f64,
+    lon: f64,
+    time: f64,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct AwaitGround {
     deadline: f64,
@@ -132,6 +142,11 @@ pub struct Simulation {
     /// Bank angle captured when the roll stick returns to neutral (aerobatic assisted mode).
     bank_ref: Option<f64>,
     pub autopilot: Autopilot,
+    /// The autopilot's demands for the current step (merged with the pilot's inputs).
+    ap_out: ApOutput,
+    /// Re-engage the autopilot once a relocation finishes (skip-to).
+    ap_resume: bool,
+    terrain_ahead: Option<TerrainAhead>,
     weather: Weather,
     /// Low-passed specific force in body axes (x fwd, y left, z up), in g.
     spec_force: DVec3,
@@ -189,6 +204,9 @@ impl Simulation {
             gamma_ref: None,
             bank_ref: None,
             autopilot: Autopilot::default(),
+            ap_out: ApOutput::default(),
+            ap_resume: false,
+            terrain_ahead: None,
             weather: Weather::default(),
             spec_force: DVec3::Z,
             ground_effect: 0.0,
@@ -230,7 +248,23 @@ impl Simulation {
 
     /// Drains pending UI events.
     pub fn take_events(&mut self) -> Vec<SimEvent> {
+        self.drain_autopilot();
         std::mem::take(&mut self.events)
+    }
+
+    /// Moves autopilot announcements into the event queue.
+    fn drain_autopilot(&mut self) {
+        for text in self.autopilot.take_messages() {
+            self.events.push(SimEvent::Message { text });
+        }
+        if let Some((airport, runway)) = self.autopilot.take_runway_event() {
+            self.events.push(SimEvent::ApRunway { airport, runway });
+        }
+    }
+
+    /// Ground height the simulation is currently using under the aircraft (m above the ellipsoid).
+    pub fn ground_height(&self) -> f64 {
+        self.d.ground_height
     }
 
     fn message(&mut self, text: impl Into<String>) {
@@ -274,10 +308,7 @@ impl Simulation {
             SimCommand::SetThrottle { value } => {
                 if value.is_finite() {
                     self.lever = value.clamp(0.0, 1.0);
-                    if self.autopilot.engaged && self.autopilot.autothrottle {
-                        self.autopilot.autothrottle = false;
-                        self.message("Autothrottle off");
-                    }
+                    self.autopilot.manual_throttle();
                 }
             }
             SimCommand::ToggleGear => {
@@ -306,19 +337,30 @@ impl Simulation {
             SimCommand::SetAssist { enabled } => self.assist = enabled,
             SimCommand::ToggleAutopilot => {
                 if self.autopilot.engaged {
-                    self.autopilot.engaged = false;
-                    self.message("Autopilot disengaged");
-                } else if self.on_ground {
-                    self.message("Autopilot is available once airborne");
+                    self.autopilot.disengage(Some("Autopilot disengaged"));
                 } else {
-                    let inp = self.ap_inputs();
-                    self.autopilot.engage(&inp, self.spec);
-                    self.message("Autopilot engaged: HDG / ALT / SPD hold");
+                    self.engage_autopilot();
                 }
             }
             SimCommand::Autopilot(c) => {
+                match c.engaged {
+                    Some(true) if !self.autopilot.engaged => self.engage_autopilot(),
+                    Some(false) => self.autopilot.disengage(Some("Autopilot disengaged")),
+                    _ => {}
+                }
+                self.autopilot.apply(&c, self.spec);
+            }
+            SimCommand::SetDestination { airport, runway } => {
+                let target = airport.as_deref().and_then(|id| NavTarget::lookup(id, runway.clone()));
+                if let (Some(id), None) = (&airport, &target) {
+                    self.message(format!("Unknown destination airport: {id}"));
+                }
                 let inp = self.ap_inputs();
-                self.autopilot.apply(&c, Some(&inp), self.spec);
+                self.autopilot.set_destination(target, &inp, self.spec);
+            }
+            SimCommand::TerrainAhead { height } => {
+                self.terrain_ahead =
+                    height.filter(|h| h.is_finite()).map(|height| TerrainAhead { height, lat: self.d.lat, lon: self.d.lon, time: self.time });
             }
             SimCommand::Ground { lat, lon, height } => self.ground_sample(lat, lon, height),
             SimCommand::Collision { what } => {
@@ -326,7 +368,7 @@ impl Simulation {
                     self.crashed = true;
                     self.vel = DVec3::ZERO;
                     self.omega = DVec3::ZERO;
-                    self.autopilot.engaged = false;
+                    self.autopilot.disengage(None);
                     self.events.push(SimEvent::Crashed { reason: format!("Collided with {what}") });
                 }
             }
@@ -340,6 +382,18 @@ impl Simulation {
                 wind_speed_ms: w.wind_speed_kt * KT_TO_MS,
                 turbulence: w.turbulence,
             }),
+        }
+        self.drain_autopilot();
+    }
+
+    fn engage_autopilot(&mut self) {
+        if self.crashed {
+            self.message("Autopilot unavailable after a crash");
+        } else if self.awaiting.is_some() {
+            self.message("Autopilot is available once the aircraft is placed");
+        } else {
+            let inp = self.ap_inputs();
+            self.autopilot.engage(&inp, self.spec);
         }
     }
 
@@ -365,6 +419,9 @@ impl Simulation {
         self.pos = geodetic_to_ecef(g.lat, g.lon, target);
         self.awaiting = None;
         self.update_derived();
+        if std::mem::take(&mut self.ap_resume) {
+            self.engage_autopilot();
+        }
     }
 
     fn reset_dynamic_state(&mut self) {
@@ -379,7 +436,10 @@ impl Simulation {
         self.reverser = 0.0;
         self.spec_force = DVec3::Z;
         self.weather.reset_gusts();
-        self.autopilot.engaged = false;
+        self.autopilot.reset();
+        self.ap_out = ApOutput::default();
+        self.ap_resume = false;
+        self.terrain_ahead = None;
         self.gamma_ref = None;
         self.bank_ref = None;
         self.ground = None;
@@ -491,6 +551,8 @@ impl Simulation {
     }
 
     fn spawn(&mut self, req: &SpawnRequest) {
+        let resume = req.keep_autopilot && self.autopilot.engaged;
+        self.autopilot.set_spawn_target(None);
         let lat = req.lat.clamp(-89.9, 89.9);
         let lon = geo::wrap_deg_180(req.lon);
         let fallback = match req.ground_elevation_ft {
@@ -519,6 +581,7 @@ impl Simulation {
                 self.awaiting = Some(AwaitGround { deadline: self.time + 8.0, mode: SpawnMode::Air, agl_m, absolute: false });
             }
         }
+        self.ap_resume = resume;
     }
 
     fn spawn_runway(&mut self, ident: &str, runway: Option<&str>, kind: RunwaySpawnKind) -> bool {
@@ -532,6 +595,10 @@ impl Simulation {
         let hdg = end.heading_deg;
         let s = self.spec;
         let (lat, lon) = (end.lat.to_radians(), end.lon.to_radians());
+        let approach_target = match kind {
+            RunwaySpawnKind::Approach => NavTarget::lookup(&ap.ident, Some(end.ident.clone())),
+            RunwaySpawnKind::Takeoff => None,
+        };
         match kind {
             RunwaySpawnKind::Takeoff => {
                 let (la, lo) = geo::destination(lat, lon, hdg.to_radians(), 30.0);
@@ -559,6 +626,7 @@ impl Simulation {
                 self.message(format!("Final approach, {} runway {} — 6 nm", ap.ident, end.ident));
             }
         }
+        self.autopilot.set_spawn_target(approach_target);
         true
     }
 
@@ -584,14 +652,19 @@ impl Simulation {
         let total = dt * self.time_scale;
         let n = self.time_scale.ceil().max(1.0) as usize;
         let v0 = self.vel;
-        for _ in 0..n {
+        for i in 0..n {
             self.integrate(total / n as f64);
             if self.crashed {
                 break;
             }
+            // Fresh flight values for the autopilot and air mass on the next sub-step.
+            if i + 1 < n {
+                self.update_derived();
+            }
         }
         self.update_derived();
         self.update_specific_force(v0, total);
+        self.drain_autopilot();
     }
 
     /// Specific force (what an accelerometer / the pilot's inner ear feels) in body axes.
@@ -626,20 +699,89 @@ impl Simulation {
         if self.gear > 0.95 { self.spec.gear_height_m } else { self.spec.belly_height_m }
     }
 
+    /// Terrain-ahead report if it is recent and from near here.
+    fn terrain_ahead_height(&self) -> Option<f64> {
+        let t = self.terrain_ahead?;
+        let fresh = self.time - t.time < 4.0;
+        let near = geo::haversine_m(t.lat.to_radians(), t.lon.to_radians(), self.d.lat.to_radians(), self.d.lon.to_radians()) < 3_000.0;
+        (fresh && near).then_some(t.height)
+    }
+
     fn ap_inputs(&self) -> ApInputs {
         let s = self.spec;
-        let q = 0.5 * isa(self.d.height - self.d.geoid).density * self.d.tas * self.d.tas;
+        let d = &self.d;
+        let air = isa(d.height - d.geoid);
+        let q = 0.5 * air.density * d.tas * d.tas;
+        let contact = self.contact_height();
         ApInputs {
-            heading: self.d.heading.to_degrees().rem_euclid(360.0),
-            roll_deg: self.d.roll.to_degrees(),
-            alt_msl_ft: (self.d.height - self.d.geoid - self.contact_height()) * M_TO_FT,
-            ias_kt: self.d.ias_kt,
-            tas_ms: self.d.tas,
-            gamma: self.d.fpa,
+            lat: d.lat,
+            lon: d.lon,
+            height: d.height,
+            geoid: d.geoid,
+            contact_h: contact,
+            ground_h: d.ground_height,
+            terrain_ahead: self.terrain_ahead_height(),
+            alt_msl_ft: (d.height - d.geoid - contact) * M_TO_FT,
+            agl_ft: d.agl.max(0.0) * M_TO_FT,
+            heading: d.heading.to_degrees().rem_euclid(360.0),
+            track: d.track.to_degrees().rem_euclid(360.0),
+            pitch_deg: d.pitch.to_degrees(),
+            roll_deg: d.roll.to_degrees(),
+            alpha_deg: d.alpha.to_degrees(),
+            ias_kt: d.ias_kt,
+            tas_ms: d.tas,
+            gs_ms: d.gs,
+            speed_ms: d.vel_enu.length(),
+            vs_fpm: d.vs * MS_TO_FPM,
+            gamma: d.fpa,
+            sigma: air.density / RHO_SL,
+            speed_of_sound: air.speed_of_sound,
             roll_rate_max: s.max_roll_rate.to_radians(),
+            pitch_rate_max: s.max_pitch_rate.to_radians(),
             control_eff: (q / s.full_authority_q).clamp(0.05, 1.0),
             on_ground: self.on_ground,
+            gear: self.gear,
+            gear_down_cmd: self.gear_cmd_down,
+            flaps_index: self.flaps_index,
+            speedbrake_cmd: self.spoilers_cmd,
+            lever: self.lever,
+            reverser: self.reverser,
+            parking_brake: self.parking_brake,
+            wind_from_deg: self.weather.settings.wind_from_deg,
+            wind_kt: self.weather.settings.wind_speed_ms * MS_TO_KT,
+            turbulence: self.weather.settings.turbulence,
+            nz: self.spec_force.z,
+            gust_ms: self.weather.gust_intensity(10.0),
         }
+    }
+
+    /// Applies the autopilot's configuration requests through the same rules
+    /// as the pilot's controls.
+    fn apply_autopilot_config(&mut self, ap: &ApOutput) {
+        let s = self.spec;
+        if let Some(down) = ap.gear_down {
+            if s.retractable_gear && (down || !self.on_ground) {
+                self.gear_cmd_down = down;
+            }
+        }
+        if let Some(i) = ap.flaps_index {
+            if !s.auto_flaps {
+                self.flaps_index = i.min(s.flap_detents.len() - 1);
+            }
+        }
+        if let Some(b) = ap.speedbrake {
+            if s.spoiler_cd > 0.0 {
+                self.spoilers_cmd = b;
+            }
+        }
+        if let Some(b) = ap.parking_brake {
+            self.parking_brake = b;
+        }
+    }
+
+    /// Wheel brake in use: the parking brake, the pilot's pedals or the autobrake.
+    fn wheel_brake(&self) -> f64 {
+        if self.parking_brake { 1.0 } else { self.input.brake.max(self.ap_out.brake.unwrap_or(0.0)) }
     }
 
     fn update_systems(&mut self, dt: f64, ap_throttle: Option<f64>) {
@@ -653,7 +795,8 @@ impl Simulation {
         // Thrust reversers (jets): deploy on the ground with the levers at idle while
         // reverse is held; the engines only spool up once the sleeves are open, and
         // the sleeves only stow once the engines are back near idle.
-        let want_rev = s.engine == EngineKind::Jet && s.thrust_reversers && self.on_ground && self.input.reverse > 0.5 && self.lever < 0.05;
+        let reverse = self.ap_out.reverse.unwrap_or(self.input.reverse);
+        let want_rev = s.engine == EngineKind::Jet && s.thrust_reversers && self.on_ground && reverse > 0.5 && self.lever < 0.05;
         let rev_target = if want_rev {
             1.0
         } else if self.engine > 0.12 {
@@ -720,18 +863,21 @@ impl Simulation {
         let airborne = !self.on_ground;
 
         // ---- Autopilot ---------------------------------------------------
-        let pilot_override = self.input.pitch.abs() > 0.6 || self.input.roll.abs() > 0.6;
-        if self.autopilot.engaged && pilot_override {
-            self.autopilot.engaged = false;
-            self.message("Autopilot disconnected by pilot input");
+        // The autopilot reads the same flight values a pilot sees and makes the
+        // same demands (stick, throttle, brakes, steering, gear, flaps).
+        if let Some(why) = self.autopilot.pilot_override(&self.input, self.on_ground) {
+            self.autopilot.disengage(Some(why));
         }
         let ap_inp = self.ap_inputs();
-        let ap = self.autopilot.update(&ap_inp, s, self.lever, dt);
+        let ap = self.autopilot.update(&ap_inp, s, dt);
+        self.apply_autopilot_config(&ap);
+        self.ap_out = ap;
         self.update_systems(dt, ap.throttle);
 
         // Control surfaces follow inputs with a short lag (also drives animation).
         let roll_in = ap.roll_stick.unwrap_or(self.input.roll);
-        let target = DVec3::new(roll_in, self.input.pitch, self.input.yaw);
+        let pitch_in = ap.pitch_stick.unwrap_or(self.input.pitch);
+        let target = DVec3::new(roll_in, pitch_in, self.input.yaw);
         self.surfaces += (target - self.surfaces) * (dt * 7.0).min(1.0);
 
         // ---- Aerodynamics ------------------------------------------------
@@ -977,6 +1123,7 @@ impl Simulation {
                 self.vel = DVec3::ZERO;
                 self.omega = DVec3::ZERO;
                 self.pos += up * (-clearance.max(-50.0));
+                self.autopilot.disengage(None);
                 self.events.push(SimEvent::Crashed { reason: reason.into() });
                 return;
             }
@@ -991,7 +1138,7 @@ impl Simulation {
             if self.gear < 0.95 {
                 self.message("Belly landing!");
             }
-            self.autopilot.engaged = false;
+            self.autopilot.on_touchdown();
         }
         self.on_ground = true;
 
@@ -1011,7 +1158,7 @@ impl Simulation {
         let mut vf = vh.dot(fwd_h);
         let mut vs = vh.dot(side_h);
         if self.gear > 0.95 {
-            let brake = if self.parking_brake { 1.0 } else { self.input.brake };
+            let brake = self.wheel_brake();
             // Rolling resistance plus anti-skid braking (max ~0.4 g on a dry runway).
             let mu = 0.015 + 0.42 * brake;
             vf = approach(vf, 0.0, mu * normal_force / mass * dt);
@@ -1024,8 +1171,12 @@ impl Simulation {
         self.vel = fwd_h * vf + side_h * vs + up * self.vel.dot(up).max(0.0);
 
         // Steering, wheels-level roll and pitch limits.
-        let steer_in = if self.input.yaw.abs() > 0.05 { self.input.yaw } else { self.input.roll * 0.6 };
-        let max_steer = (55.0 - 52.0 * (vf.abs() / 25.0).min(1.0)).to_radians();
+        let steer_in = match self.ap_out.steer {
+            Some(steer) => steer,
+            None if self.input.yaw.abs() > 0.05 => self.input.yaw,
+            None => self.input.roll * 0.6,
+        };
+        let max_steer = nosewheel_limit(vf);
         let steer_rate = if self.gear > 0.95 { vf * (steer_in * max_steer).tan() / s.wheelbase_m } else { 0.0 };
         let new_heading = heading + steer_rate * dt;
         let new_roll = roll * (-dt * 8.0).exp();
@@ -1116,7 +1267,7 @@ impl Simulation {
         out[FLAPS] = self.flaps;
         out[FLAPS_INDEX] = self.flaps_index as f64;
         out[SPOILERS] = self.spoilers;
-        out[BRAKE] = if self.parking_brake { 1.0 } else { self.input.brake };
+        out[BRAKE] = self.wheel_brake();
         out[ALPHA] = d.alpha.to_degrees();
         out[G_LOAD] = d.g_load;
         let mut f = 0u32;
@@ -1143,6 +1294,7 @@ impl Simulation {
         if ap.heading_hold { m |= ap_modes::HEADING; }
         if ap.altitude_hold { m |= ap_modes::ALTITUDE; }
         if ap.autothrottle { m |= ap_modes::AUTOTHROTTLE; }
+        if ap.is_managed() { m |= ap_modes::MANAGED; }
         out[AP_MODES] = m as f64;
         out[AIRCRAFT_INDEX] = self.aircraft_index as f64;
         out[TOUCHDOWN_FPM] = self.last_touchdown_fpm;
@@ -1163,6 +1315,9 @@ impl Simulation {
         out[REVERSER] = self.reverser;
         out[GROUND_EFFECT] = self.ground_effect;
         out[AFTERBURNER] = self.afterburner_stage();
+        out[AP_PHASE] = if ap.engaged { ap.phase.code() as f64 } else { 0.0 };
+        out[AP_LATERAL] = if ap.engaged { ap.lateral as u8 as f64 } else { 0.0 };
+        out[AP_DIST_NM] = ap.dist_to_go_nm.unwrap_or(-1.0);
     }
 
     pub fn snapshot(&self) -> Vec<f64> {
@@ -1242,6 +1397,7 @@ mod tests {
                 agl_ft: Some(5000.0),
                 speed_kt: None,
                 ground_elevation_ft: Some(600.0),
+                keep_autopilot: false,
             }));
             settle(&mut sim);
             let alt0 = read(&sim, snap::ALT_MSL_FT);
@@ -1268,6 +1424,7 @@ mod tests {
             agl_ft: Some(6000.0),
             speed_kt: Some(250.0),
             ground_elevation_ft: Some(600.0),
+            keep_autopilot: false,
         }));
         settle(&mut sim);
         sim.step(0.1);
@@ -1329,6 +1486,7 @@ mod tests {
             agl_ft: Some(agl_ft),
             speed_kt: None,
             ground_elevation_ft: Some(600.0),
+            keep_autopilot: false,
         }));
         settle(sim);
     }
@@ -1495,6 +1653,7 @@ mod tests {
             agl_ft: Some(alt_ft - 600.0),
             speed_kt: Some(ias_kt),
             ground_elevation_ft: Some(600.0),
+            keep_autopilot: false,
         }));
         settle(&mut sim);
         sim

@@ -34,6 +34,8 @@ function TakeoffGuide() {
         done.current = (flags & Flags.ON_GROUND) === 0
       }
       const spec = list[s[S.AIRCRAFT_INDEX] | 0]
+      // The autopilot flies the takeoff itself; coaching would only get in the way.
+      if (flags & Flags.AP_ENGAGED) done.current = true
       if (done.current || !spec || flags & (Flags.AWAITING_GROUND | Flags.CRASHED)) {
         setStep((p) => (p === null ? p : null))
         return
@@ -53,7 +55,7 @@ function TakeoffGuide() {
       else if ((s[S.FLAPS_INDEX] | 0) > 0) next = { key: '[', text: 'Flaps up, one notch at a time as speed builds' }
       else {
         done.current = true
-        next = { key: 'Z', text: 'Airborne! Press Z for the autopilot, or fly it yourself' }
+        next = { key: 'Z', text: 'Airborne! Press Z and the autopilot flies you to your destination, or fly it yourself' }
         setTimeout(() => setStep(null), 6000)
       }
       setStep((p) => (p && p.key === next.key && p.text === next.text ? p : next))

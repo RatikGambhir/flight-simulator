@@ -2,7 +2,8 @@
 // to the DOM from a requestAnimationFrame loop instead of React state.
 
 import { useEffect, useRef } from 'react'
-import { ApModes, Flags, S } from '../sim/protocol'
+import { Flags, S } from '../sim/protocol'
+import { autopilotStatus } from '../sim/autopilotStatus'
 import { sim } from '../sim/simClient'
 import { useAircraftList } from './useAircraftList'
 import { useApp } from '../state/store'
@@ -67,7 +68,10 @@ export function Hud() {
       coords: q('coords'),
       wx: q('wx'),
       ap: q('ap'),
-      apModes: q('apModes'),
+      apBox: q('apBox'),
+      apPhase: q('apPhase'),
+      apNav: q('apNav'),
+      apTargets: q('apTargets'),
       warn: q('warn'),
       status: q('status'),
       assist: q('assist'),
@@ -203,17 +207,14 @@ export function Hud() {
       }
       text(nodes.wx, wxText)
       nodes.wx.style.display = wxText ? 'block' : 'none'
-      const apOn = (flags & Flags.AP_ENGAGED) !== 0
-      text(nodes.ap, apOn ? 'AP ON' : 'AP OFF')
-      const apClass = apOn ? 'ap-on' : 'faint'
-      if (nodes.ap.className !== apClass) nodes.ap.className = apClass
-      const m = s[S.AP_MODES] | 0
-      text(
-        nodes.apModes,
-        apOn
-          ? `${m & ApModes.HEADING ? `HDG ${String(Math.round(s[S.AP_HEADING])).padStart(3, '0')}` : ''}  ${m & ApModes.ALTITUDE ? `ALT ${fmt(s[S.AP_ALT_FT])}` : ''}  ${m & ApModes.AUTOTHROTTLE ? `SPD ${fmt(s[S.AP_SPEED_KT])}` : ''}`
-          : '',
-      )
+      // Autopilot mode annunciator: engaged state, flight phase, route and targets.
+      const apRunway = app.autopilotRunway
+      const ap = autopilotStatus(s, { destination: app.destination?.airport.ident ?? apRunway?.airport, runway: apRunway?.runway })
+      text(nodes.ap, ap.engaged ? 'AP' : 'AP OFF')
+      text(nodes.apPhase, ap.engaged ? ap.phase : 'Press Z')
+      text(nodes.apNav, ap.nav)
+      text(nodes.apTargets, ap.targets)
+      if (nodes.apBox.dataset.tone !== ap.tone) nodes.apBox.dataset.tone = ap.tone
       text(nodes.assist, flags & Flags.ASSIST ? 'ASSIST' : 'DIRECT')
       let warn = ''
       if (flags & Flags.STALL) warn = 'STALL'
@@ -292,9 +293,13 @@ export function Hud() {
         <div data-k="coords" />
         <div className="faint" data-k="assist" />
       </div>
-      <div className="hud-ap box">
-        <b data-k="ap" />
-        <span data-k="apModes" />
+      <div className="hud-ap box" data-k="apBox" data-tone="off" role="status" aria-live="polite" aria-label="Autopilot">
+        <div className="ap-head">
+          <b data-k="ap" />
+          <span className="ap-phase" data-k="apPhase" />
+        </div>
+        <div className="ap-line" data-k="apNav" />
+        <div className="ap-line ap-targets" data-k="apTargets" />
       </div>
     </div>
   )

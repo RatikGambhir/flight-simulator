@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect } from 'react'
-import { applySelection } from './flight'
+import { applySelection, syncDestination } from './flight'
 import { controls } from './input/controls'
 import { sim } from './sim/simClient'
 import { useApp } from './state/store'
@@ -34,6 +34,10 @@ export default function App() {
           break
         case 'spawned':
           app.setCrashed(null)
+          app.setAutopilotRunway(null)
+          break
+        case 'ap_runway':
+          app.setAutopilotRunway({ airport: e.airport, runway: e.runway })
           break
         case 'liftoff':
           break
@@ -41,7 +45,9 @@ export default function App() {
     })
     // Show the selected departure behind the menu (paused) as a live preview.
     sim.ready.then(() => applySelection({ paused: true })).catch((err) => console.error('Simulation failed to start', err))
+    const unsync = syncDestination()
     return () => {
+      unsync()
       off()
       controls.detach()
     }

@@ -1,7 +1,8 @@
 // Canvas-drawn flight instruments, refreshed from the latest sim snapshot.
 
 import { CanvasTexture, SRGBColorSpace } from 'three'
-import { ApModes, Flags, S } from '../sim/protocol'
+import { flightModes } from '../sim/autopilotStatus'
+import { Flags, S } from '../sim/protocol'
 
 const DEG = Math.PI / 180
 
@@ -161,16 +162,11 @@ export function drawPFD(g: CanvasRenderingContext2D, s: Float64Array, w: number,
   // FMA
   const flags = s[S.FLAGS] | 0
   const ap = (flags & Flags.AP_ENGAGED) !== 0
-  const modes = s[S.AP_MODES] | 0
   g.font = font(h * 0.032)
   g.textAlign = 'center'
   g.fillStyle = '#11161c'
   g.fillRect(0, 0, w, h * 0.08)
-  const fma = [
-    ap && modes & ApModes.AUTOTHROTTLE ? `SPD ${Math.round(s[S.AP_SPEED_KT])}` : '',
-    ap && modes & ApModes.HEADING ? `HDG ${String(Math.round(s[S.AP_HEADING])).padStart(3, '0')}` : '',
-    ap && modes & ApModes.ALTITUDE ? `ALT ${Math.round(s[S.AP_ALT_FT])}` : '',
-  ]
+  const fma = flightModes(s)
   fma.forEach((t, i) => {
     g.fillStyle = GREEN
     g.fillText(t, w * (0.2 + i * 0.3), h * 0.045)

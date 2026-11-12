@@ -112,6 +112,12 @@ export type SpawnChoice =
   | { kind: 'runway'; airport: string; airportName: string; runway: string | null; mode: RunwaySpawnKind }
   | { kind: 'coords'; label: string; lat: number; lon: number; mode: SpawnMode; aglFt: number; heading: number; elevationFt: number | null }
 
+/** The landing runway the autopilot chose (reported by the simulation). */
+export interface AutopilotRunway {
+  airport: string
+  runway: string
+}
+
 export interface Toast {
   id: number
   text: string
@@ -128,6 +134,8 @@ interface AppState {
   skipToOpen: boolean
   setSkipToOpen: (open: boolean) => void
   destinationMarkerVisible: boolean
+  autopilotRunway: AutopilotRunway | null
+  setAutopilotRunway: (runway: AutopilotRunway | null) => void
   setDestination: (destination: AirportDetail | null) => void
   setRouteOpen: (routeOpen: boolean) => void
   toggleDestinationMarker: () => void
@@ -164,6 +172,8 @@ export const useApp = create<AppState>((set, get) => ({
   skipToOpen: false,
   setSkipToOpen: (skipToOpen) => set({ skipToOpen }),
   destinationMarkerVisible: false,
+  autopilotRunway: null,
+  setAutopilotRunway: (autopilotRunway) => set({ autopilotRunway }),
   setDestination: (destination) => set({ destination }),
   setRouteOpen: (routeOpen) => set({ routeOpen }),
   toggleDestinationMarker: () => set((s) => ({ destinationMarkerVisible: !s.destinationMarkerVisible })),

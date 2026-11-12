@@ -6,8 +6,9 @@
 //           the threshold, a touchdown zone painted on the surface, and a row
 //           of gates down a 3 degree glidepath to fly through.
 //
-// The runway comes from the destination (longest runway, landing in the
-// direction we are arriving from) or from a "final approach" start. Its height
+// The runway comes from the autopilot's choice when it is flying, else from
+// the destination (longest runway, landing in the direction we are arriving
+// from) or from a "final approach" start. Its height
 // starts from the airport data and is refined against the streamed terrain as
 // we get close, so the markings sit on the surface that is actually drawn.
 
@@ -108,7 +109,15 @@ export function LandingGuide({ world, overlay }: { world: WorldSystem | null; ov
     }
   }, [approachIdent])
   const detail = destination ?? approach
-  const fixedRunway = !destination && spawn.kind === 'runway' ? spawn.runway : null
+  // Guide to the runway the autopilot is landing on when it has chosen one;
+  // otherwise to the runway a final-approach start lined up with.
+  const autopilotRunway = useApp((s) => s.autopilotRunway)
+  const fixedRunway =
+    autopilotRunway && detail && autopilotRunway.airport === detail.airport.ident
+      ? autopilotRunway.runway
+      : !destination && spawn.kind === 'runway'
+        ? spawn.runway
+        : null
 
   const [target, setTarget] = useState<Target | null>(null)
   const live = useRef({ lastPick: -1e9, lastProbe: -1e9, heights: null as [number, number] | null, refined: false, time: 0 })

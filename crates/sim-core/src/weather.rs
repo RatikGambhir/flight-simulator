@@ -136,6 +136,12 @@ impl Weather {
         (convective + mechanical).max(0.0)
     }
 
+    /// RMS vertical gust (m/s) at a height above ground: the gust intensity a
+    /// pilot would read from a weather report (light ≈ 0.8, moderate ≈ 1.5+).
+    pub fn gust_intensity(&self, agl_m: f64) -> f64 {
+        self.sigma_w(agl_m)
+    }
+
     /// Wind velocity (m/s) in local ENU at a height above ground, including gusts.
     pub fn wind_enu(&self, agl_m: f64) -> DVec3 {
         let (de, dn) = self.downwind();

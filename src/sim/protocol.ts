@@ -62,7 +62,13 @@ export const S = {
   GROUND_EFFECT: 56,
   /** Afterburner stage 0..1 (0 = not lit). */
   AFTERBURNER: 57,
-  LEN: 58,
+  /** Autopilot flight phase code (see `AP_PHASES` in autopilotStatus.ts; 0 = off). */
+  AP_PHASE: 58,
+  /** Autopilot lateral mode code. */
+  AP_LATERAL: 59,
+  /** Distance remaining along the autopilot's route (nm; -1 when not navigating). */
+  AP_DIST_NM: 60,
+  LEN: 61,
 } as const
 
 export const Flags = {
@@ -78,7 +84,7 @@ export const Flags = {
   TAILSTRIKE: 512,
 } as const
 
-export const ApModes = { HEADING: 1, ALTITUDE: 2, AUTOTHROTTLE: 4 } as const
+export const ApModes = { HEADING: 1, ALTITUDE: 2, AUTOTHROTTLE: 4, MANAGED: 8 } as const
 
 export const hasFlag = (snap: Float64Array, flag: number) => ((snap[S.FLAGS] | 0) & flag) !== 0
 
@@ -111,6 +117,8 @@ export interface SpawnRequest {
   agl_ft?: number | null
   speed_kt?: number | null
   ground_elevation_ft?: number | null
+  /** Keep the autopilot flying after the move (skip-to along the route). */
+  keep_autopilot?: boolean
 }
 
 export interface AutopilotCommand {
@@ -148,6 +156,10 @@ export type SimCommand =
   | { type: 'set_time_scale'; scale: number }
   | { type: 'collision'; what: string }
   | ({ type: 'set_weather' } & WeatherRequest)
+  /** Destination the autopilot flies to and lands at (null clears it). */
+  | { type: 'set_destination'; airport: string | null; runway?: string | null }
+  /** Highest terrain/obstacle ahead along the track (m above the ellipsoid), for terrain awareness. */
+  | { type: 'terrain_ahead'; height: number | null }
 
 export type SimEvent =
   | { type: 'spawned'; generation: number }
@@ -156,6 +168,8 @@ export type SimEvent =
   | { type: 'crashed'; reason: string }
   | { type: 'stall' }
   | { type: 'message'; text: string }
+  /** The autopilot chose (or changed) its landing runway. */
+  | { type: 'ap_runway'; airport: string; runway: string }
 
 // ---------------------------------------------------------------------------
 // World database queries (answered by Rust, see `sim_core::api`)

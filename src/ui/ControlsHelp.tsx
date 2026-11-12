@@ -34,7 +34,11 @@ export function ControlsHelp({ onClose, full }: { onClose: () => void; full?: bo
         <div className="notice info" style={{ marginTop: 18 }}>
           <b>Your first takeoff:</b> press <span className="kbd">⇧R</span> for full throttle, keep straight with <span className="kbd">Q</span>/<span className="kbd">E</span>,
           and at the rotate speed shown on the aircraft card gently hold <span className="kbd">S</span> to lift the nose. Once climbing, raise the gear with{' '}
-          <span className="kbd">G</span> and flaps with <span className="kbd">[</span>. Press <span className="kbd">Z</span> to let the autopilot hold your heading, altitude and speed.
+          <span className="kbd">G</span> and flaps with <span className="kbd">[</span>.
+          <br />
+          <b>Autopilot:</b> press <span className="kbd">Z</span> at any moment, on the ground or in the air. With a destination chosen (<span className="kbd">M</span>) it
+          takes off, flies the route, lands on a runway suited to the wind and brings the aircraft to a stop; without one it holds your heading, altitude and
+          speed. Press <span className="kbd">Z</span> again, or move the controls firmly, to take over.
           <br />
           <b>Landing:</b> start from “Final approach”, keep the runway centred, reduce power with <span className="kbd">F</span> just above the runway, flare gently with{' '}
           <span className="kbd">S</span> and hold <span className="kbd">Space</span> to brake.
