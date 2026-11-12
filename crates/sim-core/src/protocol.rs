@@ -207,7 +207,9 @@ pub mod snap {
     pub const REVERSER: usize = 55;
     /// Ground-effect strength 0 (none) .. 1 (wheels on the runway).
     pub const GROUND_EFFECT: usize = 56;
-    pub const LEN: usize = 57;
+    /// Afterburner stage 0..1 (0 = not lit).
+    pub const AFTERBURNER: usize = 57;
+    pub const LEN: usize = 58;
 
     pub mod flags {
         pub const ON_GROUND: u32 = 1;

@@ -171,15 +171,18 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
     // Close surfaces occlude the haze, including the aircraft and cockpit.
     float h = dot(normalize(ray), worldUp) + horizonDip;
     vec3 airglow = skyGlow * (0.40 + 1.1 * exp(-max(h, 0.0) * 7.0));
-    float haze = surface ? 1.0 - exp(-range / 52000.0) : smoothstep(-0.025, 0.003, h);
+    float surfaceHaze = 1.0 - exp(-range / 52000.0);
+    // The grazing band should have the same airglow on either side of the
+    // skyline, even when distant terrain is still streaming in.
+    float skyHaze = smoothstep(-0.075, -0.008, h);
+    float haze = surface ? surfaceHaze : skyHaze;
     vec3 fill = (1.0 - haze) * terrain * ambient * mix(vec3(luma), raw, 0.25) * moonlight;
     vec3 emission = airglow * haze + fill;
     if (hasCityLights) {
       emission += cityRadiance(eyePosition + ray * viewDepth, raw, luma, terrain, range);
     }
-    float clearAir = cloudTransmission(uv);
-    vec3 cloudFill = vec3(0.00027, 0.00033, 0.00044) * moonlight + airglow * haze * 0.5;
-    c += night * mix(cloudFill, emission, clearAir);
+    // Cloud radiance has already been integrated by the volumetric pass.
+    c += night * emission * cloudTransmission(uv);
   }
   for (int i = 0; i < ${MAX_LAMPS}; i++) {
     if (i >= lampCount) break;
@@ -275,6 +278,7 @@ const PREFETCH_DELAY_MS = 6000
 export class NightEffect extends Effect {
   readonly albedoPass = new NightAlbedoPass()
   private readonly cityMapUrl?: string
+  private readonly getCloudOverlay?: () => Texture | null
   private cityLoad: Promise<DataTexture> | null = null
   private cityMask: DataTexture | null = null
   private readonly createdAt = typeof performance === 'undefined' ? 0 : performance.now()
@@ -284,7 +288,7 @@ export class NightEffect extends Effect {
   private readonly referenceNorth = new Vector3()
   private hasLightReference = false
 
-  constructor(ecefFromWorld = new Matrix4(), cityMapUrl?: string) {
+  constructor(ecefFromWorld = new Matrix4(), cityMapUrl?: string, getCloudOverlay?: () => Texture | null) {
     super('NightEffect', frag, {
       blendFunction: BlendFunction.SRC,
       attributes: EffectAttribute.DEPTH,
@@ -318,6 +322,7 @@ export class NightEffect extends Effect {
       ]),
     })
     this.cityMapUrl = cityMapUrl
+    this.getCloudOverlay = getCloudOverlay
     this.ecefFromWorld = ecefFromWorld
     this.albedoPass.enabled = false
     this.uniforms.get('sceneAlbedo')!.value = this.albedoPass.texture
@@ -329,6 +334,10 @@ export class NightEffect extends Effect {
   }
 
   override update(renderer: WebGLRenderer) {
+    // The cloud resolve swaps its textures during this composer frame.
+    const overlay = this.getCloudOverlay?.() ?? null
+    this.uniforms.get('cloudOverlay')!.value = overlay
+    this.uniforms.get('hasCloudOverlay')!.value = overlay !== null
     if (!this.cityMapUrl || this.cityLoad) return
     if (this.uniforms.get('night')!.value < 0.001 && performance.now() - this.createdAt < PREFETCH_DELAY_MS) return
     const pending = loadCityMask(this.cityMapUrl, renderer.capabilities.maxTextureSize)
@@ -392,11 +401,9 @@ export class NightEffect extends Effect {
    * @param night 0 in daylight, 1 in full night.
    * @param moon 0..1 how much moonlight reaches the ground.
    */
-  setFrame(camera: PerspectiveCamera, night: number, moon: number, up: Vector3, lamps: readonly Lamp[], cloudOverlay: Texture | null = null, eyeHeight = 0) {
+  setFrame(camera: PerspectiveCamera, night: number, moon: number, up: Vector3, lamps: readonly Lamp[], eyeHeight = 0) {
     const u = this.uniforms
     this.albedoPass.enabled = night > 0.001
-    u.get('cloudOverlay')!.value = cloudOverlay
-    u.get('hasCloudOverlay')!.value = cloudOverlay !== null
     // View rays in world space, for the sky gradient.
     const e = camera.matrixWorld.elements
     const tan = Math.tan((camera.fov * Math.PI) / 360)
@@ -409,7 +416,8 @@ export class NightEffect extends Effect {
     this.updateLightFrame()
     u.get('moonlight')!.value = 0.62 + 0.38 * moon
     // Sine of the angle below local horizontal at which the Earth falls away.
-    u.get('horizonDip')!.value = Math.sqrt(2 * Math.max(0, eyeHeight) / 6371000)
+    const heightRatio = Math.max(0, eyeHeight) / 6371000
+    u.get('horizonDip')!.value = Math.sqrt(heightRatio * (2 + heightRatio)) / (1 + heightRatio)
     u.get('aspect')!.value = camera.aspect
     const at = u.get('lampAt')!.value as Vector3[]
     const col = u.get('lampColor')!.value as Vector4[]

@@ -5,7 +5,7 @@
 import { useFrame, useThree } from '@react-three/fiber'
 import type { AtmosphereApi } from '@takram/three-atmosphere/r3f'
 import { useEffect, useMemo, useRef } from 'react'
-import { BackSide, Color, Mesh, PMREMGenerator, Scene, ShaderMaterial, SphereGeometry, Vector3, type WebGLRenderTarget } from 'three'
+import { BackSide, Color, MathUtils, Mesh, PMREMGenerator, Scene, ShaderMaterial, SphereGeometry, Vector3, type WebGLRenderTarget } from 'three'
 import { frame } from '../world/frame'
 
 const vert = /* glsl */ `
@@ -27,7 +27,7 @@ void main() {
   vec3 d = normalize(vDir);
   float h = dot(d, up);
   vec3 sky = mix(horizon, zenith, pow(clamp(h, 0.0, 1.0), 0.45));
-  vec3 col = h >= 0.0 ? sky : mix(horizon * 0.6, ground, clamp(-h * 6.0, 0.0, 1.0));
+  vec3 col = h >= 0.0 ? sky : mix(horizon, ground, smoothstep(0.0, 0.23, -h));
   float s = max(dot(d, sunDir), 0.0);
   col += sunColor * (pow(s, 600.0) * 40.0 + pow(s, 12.0) * 0.6);
   gl_FragColor = vec4(col, 1.0);
@@ -95,7 +95,7 @@ export function SkyEnvironment({ atmosphere }: { atmosphere: React.RefObject<Atm
     u.zenith.value.setRGB(0.05 * day + 0.002, 0.12 * day + 0.003, 0.32 * day + 0.008)
     u.horizon.value.setRGB(0.22 * day + 0.25 * golden + 0.004, 0.3 * day + 0.12 * golden + 0.005, 0.42 * day + 0.04 * golden + 0.01)
     u.ground.value.setRGB(0.06 * day + 0.002, 0.06 * day + 0.002, 0.05 * day + 0.002)
-    u.sunColor.value.setRGB(1.0, 0.85 + 0.15 * (1 - golden), 0.7 + 0.3 * (1 - golden)).multiplyScalar(elev > -0.02 ? 1 : 0)
+    u.sunColor.value.setRGB(1.0, 0.85 + 0.15 * (1 - golden), 0.7 + 0.3 * (1 - golden)).multiplyScalar(MathUtils.smoothstep(elev, -0.035, 0.006))
     // A smooth gradient needs no detail: a 64px cube filters ~16x faster than the default 256.
     const rt = pmrem.fromScene(envScene, 0, 0.1, 100, { size: 64 })
     target.current?.dispose()

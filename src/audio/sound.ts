@@ -231,14 +231,16 @@ class SoundEngine {
 
     // ---- Engines ------------------------------------------------------
     if (jet) {
-      const fan = 0.2 + 0.8 * n1
+      // Afterburner: a deep, ragged roar on top of the engine.
+      const ab = crashed ? 0 : s[S.AFTERBURNER]
+      const fan = 0.2 + 0.8 * Math.min(1, n1)
       this.set(this.whine1.osc.frequency, 700 + 2600 * fan)
       this.set(this.whine2.osc.frequency, (700 + 2600 * fan) * 1.97)
       this.set(this.whine1.gain.gain, 0.025 * fan * fan + 0.004)
       this.set(this.whine2.gain.gain, 0.008 * fan * fan)
-      this.set(this.roar.filter.frequency, 250 + 1100 * n1)
-      this.set(this.roar.gain.gain, 0.03 + 0.5 * n1 * n1 * (1 + rev * 0.6))
-      this.set(this.rumbleLow.gain.gain, 0.06 + 0.55 * n1 * n1)
+      this.set(this.roar.filter.frequency, 250 + 1100 * n1 - 350 * ab)
+      this.set(this.roar.gain.gain, 0.03 + 0.5 * n1 * n1 * (1 + rev * 0.6) + 0.45 * ab)
+      this.set(this.rumbleLow.gain.gain, 0.06 + 0.55 * n1 * n1 + 0.5 * ab)
       this.set(this.prop.gain.gain, 0)
       this.set(this.propFire.gain.gain, 0)
     } else {

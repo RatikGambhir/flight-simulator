@@ -60,7 +60,9 @@ export const S = {
   WIND_U: 54,
   REVERSER: 55,
   GROUND_EFFECT: 56,
-  LEN: 57,
+  /** Afterburner stage 0..1 (0 = not lit). */
+  AFTERBURNER: 57,
+  LEN: 58,
 } as const
 
 export const Flags = {
@@ -233,6 +235,9 @@ export interface AircraftSpec {
   engine: 'jet' | 'propeller'
   engine_count: number
   max_thrust_n: number
+  afterburner_thrust_n: number
+  afterburner_detent: number
+  thrust_reversers: boolean
   alpha_stall_deg: number
   flap_detents: string[]
   v_rotate_kt: number

@@ -27,7 +27,8 @@ import { SkyEnvironment } from './SkyEnvironment'
 import { GradeEffect } from './Grade'
 import { Ocean } from './Ocean'
 import { LakeWater } from './LakeWater'
-import { CloudHistory, stabilizeAerialPerspective, stabilizeClouds } from './cloudRendering'
+import { CloudHistory, setCloudNightLighting, stabilizeAerialPerspective, stabilizeClouds, stabilizeNightClouds } from './cloudRendering'
+import { WaterMask } from './WaterMask'
 import { NightEffect } from './NightEffect'
 import { useAtmosphereTextures } from './useAtmosphereTextures'
 import { DestinationMarker } from './DestinationMarker'
@@ -79,24 +80,23 @@ const MAX_DPR: Record<Quality, number> = { low: 1, medium: 1.25, high: 1.5, ultr
  * The stock lighting-mask shader decodes depth as if the buffer were linear
  * perspective depth. With the logarithmic depth buffer every sample collapses
  * to nearly the same value, so a masked object counts as visible even when
- * terrain hides it: the sea shell 200 m under Chicago switched off lighting
- * for the ground above it. Log depth is monotonic, so compare it directly.
+ * terrain hides it. Require a match with the visible depth, since the opaque
+ * override can also draw windows and other surfaces that never wrote scene depth.
  */
 const LIGHTING_MASK_FRAG = /* glsl */ `
 #include <common>
 #include <packing>
 uniform highp sampler2D depthBuffer0;
 uniform highp sampler2D depthBuffer1;
-uniform sampler2D inputBuffer;
 uniform bool inverted;
 varying vec2 vUv;
 void main() {
   float scene = unpackRGBAToDepth(texture2D(depthBuffer0, vUv));
   float selected = unpackRGBAToDepth(texture2D(depthBuffer1, vUv));
-  bool keep = scene < 1.0 && selected <= scene + 1e-7;
+  bool keep = scene < 1.0 && selected < 1.0 && abs(selected - scene) <= 2e-7;
   if (inverted) keep = !keep;
   if (!keep) discard;
-  gl_FragColor = texture2D(inputBuffer, vUv);
+  gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
 }`
 
 function patchLightingMask(pass: LightingMaskPass | null) {
@@ -109,6 +109,7 @@ function patchLightingMask(pass: LightingMaskPass | null) {
 const _sun = new Vector3()
 const _moon = new Vector3()
 const _observer = new Vector3()
+const _eyeUp = new Vector3()
 /** Scene-radiance units (the sun is ~1): enough to read the aircraft's shape, no more. */
 const NIGHT_FILL = 0.075
 const MOON_LIGHT = 0.16
@@ -177,16 +178,15 @@ interface LoopProps {
   night: NightEffect
   nightFill: React.RefObject<HemisphereLight | null>
   moonLight: React.RefObject<DirectionalLight | null>
-  guide: OverlayPass
   /** Fraction of direct sunlight reaching the aircraft through the cloud deck. */
   sunThrough: React.RefObject<number>
 }
 
-function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, lakes, celestial, clouds, precipitation, night, nightFill, moonLight, guide, sunThrough }: LoopProps) {
+function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, lakes, celestial, clouds, precipitation, night, nightFill, moonLight, sunThrough }: LoopProps) {
   const camera = useThree((s) => s.camera) as PerspectiveCamera
   const gl = useThree((s) => s.gl)
   const rig = useMemo(() => new CameraRig(camera), [camera])
-  const state = useRef({ gen: -1, spawnAt: 0, lastProbe: 0, lastCollision: 0, geoid: 0, lastGeoid: 0, groundSamples: 0, lastSun: -1e9, phase: '' as string, dark: 0, moon: 0 })
+  const state = useRef({ gen: -1, spawnAt: 0, lastProbe: 0, lastCollision: 0, geoid: 0, lastGeoid: 0, groundSamples: 0, lastSun: -1e9, realTime: false, timeOfDay: -1, phase: '' as string, dark: 0, moon: 0 })
   // Live weather as currently drawn; eased towards each new report.
   const weather = useRef({
     lastPoll: -1e9,
@@ -202,6 +202,9 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
     eyeVelocity: new Vector3(),
     eyeOrigin: -1,
   })
+  useEffect(() => {
+    rig.cockpitLookPitch = aircraft.model.cockpitLookPitch ?? -0.2
+  }, [rig, aircraft])
   // Reused every frame (no per-frame allocation).
   const pose = useMemo<AircraftPose>(
     () => ({
@@ -306,6 +309,7 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
       st.gen = r.generation
       st.spawnAt = now
       st.groundSamples = 0
+      st.lastSun = -Infinity
       frame.setOrigin(r.x, r.y, r.z)
       rig.snap()
     } else {
@@ -318,8 +322,10 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
     const settings = useApp.getState().settings
     let sunWorld: Vector3 | null = null
     if (atm) {
-      if (now - st.lastSun > 250) {
+      if (now - st.lastSun > 250 || settings.realTime !== st.realTime || (!settings.realTime && settings.timeOfDay !== st.timeOfDay)) {
         st.lastSun = now
+        st.realTime = settings.realTime
+        st.timeOfDay = settings.timeOfDay
         celestial.update(sceneDate(settings.realTime, settings.timeOfDay, s[S.LON]), _observer.set(r.x, r.y, r.z))
         atm.inertialToECEFMatrix.copy(celestial.inertialToECEF)
         atm.sunDirection.copy(celestial.sunDirection)
@@ -428,9 +434,8 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
     }
     wx.eye.copy(camera.position)
     wx.eyeOrigin = frame.version
-    const eyeHeight = s[S.HEIGHT] + _probe.copy(camera.position).sub(aircraft.position).dot(_u)
-    night.setFrame(camera, st.dark, st.moon, _u, aircraft.lamps, cl?.atmosphereOverlay?.map ?? null, eyeHeight)
-    guide.setClouds(cl?.atmosphereOverlay?.map ?? null)
+    const eyeHeight = s[S.HEIGHT] - st.geoid + _probe.copy(camera.position).sub(aircraft.position).dot(_u)
+    night.setFrame(camera, st.dark, st.moon, frame.upAt(camera.position, _eyeUp), aircraft.lamps, eyeHeight)
     precipitation.setFrame(camera, dt, wx.precip, wx.snow, _air, wx.eyeVelocity, _u, daylight * (1 - 0.3 * wx.coverage), gl.domElement.height)
 
     // Cloud shapes drift with the wind (texture offsets are in ECEF metres x repeat).
@@ -438,6 +443,7 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
       wx.effect = cl
       cl.coverage = wx.coverage
       cl.clouds.hazeDensityScale = wx.haze
+      setCloudNightLighting(cl, st.dark, celestial.moonDirection, celestial.illuminatedFraction)
       enuBasis(s[S.LAT], s[S.LON], _we, _wn, _wu)
       _wind.set(0, 0, 0).addScaledVector(_we, s[S.WIND_E]).addScaledVector(_wn, s[S.WIND_N])
       cl.shapeVelocity.copy(_wind).multiplyScalar(-cl.shapeRepeat.x)
@@ -543,7 +549,22 @@ function SceneContents() {
   const [lakes, setLakes] = useState<LakeWater | null>(null)
   const grade = useMemo(() => new GradeEffect(), [])
   const precipitation = useMemo(() => new PrecipitationEffect(), [])
-  const night = useMemo(() => new NightEffect(frame.ecefFromWorld, `${import.meta.env.BASE_URL}atmosphere/city-lights.jpg`), [])
+  const getCloudOverlay = useCallback(() => cloudsRef.current?.atmosphereOverlay?.map ?? null, [])
+  const waterMask = useMemo(() => new WaterMask(), [])
+  useEffect(() => {
+    const abort = new AbortController()
+    void waterMask.load(`${import.meta.env.BASE_URL}water/shorelines.bin`, abort.signal)
+    return () => {
+      abort.abort()
+      waterMask.dispose()
+    }
+  }, [waterMask])
+  const night = useMemo(() => {
+    const effect = new NightEffect(frame.ecefFromWorld, `${import.meta.env.BASE_URL}atmosphere/city-lights.jpg`, getCloudOverlay)
+    stabilizeNightClouds(effect)
+    waterMask.maskNightLights(effect)
+    return effect
+  }, [waterMask, getCloudOverlay])
   useEffect(() => () => night.dispose(), [night])
   const bindLightingMask = useCallback((pass: LightingMaskPass | null) => {
     patchLightingMask(pass)
@@ -551,7 +572,7 @@ function SceneContents() {
   }, [night])
   const nightFill = useRef<HemisphereLight>(null)
   const moonLight = useRef<DirectionalLight>(null)
-  const guide = useMemo(() => new OverlayPass(camera), [camera])
+  const guide = useMemo(() => new OverlayPass(camera, getCloudOverlay), [camera, getCloudOverlay])
   useEffect(() => () => guide.dispose(), [guide])
   const sunThrough = useRef(1)
   // After the library's SunLight recomputes its color from atmospheric transmittance (0).
@@ -560,8 +581,10 @@ function SceneContents() {
   }, 0.5)
   const cloudHistory = useMemo(() => new CloudHistory(), [])
   const bindAerial = useCallback((effect: Effect | null) => {
-    if (effect) stabilizeAerialPerspective(effect)
-  }, [])
+    if (!effect) return
+    stabilizeAerialPerspective(effect)
+    waterMask.shadeAerialPerspective(effect)
+  }, [waterMask])
   const bindClouds = useCallback((effect: CloudsEffect | null) => {
     if (effect) stabilizeClouds(effect)
     cloudsRef.current = effect
@@ -570,6 +593,8 @@ function SceneContents() {
   // FlightLoop runs at -1; the effect composer runs at +1. Invalidate history
   // after the camera has moved but before rendering the new cloud image.
   useFrame(() => {
+    if (sim.render.valid) waterMask.update(sim.latest[S.LAT], sim.latest[S.LON])
+    if (aircraft) waterMask.protectAircraft(aircraft.position, Math.max(aircraft.model.span, aircraft.model.length))
     const effect = cloudsRef.current
     if (!effect) return
     // R3F applies the library's resolution default before its quality setter,
@@ -578,7 +603,7 @@ function SceneContents() {
     if (effect.resolutionScale !== CLOUD_RESOLUTION[quality]) effect.resolutionScale = CLOUD_RESOLUTION[quality]
     effect.clouds.minStepSize = CLOUD_STEP[quality]
     cloudHistory.update(effect, camera, frame.version, useApp.getState().camera, quality)
-  })
+  }, 0.25)
 
   useEffect(() => {
     camera.layers.enable(LIGHTING_MASK_LAYER)
@@ -654,7 +679,7 @@ function SceneContents() {
       <SkyEnvironment atmosphere={atmosphere} />
       <LandingGuide world={world} overlay={guide} />
       {world && aircraft ? (
-        <FlightLoop world={world} aircraft={aircraft} atmosphere={atmosphere} sunLight={sunLight} skyLight={skyLight} ocean={ocean} lakes={lakes} celestial={celestial} clouds={cloudsRef} precipitation={precipitation} night={night} nightFill={nightFill} moonLight={moonLight} guide={guide} sunThrough={sunThrough} />
+        <FlightLoop world={world} aircraft={aircraft} atmosphere={atmosphere} sunLight={sunLight} skyLight={skyLight} ocean={ocean} lakes={lakes} celestial={celestial} clouds={cloudsRef} precipitation={precipitation} night={night} nightFill={nightFill} moonLight={moonLight} sunThrough={sunThrough} />
       ) : null}
       <EffectComposer multisampling={0} enableNormalPass={provider !== 'open'}>
         {clouds ? (

@@ -83,6 +83,8 @@ export class CameraRig {
   pitch = 0.16
   lookYaw = 0
   lookPitch = -0.2
+  /** Default cockpit look-down angle (rad): airliner pilots scan the panel, fighter pilots look through the HUD. */
+  cockpitLookPitch = -0.2
   zoom = 1
   private smoothedPos = new Vector3()
   private smoothedFwd = new Vector3(0, 0, -1)
@@ -118,7 +120,7 @@ export class CameraRig {
     this.mode = mode
     if (mode === 'cockpit') {
       this.lookYaw = 0
-      this.lookPitch = -0.2
+      this.lookPitch = this.cockpitLookPitch
     }
     if (mode === 'flyby') this.flybyHave = false
     if (mode === 'cinematic') {
@@ -133,7 +135,7 @@ export class CameraRig {
     this.yaw = 0
     this.pitch = 0.16
     this.lookYaw = 0
-    this.lookPitch = -0.2
+    this.lookPitch = this.cockpitLookPitch
     this.zoom = 1
     this.cockpitFov = 68
   }

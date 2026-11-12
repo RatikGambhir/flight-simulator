@@ -44,19 +44,15 @@ export class OverlayPass extends Pass {
   }
 
   private readonly view: Camera
+  private readonly getCloudOverlay?: () => Texture | null
 
-  constructor(view: Camera) {
+  constructor(view: Camera, getCloudOverlay?: () => Texture | null) {
     super('OverlayPass')
     this.view = view
+    this.getCloudOverlay = getCloudOverlay
     this.needsSwap = false
     this.needsDepthTexture = true
     this.uniforms.overlayDepth.value = this.depthCopy.texture
-  }
-
-  /** Cloud coverage (premultiplied overlay with alpha) to fade the overlay behind clouds. */
-  setClouds(texture: Texture | null) {
-    this.uniforms.overlayClouds.value = texture
-    this.uniforms.hasOverlayClouds.value = texture !== null
   }
 
   /** Converts a material to draw in this pass: manual depth test, no depth writes. */
@@ -92,6 +88,9 @@ export class OverlayPass extends Pass {
     let visible = false
     for (const child of this.overlay.children) visible ||= child.visible
     if (!visible || !inputBuffer) return
+    const clouds = this.getCloudOverlay?.() ?? null
+    this.uniforms.overlayClouds.value = clouds
+    this.uniforms.hasOverlayClouds.value = clouds !== null
     this.depthCopy.render(renderer, null, null)
     this.uniforms.overlaySize.value.set(inputBuffer.width, inputBuffer.height)
     const autoClear = renderer.autoClear

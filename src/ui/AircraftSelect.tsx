@@ -56,7 +56,7 @@ export function AircraftSelect({ onClose }: { onClose: () => void }) {
                   <span>{a.wingspan_m.toFixed(1)} m</span>
                   <span>Engines</span>
                   <span>
-                    {a.engine_count} × {a.engine === 'jet' ? 'turbofan' : 'piston/prop'}
+                    {a.engine_count} × {a.engine === 'propeller' ? 'piston/prop' : a.afterburner_thrust_n > 0 ? 'afterburning turbofan' : 'turbofan'}
                   </span>
                   <span>Rotate / approach</span>
                   <span>

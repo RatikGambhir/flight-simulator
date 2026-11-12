@@ -9,6 +9,7 @@
     "build:wasm": "cargo build -p sim-wasm --target wasm32-unknown-unknown --release && node scripts/copy_wasm.mjs",
     "typecheck": "tsc --noEmit",
     "test:graphics": "node --test scripts/graphics.test.mjs scripts/celestial.test.mjs",
+    "test:graphics:gpu": "node scripts/test-graphics-webkit.mjs",
     "test:navigation": "node --test scripts/navigation.test.mjs",
     "test:cockpit": "node --experimental-transform-types --test scripts/cockpit.test.mjs",
     "test:skip-to": "node --test scripts/skip-to.test.mjs",

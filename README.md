@@ -270,6 +270,7 @@ npm run typecheck
 
 ```bash
 npm run test:graphics # Node 22.18+; clouds, aircraft geometry/hinges, lake surfaces and flight prefetch
+npm run test:graphics:gpu # macOS with WebGL 2; checks rendered pixels for day, sunset and night
 ```
 
 Clouds use continuous reduced-resolution sampling with temporal antialiasing,

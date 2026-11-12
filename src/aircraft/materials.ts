@@ -28,6 +28,86 @@ export const LIVERIES: Record<string, Livery> = {
   bizjet: { base: '#f7f7f7', belly: '#2d3440', stripe: '#8a6d3b', accent: '#2d3440', tail: '#f7f7f7', tailLogo: '#8a6d3b', title: 'N350GF' },
   longitude: { base: '#f8f8f6', belly: '#1c2a3f', stripe: '#1f6f86', accent: '#aeb6c0', tail: '#f8f8f6', tailLogo: '#1f6f86', title: 'N700GF' },
   c172: { base: '#fbfbf8', belly: '#fbfbf8', stripe: '#1f4f9c', accent: '#c8202f', tail: '#fbfbf8', tailLogo: '#1f4f9c', title: 'N172GF' },
+  // Two-tone air-superiority grey: medium sides, light underside, dark spine.
+  f16: { base: '#5f676e', belly: '#7b838a', stripe: '#454c53', accent: '#1f2226', tail: '#5f676e', tailLogo: '#383e44', title: 'GF' },
+}
+
+/** Fighter camouflage in the fuselage tube's UV space (u around, v along). */
+export function paintFighter(livery: Livery): Texture {
+  const W = 1024
+  const H = 512
+  const c = document.createElement('canvas')
+  c.width = W
+  c.height = H
+  const g = c.getContext('2d')!
+  // u: 0 top, 0.25 right, 0.5 bottom, 0.75 left. Soft-edged bands, as sprayed.
+  const grad = g.createLinearGradient(0, 0, W, 0)
+  const stops: [number, string][] = [
+    [0, livery.stripe],
+    [0.09, livery.stripe],
+    [0.15, livery.base],
+    [0.33, livery.base],
+    [0.4, livery.belly],
+    [0.6, livery.belly],
+    [0.67, livery.base],
+    [0.85, livery.base],
+    [0.91, livery.stripe],
+    [1, livery.stripe],
+  ]
+  for (const [u, col] of stops) grad.addColorStop(u, col)
+  g.fillStyle = grad
+  g.fillRect(0, 0, W, H)
+  // Radome (slightly different grey composite) and the dark anti-glare panel ahead of the canopy.
+  g.fillStyle = '#7f878e'
+  g.fillRect(0, 0, W, H * 0.045)
+  g.fillStyle = livery.accent
+  g.fillRect(0, H * 0.06, W * 0.07, H * 0.11)
+  g.fillRect(W * 0.93, H * 0.06, W * 0.07, H * 0.11)
+  // Panel lines.
+  g.strokeStyle = 'rgba(40,45,50,0.35)'
+  g.lineWidth = 2
+  for (const v of [0.045, 0.2, 0.3, 0.44, 0.58, 0.72, 0.86]) {
+    g.beginPath()
+    g.moveTo(0, H * v)
+    g.lineTo(W, H * v)
+    g.stroke()
+  }
+  for (const u of [0.2, 0.3, 0.7, 0.8]) {
+    g.beginPath()
+    g.moveTo(W * u, H * 0.2)
+    g.lineTo(W * u, H * 0.9)
+    g.stroke()
+  }
+  const tex = new CanvasTexture(c)
+  tex.colorSpace = SRGBColorSpace
+  tex.anisotropy = 8
+  tex.wrapS = RepeatWrapping
+  return tex
+}
+
+/** Fighter fin: grey with a dark tip band and a low-visibility badge. Wing UVs (u = chord, v = span). */
+export function paintFighterTail(livery: Livery): Texture {
+  const c = document.createElement('canvas')
+  c.width = 512
+  c.height = 512
+  const g = c.getContext('2d')!
+  g.fillStyle = livery.tail
+  g.fillRect(0, 0, 512, 512)
+  // Dark band at the tip (canvas top = v 1 = fin tip).
+  g.fillStyle = livery.stripe
+  g.fillRect(0, 0, 512, 82)
+  // Both fin skins share these UVs (one side sees it mirrored), so the badge is
+  // left-right symmetric: a ring with a bar through it.
+  g.strokeStyle = livery.tailLogo
+  g.fillStyle = livery.tailLogo
+  g.lineWidth = 18
+  g.beginPath()
+  g.arc(256, 250, 70, 0, Math.PI * 2)
+  g.stroke()
+  g.fillRect(130, 238, 252, 24)
+  const tex = new CanvasTexture(c)
+  tex.colorSpace = SRGBColorSpace
+  return tex
 }
 
 export interface FuselagePaint {

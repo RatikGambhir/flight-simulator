@@ -31,6 +31,14 @@ function stabilizeResolve(material: RawShaderMaterial, shadow: boolean) {
   source = replace(source, history, `${history}\n${shadow
     ? 'if (any(isnan(history)) || any(isinf(history))) history = current;'
     : 'if (any(isnan(historyColor)) || any(isinf(historyColor))) historyColor = currentColor;'}`)
+  if (!shadow) {
+    // The library has already unrolled these neighborhoods. Clamp their
+    // integer coordinates at the edge before reading motion or color.
+    source = source.replace(/texelFetchOffset\((depthVelocityBuffer|inputBuffer), coord, 0, ((?:neighborOffsets|varianceOffsets)\[\d+\])\)/g,
+      'texelFetch($1, clamp(coord + $2, ivec2(0), textureSize($1, 0) - 1), 0)')
+    const shadowHistory = 'vec4 historyShadowLength = vec4(texture(shadowLengthHistoryBuffer, prevUv).rgb, 1.0);'
+    source = replace(source, shadowHistory, `${shadowHistory}\n  if (isnan(historyShadowLength.r) || isinf(historyShadowLength.r)) historyShadowLength = currentShadowLength;`)
+  }
   material.uniforms.resetHistory = new Uniform(true)
   material.fragmentShader = source
   material.needsUpdate = true
@@ -53,25 +61,104 @@ export function stabilizeClouds(effect: CloudsEffect) {
 
   let source = clouds.fragmentShader
   source = replace(source, 'uniform mat4 viewMatrix;', 'uniform mat4 viewMatrix;\nuniform mat4 inverseViewMatrix;')
+  source = `uniform highp float nightLighting;\nuniform highp float moonPhase;\nuniform highp vec3 nightMoonDirection;\n${source}`
+  source = replace(source, 'float getViewZ(', /* glsl */ `
+float solarVisibility() {
+  return smoothstep(-0.26, -0.12, dot(normalize(vCameraPosition + altitudeCorrection), sunDirection));
+}
+
+float getViewZ(`)
+  source = replace(source, 'float sunRayDistance = 0.0;\n      float opticalDepth = marchOpticalDepth(\n        position,\n        sunDirection,', /* glsl */ `
+      // Reuse the lighting ray for the dominant sky illumination after twilight.
+      float moonElevation = dot(nightMoonDirection, surfaceNormal);
+      float moon = moonPhase * smoothstep(0.0, 0.15, moonElevation);
+      float nightDepthWeight = smoothstep(0.82, 1.0, nightLighting);
+      vec3 nightLightDirection = normalize(mix(surfaceNormal, nightMoonDirection, moon * 0.7));
+      vec3 lightDirection = normalize(mix(sunDirection, nightLightDirection, nightDepthWeight));
+      float sunRayDistance = 0.0;
+      float opticalDepth = marchOpticalDepth(
+        position,
+        lightDirection,`)
+  source = replace(source, 'if (height < shadowTopHeight) {\n        // Obtain the optical depth from BSM at the ray position.\n        opticalDepth += sampleShadowOpticalDepth(', /* glsl */ `
+      if (height < shadowTopHeight && nightDepthWeight < 1.0) {
+        // The shadow cascades follow the sun, so they only shade its contribution.
+        opticalDepth += (1.0 - nightDepthWeight) * sampleShadowOpticalDepth(`)
+  source = replace(source, 'radiance *= media.scattering;', /* glsl */ `
+      if (nightLighting > 0.001) {
+        // Light the volume before integrating extinction, so thin edges and
+        // denser interiors react differently even on a moonless night.
+        float body = media.extinction * 125.0;
+        float skyTransmission = mix(exp(-0.8 * body), exp(-0.9 * opticalDepth), nightDepthWeight);
+        float skyFill = mix(0.60, 1.24, skyGradient) * mix(0.36, 1.0, skyTransmission);
+        vec3 nightRadiance = vec3(0.0030, 0.00365, 0.00465) * skyFill;
+        if (moon > 0.001) {
+          float moonOpticalDepth = mix(body / max(0.22, moonElevation), opticalDepth, nightDepthWeight);
+          float moonAngle = dot(nightMoonDirection, rayDirection);
+          float moonScatter = min(1.0, approximateMultipleScattering(moonOpticalDepth, moonAngle) * 4.0);
+          nightRadiance += vec3(0.0030, 0.0037, 0.0048) * moon * moonScatter;
+        }
+        radiance += nightLighting * nightRadiance;
+      }
+      radiance *= media.scattering;`)
   source = replace(source, 'vec3 frontPositionWorld = ecefToWorld(frontPosition);',
     'vec3 frontPositionWorld = inverseViewMatrix[3].xyz + mat3(ecefToWorldMatrix) * (frontDepth * rayDirection);')
+  source = replace(source, 'color.rgb = color.rgb * transmittance + inscatter * color.a;',
+    'color.rgb = color.rgb * transmittance + max(inscatter, vec3(0.0)) * color.a;')
   // At Earth-sized coordinates a sub-metre segment can round to zero. Avoid
   // normalizing that zero vector inside the atmospheric scattering lookup.
   source = replace(source, 'applyAerialPerspective(cameraPosition, frontPosition, shadowLength, color);',
-    'if (frontDepth > 1.0) applyAerialPerspective(cameraPosition, frontPosition, shadowLength, color);')
+    /* glsl */ `if (frontDepth > 1.0) applyAerialPerspective(cameraPosition, frontPosition, shadowLength, color);
+      // Apply night haze at cloud depth, independently of the background surface.
+      float nightHaze = nightLighting * (1.0 - exp(-max(0.0, frontDepth) / 65000.0));
+      color.rgb = mix(color.rgb, color.a * vec3(0.0012, 0.0016, 0.00235), nightHaze);`)
+  source = replace(source, 'depth = reverseLogDepth(depth, cameraNear, cameraFar);\n    viewZ = getViewZ(depth);', /* glsl */ `
+    #if defined(USE_LOGDEPTHBUF) || defined(USE_LOGARITHMIC_DEPTH_BUFFER)
+    viewZ = 1.0 - exp2(depth * log2(cameraFar + 1.0));
+    #else
+    viewZ = getViewZ(depth);
+    #endif`)
   // Motion depth is stored in RGBA16F: a 20,000 km far plane overflows it.
   source = replace(source, 'outputDepthVelocity = depthVelocity;', 'outputDepthVelocity = vec3(min(depthVelocity.x, 65000.0), depthVelocity.yz);')
   // Stock haze fades out under clear skies (coverage < 0.2). Live weather can
   // report mist without cloud, so haze raised above the default always shows.
   source = replace(source, 'float modulation = remapClamped(coverage, 0.2, 0.4);',
     'float modulation = max(remapClamped(coverage, 0.2, 0.4), step(4e-5, hazeDensityScale));')
+  source = replace(source, 'if (cameraHeight * modulation < 0.0) {',
+    'if (maxRayDistance <= 0.0 || cameraHeight * modulation < 0.0) {')
+  // From above the weather, the haze starts at the entry to the cloud shell.
+  // At the tangent the entry and exit meet, so the haze fades out with its path length.
+  source = replace(source, `} else {
+    nearFar = vec2(cameraNear, intersections.second.z);
+    if (intersections.ground) {`, `} else {
+    nearFar = vec2(max(cameraNear, intersections.first.z), intersections.second.z);
+    if (intersections.ground) {`)
+  source = replace(source, 'cameraNear * rayDirection + cameraPosition,\n    rayDirection,\n    hazeRayNearFar.y - hazeRayNearFar.x,',
+    'hazeRayNearFar.x * rayDirection + cameraPosition,\n    rayDirection,\n    hazeRayNearFar.y - hazeRayNearFar.x,')
+  // NightEffect already supplies airglow. Solar weather haze must not cut a
+  // second silhouette over it when the weather shell meets the horizon.
+  source = replace(source, 'return vec4(inscatter, transmittance);',
+    'return vec4(inscatter, transmittance * solarVisibility());')
+  source = replace(source, 'if (all(greaterThanEqual(shadowRayNearFar, vec2(0.0)))) {',
+    'if (solarVisibility() > 0.0 && all(greaterThanEqual(shadowRayNearFar, vec2(0.0)))) {')
+  source = replace(source, 'outputColor = color;', /* glsl */ `
+  outputColor = any(isnan(color)) || any(isinf(color)) ? vec4(0.0) : color;`)
   clouds.fragmentShader = source
+  clouds.uniforms.nightLighting = new Uniform(0)
+  clouds.uniforms.moonPhase = new Uniform(0)
+  clouds.uniforms.nightMoonDirection = new Uniform(new Vector3(0, 0, 1))
   shadow.fragmentShader = replace(shadow.fragmentShader,
     'weightedDistanceSum / transmittanceSum', 'weightedDistanceSum / max(transmittanceSum, 1e-7)')
   stabilizeResolve(effect.cloudsPass.resolveMaterial, false)
   stabilizeResolve(effect.shadowPass.resolveMaterial, true)
   effect.cloudsPass.resolveMaterial.uniforms.temporalAlpha.value = 0.2
   clouds.userData.geoflightStableClouds = true
+}
+
+export function setCloudNightLighting(effect: CloudsEffect, darkness: number, moonDirection: Vector3, moonPhase: number) {
+  const { uniforms } = effect.cloudsPass.currentMaterial
+  uniforms.nightLighting.value = darkness
+  uniforms.moonPhase.value = moonPhase ** 1.7
+  ;(uniforms.nightMoonDirection.value as Vector3).copy(moonDirection)
 }
 
 /**
@@ -84,15 +171,20 @@ export class CloudHistory {
   private width = 0
   private height = 0
   private coverage = -1
+  private darkness = -1
   private mode = ''
   private quality = ''
   private readonly position = new Vector3()
   private readonly rotation = new Quaternion()
+  private readonly sunDirection = new Vector3()
 
   update(effect: CloudsEffect, camera: Camera, origin: number, mode: string, quality: string) {
     const { width, height } = effect.resolution
+    const darkness = (effect.cloudsPass.currentMaterial.uniforms.nightLighting?.value as number | undefined) ?? 0
     const reset = effect !== this.effect || origin !== this.origin || mode !== this.mode || quality !== this.quality ||
       width !== this.width || height !== this.height || Math.abs(effect.coverage - this.coverage) > 0.01 ||
+      Math.abs(darkness - this.darkness) > 0.05 ||
+      this.sunDirection.distanceToSquared(effect.sunDirection) > 0.0025 ||
       this.position.distanceToSquared(camera.position) > 100 * 100 ||
       Math.abs(this.rotation.dot(camera.quaternion)) < 0.9
     effect.cloudsPass.resolveMaterial.uniforms.resetHistory.value = reset
@@ -104,13 +196,14 @@ export class CloudHistory {
     this.width = width
     this.height = height
     this.coverage = effect.coverage
+    this.darkness = darkness
     this.position.copy(camera.position)
     this.rotation.copy(camera.quaternion)
+    this.sunDirection.copy(effect.sunDirection)
   }
 }
 
 const OVERLAY_UPSAMPLE = /* glsl */ `
-#ifdef HAS_OVERLAY
 // The clouds are marched at a fraction of the screen resolution, each texel against
 // the scene depth at its centre. A plain bilinear fetch blends texels marched past
 // the aircraft into the sky with texels that stopped at the aircraft, which drew a
@@ -137,16 +230,90 @@ vec4 sampleCloudOverlay(const vec2 uv) {
   }
   return sum / total;
 }
-#endif // HAS_OVERLAY
+`
 
-void mainImage(`
+function setEffectFragment(effect: Effect, source: string) {
+  const target = effect as unknown as { setFragmentShader(source: string): void }
+  target.setFragmentShader(source)
+}
+
+export function stabilizeNightClouds(effect: Effect) {
+  const source = effect.getFragmentShader()
+  if (source.includes('sampleCloudOverlay')) return
+  const sampling = OVERLAY_UPSAMPLE.replaceAll('overlayBuffer', 'cloudOverlay').replaceAll('readDepthValue(depthBuffer, ', 'sceneDepth(')
+  setEffectFragment(effect, replace(source, 'float cloudTransmission(', `${sampling}\nfloat cloudTransmission(`)
+    .replace('texture2D(cloudOverlay, uv).a', 'sampleCloudOverlay(uv).a'))
+}
 
 /** Depth-aware upsampling of the cloud overlay where the aerial perspective composites it. */
 export function stabilizeAerialPerspective(effect: Effect) {
-  const target = effect as unknown as { getFragmentShader(): string; setFragmentShader(source: string): void }
-  let source = target.getFragmentShader()
+  let source = effect.getFragmentShader()
   if (source.includes('sampleCloudOverlay')) return
-  source = replace(source, 'vec4 overlay = texture(overlayBuffer, uv);', 'vec4 overlay = sampleCloudOverlay(uv);')
-  source = source.replace('void mainImage(', OVERLAY_UPSAMPLE)
-  target.setFragmentShader(source)
+  source = replace(source, `#ifdef HAS_OVERLAY
+  vec4 overlay = texture(overlayBuffer, uv);
+  if (overlay.a == 1.0) {
+    outputColor = overlay;
+    return;
+  }
+  #endif // HAS_OVERLAY`, '')
+  source = replace(source, 'void mainImage(', `#ifdef HAS_OVERLAY\n${OVERLAY_UPSAMPLE}\n#endif\n\nvoid mainImage(`)
+  source = replace(source, 'float depth = readDepthValue(depthBuffer, uv);\n  if (depth >= 1.0 - 1e-8) {', /* glsl */ `
+  float depth = readDepthValue(depthBuffer, uv);
+  // Compute derivatives before branching on depth. At silhouettes the 2x2
+  // quad may include sky or foreground geometry, so reject large depth jumps.
+  #if defined(USE_LOGDEPTHBUF) || defined(USE_LOGARITHMIC_DEPTH_BUFFER)
+  float viewZ = 1.0 - exp2(depth * log2(cameraFar + 1.0));
+  vec3 viewRay = (inverseProjectionMatrix * vec4(uv * 2.0 - 1.0, 1.0, 1.0)).xyz;
+  vec3 viewPosition = viewRay * (viewZ / viewRay.z);
+  #else
+  float viewZ = getViewZ(depth);
+  vec3 viewPosition = screenToView(uv, depth, viewZ, projectionMatrix, inverseProjectionMatrix);
+  #endif
+  #ifdef RECONSTRUCT_NORMAL
+  vec3 depthNormal = cross(dFdx(viewPosition), dFdy(viewPosition));
+  float normalLength = length(depthNormal);
+  bool validDepthNormal = fwidth(viewZ) < max(2.0, -0.035 * viewZ) && normalLength > 0.0;
+  #endif
+  #ifdef HAS_OVERLAY
+  vec4 overlay = sampleCloudOverlay(uv);
+  if (overlay.a >= 1.0) {
+    outputColor = overlay;
+    return;
+  }
+  #endif
+  if (depth >= 1.0) {`)
+  source = replace(source, `depth = reverseLogDepth(depth, cameraNear, cameraFar);
+
+  // Reconstruct position and normal in world space.
+  vec3 viewPosition = screenToView(
+    uv,
+    depth,
+    getViewZ(depth),
+    projectionMatrix,
+    inverseProjectionMatrix
+  );`, '')
+  source = replace(source, `vec3 dVPdx = dFdx(viewPosition);
+  vec3 dVPdy = dFdy(viewPosition);
+  viewNormal = normalize(cross(dVPdx, dVPdy));`, /* glsl */ `
+  degenerateNormal = !validDepthNormal;
+  viewNormal = validDepthNormal ? depthNormal / normalLength : vec3(0.0);`)
+  source = replace(source, 'vec3 normalECEF = (worldToECEFMatrix * vec4(worldNormal, 0.0)).xyz;', /* glsl */ `
+  vec3 normalECEF = degenerateNormal || !(dot(viewNormal, viewNormal) > 0.0)
+    ? normalize(positionECEF / vEllipsoidRadiiSquared)
+    : normalize((worldToECEFMatrix * vec4(worldNormal, 0.0)).xyz);`)
+  source = replace(source, `if (!degenerateNormal) {
+    radiance = getSunSkyIrradiance(positionECEF, normalECEF, inputColor.rgb, sunTransmittance);
+  } else {
+    radiance = inputColor.rgb;
+  }`, /* glsl */ `
+  // Finite scene depth belongs to a surface. A missing normal must not
+  // make streamed satellite albedo bypass lighting as if it were a star.
+  radiance = getSunSkyIrradiance(positionECEF, normalECEF, inputColor.rgb, sunTransmittance);`)
+  source = replace(source, 'vec3 transmittance;\n  vec3 inscatter = GetSkyRadianceToPoint(', /* glsl */ `
+  if (length(positionECEF - vCameraPosition) < 0.001) return;
+  vec3 transmittance;
+  vec3 inscatter = GetSkyRadianceToPoint(`)
+  source = replace(source, 'radiance = radiance + inscatter;',
+    'radiance += max(inscatter, vec3(0.0));')
+  setEffectFragment(effect, source)
 }

@@ -49,6 +49,12 @@ pub struct AircraftSpec {
     pub idle_thrust: f64,
     /// For propellers: shaft power times propeller efficiency (W).
     pub prop_power_w: f64,
+    /// Afterburning jets: total sea-level static thrust in full afterburner (N).
+    /// `max_thrust_n` is then the dry (military power) thrust. Zero for none.
+    pub afterburner_thrust_n: f64,
+    /// Throttle lever position where the afterburner range begins (0 = none).
+    pub afterburner_detent: f64,
+    pub thrust_reversers: bool,
 
     // Aerodynamics
     pub cd0: f64,
@@ -65,6 +71,13 @@ pub struct AircraftSpec {
     pub spoiler_cd: f64,
     pub spoiler_cl: f64,
     pub flap_detents: &'static [&'static str],
+    /// Flaps scheduled automatically with the landing gear (fighter flaperons)
+    /// rather than set by the pilot.
+    pub auto_flaps: bool,
+    /// Peak transonic/supersonic wave drag coefficient (0 = not modelled).
+    pub wave_drag_cd: f64,
+    /// Mach number where the drag rise begins.
+    pub drag_rise_mach: f64,
 
     // Handling
     /// Max commanded roll rate (deg/s).
@@ -77,6 +90,11 @@ pub struct AircraftSpec {
     pub response_time_s: f64,
     /// Max positive load factor used by the assisted control law.
     pub max_load_factor: f64,
+    /// Max negative load factor (full forward stick) in assisted mode.
+    pub min_load_factor: f64,
+    /// Full-envelope fly-by-wire: no bank-angle limits, path hold works inverted,
+    /// and turn coordination holds at any attitude (aerobatic fighters).
+    pub aerobatic: bool,
     /// Dynamic pressure (Pa) at which control surfaces reach full authority.
     pub full_authority_q: f64,
 
@@ -100,6 +118,9 @@ impl AircraftSpec {
     }
 
     pub fn takeoff_flaps(&self) -> usize {
+        if self.auto_flaps {
+            return self.flap_detents.len() - 1;
+        }
         match self.flap_detents.len() {
             n if n >= 5 => 2,
             n if n >= 3 => 1,
@@ -113,6 +134,9 @@ const A320_FLAPS: &[&str] = &["0", "1", "2", "3", "FULL"];
 const BIZJET_FLAPS: &[&str] = &["UP", "15°", "35°"];
 const LONGITUDE_FLAPS: &[&str] = &["UP", "1", "2", "FULL"];
 const GA_FLAPS: &[&str] = &["0°", "10°", "20°", "30°"];
+/// Fighter flaperons are scheduled by the flight control computer: they droop
+/// for takeoff and landing whenever the gear handle is down.
+const FIGHTER_FLAPS: &[&str] = &["AUTO", "TO/LDG"];
 
 static CATALOG: &[AircraftSpec] = &[
     AircraftSpec {
@@ -137,6 +161,9 @@ static CATALOG: &[AircraftSpec] = &[
         spool_time_s: 4.5,
         idle_thrust: 0.04,
         prop_power_w: 0.0,
+        afterburner_thrust_n: 0.0,
+        afterburner_detent: 0.0,
+        thrust_reversers: true,
         cd0: 0.021,
         oswald: 0.80,
         cl0: 0.25,
@@ -148,11 +175,16 @@ static CATALOG: &[AircraftSpec] = &[
         spoiler_cd: 0.06,
         spoiler_cl: -0.45,
         flap_detents: AIRLINER_FLAPS,
+        auto_flaps: false,
+        wave_drag_cd: 0.0,
+        drag_rise_mach: 0.0,
         max_roll_rate: 18.0,
         max_pitch_rate: 5.0,
         max_yaw_rate: 4.0,
         response_time_s: 0.75,
         max_load_factor: 2.5,
+        min_load_factor: 0.0,
+        aerobatic: false,
         full_authority_q: 6_000.0,
         v_rotate_kt: 145.0,
         v_approach_kt: 142.0,
@@ -184,6 +216,9 @@ static CATALOG: &[AircraftSpec] = &[
         spool_time_s: 4.0,
         idle_thrust: 0.04,
         prop_power_w: 0.0,
+        afterburner_thrust_n: 0.0,
+        afterburner_detent: 0.0,
+        thrust_reversers: true,
         cd0: 0.020,
         oswald: 0.82,
         cl0: 0.26,
@@ -195,11 +230,16 @@ static CATALOG: &[AircraftSpec] = &[
         spoiler_cd: 0.06,
         spoiler_cl: -0.45,
         flap_detents: A320_FLAPS,
+        auto_flaps: false,
+        wave_drag_cd: 0.0,
+        drag_rise_mach: 0.0,
         max_roll_rate: 15.0,
         max_pitch_rate: 5.0,
         max_yaw_rate: 4.0,
         response_time_s: 0.7,
         max_load_factor: 2.5,
+        min_load_factor: 0.0,
+        aerobatic: false,
         full_authority_q: 6_000.0,
         v_rotate_kt: 140.0,
         v_approach_kt: 135.0,
@@ -231,6 +271,9 @@ static CATALOG: &[AircraftSpec] = &[
         spool_time_s: 3.0,
         idle_thrust: 0.04,
         prop_power_w: 0.0,
+        afterburner_thrust_n: 0.0,
+        afterburner_detent: 0.0,
+        thrust_reversers: true,
         cd0: 0.019,
         oswald: 0.82,
         cl0: 0.2,
@@ -242,11 +285,16 @@ static CATALOG: &[AircraftSpec] = &[
         spoiler_cd: 0.05,
         spoiler_cl: -0.4,
         flap_detents: BIZJET_FLAPS,
+        auto_flaps: false,
+        wave_drag_cd: 0.0,
+        drag_rise_mach: 0.0,
         max_roll_rate: 35.0,
         max_pitch_rate: 9.0,
         max_yaw_rate: 6.0,
         response_time_s: 0.45,
         max_load_factor: 3.0,
+        min_load_factor: 0.0,
+        aerobatic: false,
         full_authority_q: 4_500.0,
         v_rotate_kt: 118.0,
         v_approach_kt: 120.0,
@@ -278,6 +326,9 @@ static CATALOG: &[AircraftSpec] = &[
         spool_time_s: 3.2,
         idle_thrust: 0.04,
         prop_power_w: 0.0,
+        afterburner_thrust_n: 0.0,
+        afterburner_detent: 0.0,
+        thrust_reversers: true,
         cd0: 0.019,
         oswald: 0.83,
         cl0: 0.2,
@@ -289,11 +340,16 @@ static CATALOG: &[AircraftSpec] = &[
         spoiler_cd: 0.05,
         spoiler_cl: -0.4,
         flap_detents: LONGITUDE_FLAPS,
+        auto_flaps: false,
+        wave_drag_cd: 0.0,
+        drag_rise_mach: 0.0,
         max_roll_rate: 30.0,
         max_pitch_rate: 8.0,
         max_yaw_rate: 5.5,
         response_time_s: 0.5,
         max_load_factor: 2.8,
+        min_load_factor: 0.0,
+        aerobatic: false,
         full_authority_q: 4_800.0,
         // 250 KIAS at FL410 is roughly Mach 0.84.
         v_rotate_kt: 120.0,
@@ -326,6 +382,9 @@ static CATALOG: &[AircraftSpec] = &[
         spool_time_s: 0.8,
         idle_thrust: 0.03,
         prop_power_w: 80_000.0,
+        afterburner_thrust_n: 0.0,
+        afterburner_detent: 0.0,
+        thrust_reversers: false,
         cd0: 0.031,
         oswald: 0.75,
         cl0: 0.32,
@@ -337,11 +396,16 @@ static CATALOG: &[AircraftSpec] = &[
         spoiler_cd: 0.0,
         spoiler_cl: 0.0,
         flap_detents: GA_FLAPS,
+        auto_flaps: false,
+        wave_drag_cd: 0.0,
+        drag_rise_mach: 0.0,
         max_roll_rate: 45.0,
         max_pitch_rate: 18.0,
         max_yaw_rate: 12.0,
         response_time_s: 0.25,
         max_load_factor: 3.8,
+        min_load_factor: 0.0,
+        aerobatic: false,
         full_authority_q: 1_100.0,
         v_rotate_kt: 55.0,
         v_approach_kt: 65.0,
@@ -350,6 +414,67 @@ static CATALOG: &[AircraftSpec] = &[
         cruise_alt_ft: 5_500.0,
         max_alt_ft: 14_000.0,
         service_ceiling_note: "14,000 ft",
+    },
+    AircraftSpec {
+        // F-16C Block 50 class: F110-GE-129 (76.3 kN dry / 131 kN with
+        // afterburner), 27.87 m² wing, clean with half internal fuel and
+        // wingtip rails. Thrust lapse comes from tabulated engine data
+        // (see `engine.rs`), drag from a measured-shape transonic rise.
+        id: "f16",
+        name: "F-16C style",
+        manufacturer_style: "US single-engine multirole fighter",
+        category: "Fighter jet",
+        description: "Fly-by-wire fighter: 9 g, 280°/s rolls, no bank limits and Mach 2 at altitude. Push the throttle past 80 % to light the afterburner.",
+        mass_kg: 11_500.0,
+        wing_area_m2: 27.87,
+        wingspan_m: 9.96,
+        length_m: 15.06,
+        gear_height_m: 1.9,
+        belly_height_m: 1.1,
+        wheelbase_m: 4.0,
+        retractable_gear: true,
+        rest_pitch_deg: 0.3,
+        tailstrike_pitch_deg: 14.0,
+        engine: EngineKind::Jet,
+        engine_count: 1,
+        max_thrust_n: 76_300.0,
+        spool_time_s: 4.0,
+        idle_thrust: 0.06,
+        prop_power_w: 0.0,
+        afterburner_thrust_n: 131_000.0,
+        afterburner_detent: 0.8,
+        thrust_reversers: false,
+        cd0: 0.019,
+        oswald: 0.80,
+        cl0: 0.05,
+        cl_alpha: 3.5,
+        // The flight control computer limits AoA a few degrees below this (~25°).
+        alpha_stall_deg: 29.0,
+        flap_cl: 0.35,
+        flap_cd: 0.03,
+        gear_cd: 0.016,
+        spoiler_cd: 0.05,
+        spoiler_cl: 0.0,
+        flap_detents: FIGHTER_FLAPS,
+        auto_flaps: true,
+        wave_drag_cd: 0.026,
+        drag_rise_mach: 0.85,
+        max_roll_rate: 280.0,
+        max_pitch_rate: 20.0,
+        max_yaw_rate: 12.0,
+        response_time_s: 0.18,
+        max_load_factor: 9.0,
+        min_load_factor: -3.0,
+        aerobatic: true,
+        full_authority_q: 3_500.0,
+        v_rotate_kt: 145.0,
+        v_approach_kt: 145.0,
+        v_cruise_kt: 350.0,
+        // 800 KCAS placard (about Mach 1.2 at sea level).
+        v_max_kt: 800.0,
+        cruise_alt_ft: 30_000.0,
+        max_alt_ft: 50_000.0,
+        service_ceiling_note: "50,000 ft",
     },
 ];
 

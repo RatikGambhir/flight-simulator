@@ -26,3 +26,19 @@ Regenerate from the repository root:
 curl -L https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_lakes.geojson -o /tmp/ne_10m_lakes.geojson
 node scripts/build_lakes.mjs /tmp/ne_10m_lakes.geojson
 ```
+
+# Ocean and lake scenery
+
+`shorelines.bin` contains Natural Earth 1:10m ocean, lake and reservoir
+polygons, including island holes. The renderer uses them to give the interiors
+of water bodies consistent lighting across imagery tiles and keeps the
+scenery provider's finer detail at the shore. Coverage follows the Natural
+Earth map, which is generalized at local scales.
+
+Regenerate from the repository root with the lake source above and the
+[Natural Earth ocean polygons](https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-ocean/).
+
+```sh
+curl -L https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_ocean.geojson -o /tmp/ne_10m_ocean.geojson
+node scripts/build_water_mask.mjs /tmp/ne_10m_ocean.geojson /tmp/ne_10m_lakes.geojson
+```

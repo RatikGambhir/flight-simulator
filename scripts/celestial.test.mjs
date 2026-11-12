@@ -4,7 +4,7 @@ import { Body, Equator, Horizon, Observer, SearchMoonPhase } from 'astronomy-eng
 import { Matrix4, Quaternion, Texture, Vector3 } from 'three'
 import { SkyMaterial, StarsMaterial } from '@takram/three-atmosphere'
 import { CelestialState, sceneDate, starIntensity, starRotation } from '../src/scene/celestial.ts'
-import { prepareMoon, prepareStars } from '../src/scene/celestialRendering.ts'
+import { prepareSky, prepareStars } from '../src/scene/celestialRendering.ts'
 import { enuBasis, geodeticToEcef } from '../src/world/frame.ts'
 
 test('manual hour retains the local calendar date, including both sides of the dateline', () => {
@@ -64,13 +64,14 @@ test('star directions survive arbitrary local-frame changes and fade continuousl
 test('installed sky shaders support lunar texture, occultation and small round stars without double patching', () => {
   const sky = new SkyMaterial(), stars = new StarsMaterial(), texture = new Texture()
   try {
-    prepareMoon(sky, texture); prepareStars(stars)
+    prepareSky(sky, texture); prepareStars(stars)
     const sources = [sky.fragmentShader, stars.fragmentShader, stars.vertexShader]
-    prepareMoon(sky, texture); prepareStars(stars)
+    prepareSky(sky, texture); prepareStars(stars)
     assert.deepEqual([sky.fragmentShader, stars.fragmentShader, stars.vertexShader], sources)
     assert.ok(sky.uniforms.moonFixedFromECEF.value instanceof Matrix4)
     assert.equal(sky.uniforms.lunarMap.value, texture)
     assert.match(sources[0], /texture\(lunarMap, lunarUv\)/)
+    assert.match(sources[0], /1\.0 - smoothstep\(max\(0\.0, radius - max\(fragmentAngle, 1e-5\)\), radius, angle\)/)
     assert.match(sources[1], /starMoonCosRadius\) discard/)
     assert.match(sources[1], /gl_PointCoord/)
     assert.match(sources[2], /gl_Position.z = gl_Position.w/)

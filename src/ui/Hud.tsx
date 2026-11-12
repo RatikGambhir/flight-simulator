@@ -157,8 +157,9 @@ export function Hud() {
       const thr = s[S.THROTTLE]
       ;(nodes.thrBar.firstElementChild as HTMLElement).style.height = `${thr * 100}%`
       const rev = s[S.REVERSER]
-      text(nodes.thr, rev > 0.05 ? (rev > 0.95 ? 'REV' : 'REV…') : `${Math.round(thr * 100)}%`)
-      color(nodes.thr, rev > 0.05 ? '#ffb547' : '')
+      const ab = s[S.AFTERBURNER]
+      text(nodes.thr, rev > 0.05 ? (rev > 0.95 ? 'REV' : 'REV…') : ab > 0 ? `AB ${Math.round(thr * 100)}%` : `${Math.round(thr * 100)}%`)
+      color(nodes.thr, rev > 0.05 || ab > 0 ? '#ffb547' : '')
       // Wind as pilots read it: direction it blows from / speed.
       const we = s[S.WIND_E]
       const wn = s[S.WIND_N]

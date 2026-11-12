@@ -14,6 +14,7 @@ use glam::{DMat3, DQuat, DVec3};
 use crate::aircraft::{self, AircraftSpec, EngineKind};
 use crate::atmosphere::{isa, G0, RHO_SL};
 use crate::autopilot::{ApInputs, Autopilot};
+use crate::engine;
 use crate::geo::{self, ecef_to_geodetic, geodetic_to_ecef, EnuFrame, FT_TO_M, KT_TO_MS, MS_TO_KT, M_TO_FT};
 use crate::protocol::{snap, ControlInput, RunwaySpawnKind, SimCommand, SimEvent, SpawnMode, SpawnRequest};
 use crate::weather::{Weather, WeatherSettings};
@@ -128,6 +129,8 @@ pub struct Simulation {
     alpha_trim: f64,
     /// Flight path angle captured when the pitch stick returns to neutral (assisted mode).
     gamma_ref: Option<f64>,
+    /// Bank angle captured when the roll stick returns to neutral (aerobatic assisted mode).
+    bank_ref: Option<f64>,
     pub autopilot: Autopilot,
     weather: Weather,
     /// Low-passed specific force in body axes (x fwd, y left, z up), in g.
@@ -184,6 +187,7 @@ impl Simulation {
             assist: true,
             alpha_trim: 0.04,
             gamma_ref: None,
+            bank_ref: None,
             autopilot: Autopilot::default(),
             weather: Weather::default(),
             spec_force: DVec3::Z,
@@ -285,6 +289,9 @@ impl Simulation {
                     self.gear_cmd_down = !self.gear_cmd_down;
                 }
             }
+            SimCommand::FlapsUp | SimCommand::FlapsDown | SimCommand::SetFlaps { .. } if self.spec.auto_flaps => {
+                self.message("Flaps are automatic: they extend with the landing gear");
+            }
             SimCommand::FlapsUp => self.flaps_index = self.flaps_index.saturating_sub(1),
             SimCommand::FlapsDown => self.flaps_index = (self.flaps_index + 1).min(self.spec.flap_detents.len() - 1),
             SimCommand::SetFlaps { index } => self.flaps_index = index.min(self.spec.flap_detents.len() - 1),
@@ -374,6 +381,7 @@ impl Simulation {
         self.weather.reset_gusts();
         self.autopilot.engaged = false;
         self.gamma_ref = None;
+        self.bank_ref = None;
         self.ground = None;
         self.generation = self.generation.wrapping_add(1);
         self.events.push(SimEvent::Spawned { generation: self.generation });
@@ -388,21 +396,44 @@ impl Simulation {
         let cl = w * gamma.cos() / (q * s.wing_area_m2).max(1.0);
         let alpha = (cl - s.cl0 - s.flap_cl * self.flaps) / s.cl_alpha;
         let cd = s.cd0 + s.induced_k() * cl * cl + s.flap_cd * self.flaps + s.gear_cd * self.gear;
+        let mach = tas / air.speed_of_sound;
+        let cd = cd + engine::wave_drag(s.wave_drag_cd, s.drag_rise_mach, mach);
         let t_req = q * s.wing_area_m2 * cd + w * gamma.sin();
-        let full = self.thrust_at(1.0, tas, air.density, tas / air.speed_of_sound);
-        let frac = t_req / full.max(1.0);
-        let lever = ((frac - s.idle_thrust) / (1.0 - s.idle_thrust)).clamp(0.0, 1.0);
-        (alpha.clamp(-0.05, 0.2), lever)
+        // Thrust rises monotonically with the lever, so bisect for the setting.
+        let thrust = |lever: f64| self.thrust_at(lever, tas, air.density, mach, height_msl);
+        let (mut lo, mut hi) = (0.0, 1.0);
+        if thrust(hi) <= t_req {
+            lo = 1.0;
+        } else if thrust(lo) < t_req {
+            for _ in 0..40 {
+                let mid = 0.5 * (lo + hi);
+                if thrust(mid) < t_req { lo = mid } else { hi = mid }
+            }
+        }
+        (alpha.clamp(-0.05, 0.2), lo)
     }
 
-    fn thrust_at(&self, engine: f64, tas: f64, rho: f64, mach: f64) -> f64 {
+    /// Total thrust (N) for an engine state 0..1 at an altitude (m MSL) and Mach number.
+    fn thrust_at(&self, engine: f64, tas: f64, rho: f64, mach: f64, alt_msl: f64) -> f64 {
         let s = self.spec;
+        if s.afterburner_thrust_n > 0.0 {
+            return engine::afterburning_thrust(s.max_thrust_n, s.afterburner_thrust_n, s.idle_thrust, s.afterburner_detent, engine, alt_msl, mach);
+        }
         let frac = s.idle_thrust + (1.0 - s.idle_thrust) * engine;
         let sigma = rho / RHO_SL;
         match s.engine {
             EngineKind::Jet => s.max_thrust_n * frac * sigma.powf(0.75) * (1.0 - 0.22 * mach.min(1.0)),
             EngineKind::Propeller => frac * s.max_thrust_n.min(s.prop_power_w / tas.max(1.0)) * sigma,
         }
+    }
+
+    /// Afterburner stage 0..1 for the current engine state (0 when not lit).
+    fn afterburner_stage(&self) -> f64 {
+        let d = self.spec.afterburner_detent;
+        if self.spec.afterburner_thrust_n <= 0.0 || self.engine <= d || self.reverser > 0.0 {
+            return 0.0;
+        }
+        ((self.engine - d) / (1.0 - d)).clamp(0.0, 1.0)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -422,6 +453,10 @@ impl Simulation {
                 self.gear = 1.0;
                 self.lever = 0.0;
                 self.engine = 0.0;
+                // Jets whose idle thrust would roll them away (fighters) start
+                // holding the brakes, as their pilots do.
+                let idle = self.thrust_at(0.0, 0.0, RHO_SL, 0.0, 0.0);
+                self.parking_brake = idle > 0.02 * self.spec.mass_kg * G0;
             }
             SpawnMode::Air => {
                 let msl = height - world::geoid_undulation(lat_deg, lon_deg);
@@ -610,13 +645,15 @@ impl Simulation {
     fn update_systems(&mut self, dt: f64, ap_throttle: Option<f64>) {
         let s = self.spec;
         match ap_throttle {
+            // The autothrottle works in the dry range; afterburner is the pilot's call.
+            Some(t) if s.afterburner_detent > 0.0 => self.lever = t.min(s.afterburner_detent),
             Some(t) => self.lever = t,
             None => self.lever = (self.lever + self.input.throttle_rate * 0.6 * dt).clamp(0.0, 1.0),
         }
         // Thrust reversers (jets): deploy on the ground with the levers at idle while
         // reverse is held; the engines only spool up once the sleeves are open, and
         // the sleeves only stow once the engines are back near idle.
-        let want_rev = s.engine == EngineKind::Jet && self.on_ground && self.input.reverse > 0.5 && self.lever < 0.05;
+        let want_rev = s.engine == EngineKind::Jet && s.thrust_reversers && self.on_ground && self.input.reverse > 0.5 && self.lever < 0.05;
         let rev_target = if want_rev {
             1.0
         } else if self.engine > 0.12 {
@@ -643,8 +680,12 @@ impl Simulation {
         } else {
             self.gear = 1.0;
         }
+        if s.auto_flaps {
+            self.flaps_index = if self.gear_cmd_down { s.flap_detents.len() - 1 } else { 0 };
+        }
         let flap_target = self.flaps_index as f64 / (s.flap_detents.len() - 1).max(1) as f64;
-        self.flaps = approach(self.flaps, flap_target, dt * 0.12);
+        // Fighter flaperons are fast-acting hydraulic surfaces.
+        self.flaps = approach(self.flaps, flap_target, dt * if s.auto_flaps { 0.5 } else { 0.12 });
 
         let ground_spoilers = self.on_ground && self.lever < 0.08 && self.d.gs > 30.0 * KT_TO_MS && s.spoiler_cd > 0.0;
         let sp_target = if self.spoilers_cmd || ground_spoilers { 1.0 } else { 0.0 };
@@ -715,8 +756,10 @@ impl Simulation {
         } else {
             (cl_lin(alpha), 0.0)
         };
+        let k_induced = if s.wave_drag_cd > 0.0 { s.induced_k() * engine::induced_drag_factor(mach) } else { s.induced_k() };
         let cd = s.cd0
-            + s.induced_k() * phi * cl * cl
+            + engine::wave_drag(s.wave_drag_cd, s.drag_rise_mach, mach)
+            + k_induced * phi * cl * cl
             + s.gear_cd * self.gear
             + s.flap_cd * flap
             + s.spoiler_cd * spoil
@@ -726,7 +769,7 @@ impl Simulation {
         let mut force = (lift_dir * cl - vhat * cd) * (qbar * area);
         force -= yb * (beta * qbar * area * 0.9);
         // Reversers redirect the fan stream forward (about 45 % of forward thrust).
-        let thrust = self.thrust_at(self.engine, speed, rho, mach) * (1.0 - 1.45 * self.reverser);
+        let thrust = self.thrust_at(self.engine, speed, rho, mach, geo0.height - geoid) * (1.0 - 1.45 * self.reverser);
         force += xb * thrust;
         let accel_aero = force / mass;
         let accel = accel_aero - up * G0;
@@ -748,7 +791,9 @@ impl Simulation {
 
         // Roll
         let mut p_des = self.surfaces.x * p_max * eff;
-        if assisted && airborne && !self.autopilot.engaged {
+        // Full-envelope fly-by-wire (fighters): the stick commands roll rate and
+        // neutral stick holds whatever bank the pilot left, upright or inverted.
+        if assisted && airborne && !self.autopilot.engaged && !s.aerobatic {
             let bank_hold = 35f64.to_radians();
             let bank_max = 67f64.to_radians();
             if self.input.roll.abs() < 0.05 {
@@ -761,6 +806,22 @@ impl Simulation {
             if roll > bank_max && p_des > 0.0 || roll < -bank_max && p_des < 0.0 {
                 p_des = -(roll - bank_max.copysign(roll)) * 2.0;
             }
+        }
+        if assisted && airborne && !self.autopilot.engaged && s.aerobatic {
+            // Attitude hold: with the stick centred, keep the bank the pilot set
+            // (including inverted). Bank is meaningless near the vertical, so the
+            // hold only engages once the nose is within 60° of the horizon.
+            if self.input.roll.abs() >= 0.05 || pitch.abs() > 60f64.to_radians() {
+                self.bank_ref = None;
+            } else if self.bank_ref.is_none() && self.surfaces.x.abs() < 0.05 && self.omega.x.abs() < 0.35 {
+                self.bank_ref = Some(roll);
+            }
+            if let Some(br) = self.bank_ref {
+                let err = (roll - br + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
+                p_des = (-err * 1.5).clamp(-0.5, 0.5);
+            }
+        } else {
+            self.bank_ref = None;
         }
         if !assisted && airborne {
             // Dihedral effect: sideslip toward the low wing rolls the aircraft level.
@@ -775,7 +836,16 @@ impl Simulation {
             // Path hold uses the inertial flight path so gusts don't drag the reference around.
             let gamma = self.vel.try_normalize().map_or(0.0, |vi| vi.dot(up).clamp(-1.0, 1.0).asin());
             if assisted {
-                let cphi = roll.cos().max(0.35);
+                // Load factor that holds the flight path at this bank: 1/cos(bank).
+                // Airliners stay within ±67° of bank; aerobatic aircraft may be
+                // inverted (negative g holds the path) and fade to zero g through
+                // knife-edge, where the wing cannot hold the path at all.
+                let bank_gain = if s.aerobatic {
+                    let c = roll.cos();
+                    c / (c * c).max(0.35 * 0.35)
+                } else {
+                    1.0 / roll.cos().max(0.35)
+                };
                 let stick = self.surfaces.y;
                 let stick_active = self.input.pitch.abs() >= 0.05;
                 // Flight-path hold: remember the path angle when the stick is released.
@@ -784,24 +854,27 @@ impl Simulation {
                 } else if self.gamma_ref.is_none() && stick.abs() < 0.05 {
                     self.gamma_ref = Some(gamma);
                 }
-                let mut n_neutral = gamma.cos() / cphi;
+                let mut n_neutral = gamma.cos() * bank_gain;
                 if let Some(gr) = self.gamma_ref {
-                    n_neutral += ((gr - gamma) * speed / G0 * 0.35).clamp(-0.3, 0.3);
+                    let corr = ((gr - gamma) * speed / G0 * 0.35).clamp(-0.3, 0.3);
+                    n_neutral += if s.aerobatic { corr * bank_gain.clamp(-1.5, 1.5) } else { corr };
                 }
+                let n_neutral = n_neutral.clamp(s.min_load_factor, s.max_load_factor);
                 let n_cmd = match ap.load_factor {
                     Some(n) if !stick_active => n,
                     _ => {
                         if stick >= 0.0 {
                             n_neutral + stick * (s.max_load_factor - n_neutral).max(0.0)
                         } else {
-                            n_neutral + stick * n_neutral
+                            n_neutral + stick * (n_neutral - s.min_load_factor).max(0.0)
                         }
                     }
                 };
                 // Lift needed, net of the thrust component normal to the flight path.
                 let lift_needed = n_cmd * mass * G0 - thrust * alpha.sin();
                 let cl_needed = lift_needed / (qbar * area).max(1.0);
-                let alpha_cmd = ((cl_needed - cl_base) / s.cl_alpha).clamp(-6f64.to_radians(), alpha_stall - 3f64.to_radians());
+                let alpha_min = if s.aerobatic { -12f64 } else { -6f64 }.to_radians();
+                let alpha_cmd = ((cl_needed - cl_base) / s.cl_alpha).clamp(alpha_min, alpha_stall - 3f64.to_radians());
                 self.alpha_trim = alpha;
                 (q_path + (alpha_cmd - alpha) * (1.6 / tau)).clamp(-q_max * 1.5, q_max * 1.5)
             } else {
@@ -833,8 +906,13 @@ impl Simulation {
         // Yaw: rudder + weathervane stability + automatic turn coordination.
         let mut r_des = self.surfaces.z * r_max * eff - beta * 2.5 * eff.max(0.2);
         if assisted && airborne && speed > 20.0 {
-            let turn_rate = G0 * roll.clamp(-1.3, 1.3).tan() / speed;
-            r_des += turn_rate * roll.cos();
+            if s.aerobatic {
+                // Cancel the sideways pull of gravity at any attitude.
+                r_des += G0 * roll.sin() * pitch.cos() / speed;
+            } else {
+                let turn_rate = G0 * roll.clamp(-1.3, 1.3).tan() / speed;
+                r_des += turn_rate * roll.cos();
+            }
         }
 
         let omega_des = DVec3::new(p_des, -q_des, -r_des);
@@ -978,7 +1056,7 @@ impl Simulation {
         let tas = air_vel.length();
         let vb = self.att.conjugate() * air_vel;
         let alpha = if tas > 1.0 { (-vb.z).atan2(vb.x) } else { 0.0 };
-        let g_load = self.spec_force.z.clamp(-3.0, 6.0);
+        let g_load = self.spec_force.z.clamp(-6.0, 12.0);
         self.d = Derived {
             lat: g.lat_deg(),
             lon: g.lon_deg(),
@@ -1084,6 +1162,7 @@ impl Simulation {
         out[WIND_U] = d.wind_enu.z;
         out[REVERSER] = self.reverser;
         out[GROUND_EFFECT] = self.ground_effect;
+        out[AFTERBURNER] = self.afterburner_stage();
     }
 
     pub fn snapshot(&self) -> Vec<f64> {
@@ -1152,7 +1231,7 @@ mod tests {
 
     #[test]
     fn cruise_is_stable_hands_off() {
-        for ac in ["b737", "a320", "bizjet", "longitude", "c172"] {
+        for ac in ["b737", "a320", "bizjet", "longitude", "c172", "f16"] {
             let mut sim = Simulation::new();
             sim.command(SimCommand::SetAircraft { id: ac.into() });
             sim.command(SimCommand::Spawn(SpawnRequest {
@@ -1388,7 +1467,8 @@ mod tests {
     #[test]
     fn approach_attitudes_are_realistic() {
         // Stabilised on a 3° glideslope at Vref with landing flaps.
-        for (ac, lo, hi) in [("b737", 1.0, 4.5), ("a320", 1.0, 4.5), ("bizjet", 0.5, 5.0), ("longitude", 0.5, 5.0), ("c172", -4.0, 1.5)] {
+        // Fighters fly the approach on angle of attack (~11-13°), so the nose sits high.
+        for (ac, lo, hi) in [("b737", 1.0, 4.5), ("a320", 1.0, 4.5), ("bizjet", 0.5, 5.0), ("longitude", 0.5, 5.0), ("c172", -4.0, 1.5), ("f16", 6.0, 11.0)] {
             let mut sim = Simulation::new();
             sim.command(SimCommand::SetAircraft { id: ac.into() });
             sim.command(SimCommand::SpawnRunway { airport: "KORD".into(), runway: Some("28R".into()), kind: RunwaySpawnKind::Approach });
@@ -1400,5 +1480,154 @@ mod tests {
             let pitch = read(&sim, snap::PITCH);
             assert!((lo..hi).contains(&pitch), "{ac}: approach pitch {pitch:.1}°");
         }
+    }
+
+    // ---- Fighter (F-16 class) performance against published figures -------
+
+    fn fighter_at(alt_ft: f64, ias_kt: f64) -> Simulation {
+        let mut sim = Simulation::new();
+        sim.command(SimCommand::SetAircraft { id: "f16".into() });
+        sim.command(SimCommand::Spawn(SpawnRequest {
+            lat: 41.88,
+            lon: -87.63,
+            heading: 90.0,
+            mode: SpawnMode::Air,
+            agl_ft: Some(alt_ft - 600.0),
+            speed_kt: Some(ias_kt),
+            ground_elevation_ft: Some(600.0),
+        }));
+        settle(&mut sim);
+        sim
+    }
+
+    /// Full afterburner in level flight (altitude held by the autopilot's pitch
+    /// channel) for `secs`; returns the final Mach number and IAS.
+    fn fighter_dash(alt_ft: f64, secs: f64) -> (f64, f64) {
+        let mut sim = fighter_at(alt_ft, 400.0);
+        sim.step(0.01);
+        sim.command(SimCommand::ToggleAutopilot);
+        sim.command(SimCommand::SetThrottle { value: 1.0 });
+        for _ in 0..(secs * 60.0) as usize {
+            sim.step(1.0 / 60.0);
+        }
+        let flags = read(&sim, snap::FLAGS) as u32;
+        assert_eq!(flags & snap::flags::CRASHED, 0);
+        let alt = read(&sim, snap::ALT_MSL_FT);
+        assert!((alt - alt_ft).abs() < 1500.0, "dash at {alt_ft} ft drifted to {alt}");
+        (read(&sim, snap::MACH), read(&sim, snap::IAS_KT))
+    }
+
+    #[test]
+    fn fighter_afterburner_takeoff_is_short() {
+        let mut sim = Simulation::new();
+        sim.command(SimCommand::SetAircraft { id: "f16".into() });
+        settle(&mut sim);
+        // The fighter's idle thrust would creep it forward, so it spawns on the brakes.
+        assert!(read(&sim, snap::FLAGS) as u32 & snap::flags::PARKING_BRAKE != 0);
+        for _ in 0..240 {
+            sim.step(1.0 / 120.0);
+        }
+        assert!(read(&sim, snap::GS_KT) < 0.5);
+        sim.command(SimCommand::ToggleParkingBrake);
+        sim.command(SimCommand::SetThrottle { value: 1.0 });
+        let start = sim.pos;
+        let dt = 1.0 / 120.0;
+        let mut liftoff = None;
+        for i in 0..(120 * 40) {
+            let mut input = ControlInput::default();
+            if read(&sim, snap::IAS_KT) > sim.spec().v_rotate_kt {
+                input.pitch = if read(&sim, snap::PITCH) < 10.0 { 0.5 } else { 0.0 };
+            }
+            sim.set_input(input);
+            sim.step(dt);
+            let s = sim.snapshot();
+            sim.command(SimCommand::Ground { lat: s[snap::LAT], lon: s[snap::LON], height: Some(sim.ground_fallback) });
+            if liftoff.is_none() && read(&sim, snap::FLAGS) as u32 & snap::flags::ON_GROUND == 0 {
+                liftoff = Some((i as f64 * dt, (sim.pos - start).length()));
+            }
+        }
+        let (t, dist) = liftoff.expect("never lifted off");
+        // F-16C in max afterburner: roughly 1,200-2,000 ft of runway, ~10-15 s.
+        assert!((7.0..20.0).contains(&t), "liftoff after {t:.1} s");
+        assert!((300.0..800.0).contains(&dist), "takeoff roll {dist:.0} m");
+        assert!(read(&sim, snap::AGL_FT) > 2_000.0, "climb after 40 s: {} ft", read(&sim, snap::AGL_FT));
+    }
+
+    #[test]
+    fn fighter_pulls_nine_g_and_no_more() {
+        let mut sim = fighter_at(10_000.0, 450.0);
+        let mut max_g: f64 = 0.0;
+        for _ in 0..(120 * 4) {
+            sim.set_input(ControlInput { pitch: 1.0, ..Default::default() });
+            sim.step(1.0 / 120.0);
+            max_g = max_g.max(read(&sim, snap::NZ));
+        }
+        assert!((8.5..9.6).contains(&max_g), "max g {max_g:.2}");
+        assert_eq!(read(&sim, snap::FLAGS) as u32 & snap::flags::STALL, 0);
+    }
+
+    #[test]
+    fn fighter_rolls_fast_and_holds_inverted() {
+        let mut sim = fighter_at(15_000.0, 400.0);
+        // Full-stick aileron roll: a full 360° in well under two seconds.
+        let mut turned = 0.0;
+        let mut prev = read(&sim, snap::ROLL);
+        let mut steps = 0;
+        while turned < 360.0 && steps < 120 * 4 {
+            sim.set_input(ControlInput { roll: 1.0, ..Default::default() });
+            sim.step(1.0 / 120.0);
+            let r = read(&sim, snap::ROLL);
+            turned += geo::wrap_deg_180(r - prev);
+            prev = r;
+            steps += 1;
+        }
+        let t = steps as f64 / 120.0;
+        assert!(t < 2.0, "360° roll took {t:.2} s");
+        sim.set_input(ControlInput::default());
+        for _ in 0..(120 * 2) {
+            sim.step(1.0 / 120.0);
+        }
+        // Let the roll stop, then ease into inverted (as a pilot would), release the stick and fly upside down hands-off.
+        while read(&sim, snap::ROLL).abs() < 178.0 {
+            let left = 180.0 - read(&sim, snap::ROLL).abs();
+            sim.set_input(ControlInput { roll: (left / 300.0).clamp(0.06, 0.3), ..Default::default() });
+            sim.step(1.0 / 120.0);
+        }
+        let alt0 = read(&sim, snap::ALT_MSL_FT);
+        sim.set_input(ControlInput::default());
+        for _ in 0..(120 * 15) {
+            sim.step(1.0 / 120.0);
+        }
+        assert!(read(&sim, snap::ROLL).abs() > 172.0, "stayed inverted: roll {}", read(&sim, snap::ROLL));
+        let nz = read(&sim, snap::NZ);
+        assert!((-1.3..-0.7).contains(&nz), "inverted level flight is -1 g: {nz:.2}");
+        let alt1 = read(&sim, snap::ALT_MSL_FT);
+        assert!((alt1 - alt0).abs() < 600.0, "inverted alt {alt0:.0} -> {alt1:.0}");
+    }
+
+    #[test]
+    fn fighter_top_speed_matches_the_real_envelope() {
+        // About Mach 2 at 40,000 ft in full afterburner...
+        let (mach, _) = fighter_dash(40_000.0, 360.0);
+        assert!((1.85..2.25).contains(&mach), "Mach {mach:.2} at FL400");
+        // ...but only around Mach 1.2 (the 800 KCAS region) on the deck.
+        let (mach, ias) = fighter_dash(2_000.0, 120.0);
+        assert!((1.05..1.35).contains(&mach), "Mach {mach:.2} at 2,000 ft");
+        assert!(ias < 900.0, "{ias:.0} KIAS at 2,000 ft");
+    }
+
+    #[test]
+    fn fighter_supercruises_only_marginally() {
+        // Dry (military) power at 30,000 ft: about Mach 1.0-1.1, no further.
+        let mut sim = fighter_at(30_000.0, 350.0);
+        sim.step(0.01);
+        sim.command(SimCommand::ToggleAutopilot);
+        sim.command(SimCommand::SetThrottle { value: sim.spec().afterburner_detent });
+        for _ in 0..(60 * 300) {
+            sim.step(1.0 / 60.0);
+        }
+        let mach = read(&sim, snap::MACH);
+        assert_eq!(read(&sim, snap::AFTERBURNER), 0.0);
+        assert!((0.9..1.2).contains(&mach), "MIL power Mach {mach:.2} at FL300");
     }
 }

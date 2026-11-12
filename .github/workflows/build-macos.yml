@@ -29,7 +29,9 @@ jobs:
         run: npm ci
 
       - name: Check graphics regressions
-        run: npm run test:graphics
+        run: |
+          npm run test:graphics
+          npm run test:graphics:gpu
 
       - name: Run simulation tests
         run: cargo test -p sim-core

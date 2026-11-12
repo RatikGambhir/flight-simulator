@@ -104,6 +104,14 @@ export class AircraftController {
     this.cockpitLighting = new CockpitLighting(this.cockpit.root)
     this.cockpit.root.visible = false
     this.model.root.add(this.cockpit.root)
+    // The lighting mask draws an opaque depth override. Glass effects and
+    // other overlays must leave it to the surface that actually wrote depth.
+    this.model.root.traverse((object) => {
+      const mesh = object as Mesh
+      if (mesh.isMesh && (Array.isArray(mesh.material) ? mesh.material.every((m) => !m.depthWrite) : !mesh.material.depthWrite)) {
+        mesh.layers.disable(LIGHTING_MASK_LAYER)
+      }
+    })
     this.container.add(this.model.root)
     this.shadowTarget = this.renderSilhouette(renderer)
     const mat = new ShaderMaterial({
@@ -220,6 +228,7 @@ export class AircraftController {
         sp.blades.visible = !blur
       }
     }
+    m.exhaust?.(r.engine, r.latest[S.AFTERBURNER], this.time)
     const strobeOn = this.time % 1.2 < 0.06 || (this.time % 1.2 > 0.14 && this.time % 1.2 < 0.2)
     for (const st of m.strobes) st.visible = strobeOn
     const beaconOn = (this.time + 0.5) % 1.0 < 0.1

@@ -4,7 +4,7 @@ import { CloudsEffect } from '@takram/three-clouds'
 import { BoxGeometry, Color, Group, Matrix4, Mesh, MeshBasicMaterial, MeshStandardMaterial, Object3D, PerspectiveCamera, Texture, Vector3 } from 'three'
 import { EffectPass } from 'postprocessing'
 import { readFileSync } from 'node:fs'
-import { CloudHistory, stabilizeClouds } from '../src/scene/cloudRendering.ts'
+import { CloudHistory, setCloudNightLighting, stabilizeClouds, stabilizeNightClouds } from '../src/scene/cloudRendering.ts'
 import { hingeFrame, setHingeAngle, wingPanelGeometry, wingPoint, wingUpperPoint } from '../src/aircraft/geometry.ts'
 import { FlightPrefetch } from '../src/world/flightPrefetch.ts'
 import { buildLakeGeometry, distanceToLake, lakeGeoid } from '../src/scene/lakeGeometry.ts'
@@ -102,6 +102,20 @@ test('terrain night fill shares the lighting mask and releases it on unmount', (
   } finally { effect.dispose(); texture.dispose() }
 })
 
+test('night lighting reads the current cloud resolve after the buffer swaps', () => {
+  const a = new Texture(), b = new Texture()
+  let current = a
+  const effect = new NightEffect(undefined, undefined, () => current)
+  try {
+    for (const texture of [a, b, null]) {
+      current = texture
+      effect.update()
+      assert.equal(effect.uniforms.get('cloudOverlay').value, texture)
+      assert.equal(effect.uniforms.get('hasCloudOverlay').value, texture !== null)
+    }
+  } finally { effect.dispose(); a.dispose(); b.dispose() }
+})
+
 test('night terrain reconstruction keeps city lights fixed through a floating-origin shift', () => {
   const ecefFromWorld = new Matrix4().makeTranslation(6378137, 0, 0)
   const effect = new NightEffect(ecefFromWorld)
@@ -116,7 +130,7 @@ test('night terrain reconstruction keeps city lights fixed through a floating-or
       camera.position.set(20, 5, -shift)
       camera.updateMatrixWorld()
       const point = target.clone().sub(new Vector3(0, 0, shift))
-      effect.setFrame(camera, 1, 0, up, [], null, 3600)
+      effect.setFrame(camera, 1, 0, up, [], 3600)
       const ndc = point.clone().project(camera)
       const logDepth = Math.log2(1 - point.clone().applyMatrix4(camera.matrixWorldInverse).z) / uniform('logFar')
       const reconstructed = uniform('viewForward').clone()
@@ -294,6 +308,22 @@ test('normal flight accumulates history after the first frame', () => {
   } finally { effect.dispose() }
 })
 
+test('time-of-day jumps reject cloud history even when both times are daylight', () => {
+  const { effect, update, isReset } = setup()
+  try {
+    effect.sunDirection.set(0, 1, 0)
+    update()
+    effect.sunDirection.set(0.001, 1, 0).normalize()
+    update()
+    assert.equal(isReset(), false)
+    effect.sunDirection.set(1, 1, 0).normalize()
+    update()
+    assert.equal(isReset(), true)
+    update()
+    assert.equal(isReset(), false)
+  } finally { effect.dispose() }
+})
+
 test('reloading the patch module preserves already-patched live effects', async () => {
   const { effect } = setup()
   try {
@@ -341,6 +371,30 @@ test('turning clouds back on rejects the previous effect’s history', () => {
     effect.dispose()
     replacement.dispose()
   }
+})
+
+test('cloud lighting follows the moon and clears daytime history when switching to night', () => {
+  const { effect, update, isReset } = setup()
+  const night = new NightEffect()
+  try {
+    update()
+    update()
+    assert.equal(isReset(), false)
+    const direction = new Vector3(1, 0, 1).normalize()
+    setCloudNightLighting(effect, 1, direction, 0.5)
+    const { uniforms, fragmentShader } = effect.cloudsPass.currentMaterial
+    assert.equal(uniforms.nightLighting.value, 1)
+    assert.ok(uniforms.nightMoonDirection.value.equals(direction))
+    assert.ok(uniforms.moonPhase.value > 0 && uniforms.moonPhase.value < 0.5)
+    assert.match(fragmentShader, /radiance \+= nightLighting \* nightRadiance;\s*\}\s*radiance \*= media\.scattering;/)
+    update()
+    assert.equal(isReset(), true)
+    update()
+    assert.equal(isReset(), false)
+    stabilizeNightClouds(night)
+    assert.match(night.getFragmentShader(), /sceneDepth\(\(base \+ offset \+ 0\.5\) \/ size\)/)
+    assert.doesNotMatch(night.getFragmentShader(), /cloudFill/)
+  } finally { night.dispose(); effect.dispose() }
 })
 
 test('city lamp grid coordinates are identical before and after a floating-origin shift', () => {
@@ -400,6 +454,9 @@ test('cloud overlay upsampling is depth-aware in the installed aerial perspectiv
     const once = effect.getFragmentShader()
     assert.match(once, /vec4 overlay = sampleCloudOverlay\(uv\);/)
     assert.match(once, /exp\(-abs\(texelDepth - center\)/)
+    assert.match(once, /degenerateNormal \|\| .*dot\(viewNormal, viewNormal\).*\n\s*\? normalize\(positionECEF \/ vEllipsoidRadiiSquared\)/)
+    assert.doesNotMatch(once, /if \(!degenerateNormal\)/)
+    assert.ok(once.indexOf('fwidth(viewZ)') < once.indexOf('if (depth >= 1.0)'))
     stabilizeAerialPerspective(effect)
     assert.equal(effect.getFragmentShader(), once, 'patching twice must not change the shader')
   } finally { effect.dispose() }

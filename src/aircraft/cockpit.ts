@@ -6,6 +6,7 @@ import { drawEICAS, drawND, drawPFD, InstrumentCanvas } from './instruments'
 import type { AircraftModel } from './models'
 import { build172Cockpit } from './cockpit172'
 import { build737Cockpit } from './cockpit737'
+import { buildFighterCockpit } from './cockpitFighter'
 
 export interface Cockpit {
   root: Group
@@ -55,6 +56,7 @@ function windowFrame(parent: Object3D, mat: Material, eye: Vector3, width: numbe
 export function buildCockpit(model: AircraftModel): Cockpit {
   if (model.id === 'b737') return build737Cockpit(model)
   if (model.cockpit === 'ga') return build172Cockpit(model)
+  if (model.cockpit === 'fighter') return buildFighterCockpit(model)
   const root = new Group()
   root.name = 'cockpit'
   const eye = model.eye

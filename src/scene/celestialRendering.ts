@@ -6,11 +6,16 @@ function replace(source: string, from: string, to: string) {
   return source.replace(from, to)
 }
 
-/** Add NASA's lunar surface map to the atmosphere's existing phase-lit Moon. */
-export function prepareMoon(material: SkyMaterial, texture: Texture) {
+/** Antialias the solar disk and texture the existing phase-lit Moon. */
+export function prepareSky(material: SkyMaterial, texture: Texture) {
   if (material.userData.geoflightMoon) return
   let source = material.fragmentShader
   source = `uniform highp sampler2D lunarMap;\nuniform highp mat4 moonFixedFromECEF;\nuniform highp vec3 moonSunDirection;\n${source}`
+  source = replace(source, 'float antialias = smoothstep(\n      ATMOSPHERE.sun_angular_radius,\n      ATMOSPHERE.sun_angular_radius - fragmentAngle,\n      angle\n    );', /* glsl */ `
+    float radius = ATMOSPHERE.sun_angular_radius;
+    float antialias = 1.0 - smoothstep(max(0.0, radius - max(fragmentAngle, 1e-5)), radius, angle);`)
+  source = replace(source, 'float fragmentAngle = length(dRDdx + dRDdy) / length(rayDirection);',
+    'float fragmentAngle = max(length(dRDdx), length(dRDdy));')
   source = replace(source, 'float diffuse = orenNayarDiffuse(-sunDirection, rayDirection, normal);', `
     float diffuse = orenNayarDiffuse(-moonSunDirection, rayDirection, normal);
     vec3 surface = normalize(mat3(moonFixedFromECEF) * -normal);

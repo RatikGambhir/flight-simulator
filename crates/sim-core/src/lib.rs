@@ -9,6 +9,7 @@
 pub mod aircraft;
 pub mod atmosphere;
 pub mod autopilot;
+pub mod engine;
 pub mod geo;
 pub mod protocol;
 pub mod sim;

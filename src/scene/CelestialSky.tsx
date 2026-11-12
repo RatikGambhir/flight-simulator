@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef } from 'react'
 import { type Mesh, Matrix4, RepeatWrapping, SRGBColorSpace, TextureLoader, Vector3 } from 'three'
 import { frame } from '../world/frame'
 import { type CelestialState, starIntensity, starRotation } from './celestial'
-import { prepareMoon, prepareStars } from './celestialRendering'
+import { prepareSky, prepareStars } from './celestialRendering'
 
 const up = new Vector3()
 
@@ -22,7 +22,7 @@ export function CelestialSky({ atmosphere, celestial }: {
   }, [texture])
   const bindSky = useCallback((mesh: Mesh | null) => {
     sky.current = mesh as SkyImpl | null
-    if (sky.current) prepareMoon(sky.current.material, texture)
+    if (sky.current) prepareSky(sky.current.material, texture)
   }, [texture])
   const bindStars = useCallback((points: StarsImpl | null) => {
     stars.current = points
