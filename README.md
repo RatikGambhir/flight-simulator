@@ -255,10 +255,14 @@ braking and nosewheel steering on the ground.
 
 * **Wind and turbulence** (`crates/sim-core/src/weather.rs`): surface wind follows the 1/7
   power‑law boundary layer (weaker in the flare than at pattern altitude); turbulence is a
-  Dryden‑style gust model with height‑dependent length scales and rotational gusts, plus
-  mechanical turbulence near the ground in strong wind. Aerodynamics use the air‑relative
-  velocity, so headwinds cut ground speed, crosswinds need a crab, and approaches spawn
-  crabbed onto a true 3° glideslope over the ground.
+  Dryden‑style gust model (MIL‑F‑8785C) with height‑dependent length scales, plus
+  mechanical turbulence near the ground in strong wind. Roll, pitch and yaw gusts match the
+  RMS of the Dryden rotary spectra for the aircraft's wingspan; eddies smaller than the
+  airframe (near the ground the vertical ones are only as big as the height) don't rock it
+  harder, so in the flare a light aircraft is rocked far more than an airliner, and side
+  gusts (about twice the vertical ones low down) make yaw the liveliest axis. Aerodynamics
+  use the air‑relative velocity, so headwinds cut ground speed, crosswinds need a crab, and
+  approaches spawn crabbed onto a true 3° glideslope over the ground.
 * **Ground effect** within about a wingspan of the runway reduces induced drag and adds
   lift, so airliners float in the flare.
 * **Turbofan spool‑up** is slow from idle and quick near the top; **thrust reversers**

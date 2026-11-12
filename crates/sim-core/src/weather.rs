@@ -5,10 +5,15 @@
 //!   so it is weaker in the flare than at pattern altitude.
 //! * **Turbulence** follows a simplified Dryden model (MIL-F-8785C): each gust
 //!   component is first-order filtered white noise whose length scale and
-//!   intensity depend on height. Rotational gusts (mostly roll) come from the
-//!   vertical gust gradient across the wingspan.
+//!   intensity depend on height. Rotational gusts come from the gust gradients
+//!   over the airframe (roll: vertical gust across the span; pitch and yaw:
+//!   vertical and side gusts along the flight path). Their RMS matches the
+//!   Dryden rotary spectra, with length scales not taken below the wingspan
+//!   (eddies smaller than the airframe partly cancel across it).
 //!
 //! Everything is deterministic for a given seed so tests are repeatable.
+
+use std::f64::consts::PI;
 
 use glam::DVec3;
 
@@ -76,6 +81,54 @@ impl Default for WeatherSettings {
     fn default() -> Self {
         Self { wind_from_deg: 270.0, wind_speed_ms: 0.0, turbulence: 0.0 }
     }
+}
+
+/// Dryden turbulence scales at one height (MIL-F-8785C).
+#[derive(Debug, Clone, Copy)]
+struct Scales {
+    /// Horizontal (u and v) length scale, m.
+    l_u: f64,
+    /// Vertical (w) length scale, m.
+    l_w: f64,
+    /// RMS horizontal (u and v) gust, m/s.
+    sigma_u: f64,
+    /// RMS vertical gust, m/s.
+    sigma_w: f64,
+}
+
+/// RMS rotational gusts (roll, pitch, yaw rates in rad/s) for wingspan `b`,
+/// variance-matched to the MIL-F-8785C / MIL-HDBK-1797 Dryden rotary spectra
+///
+/// ```text
+/// Φp(ω) = σw² / (Lw V) · 0.8 (π Lw / 4b)^⅓ / (1 + (4bω / πV)²)
+/// Φq(ω) = (ω/V)² / (1 + (4bω / πV)²) · Φw(ω)
+/// Φr(ω) = (ω/V)² / (1 + (3bω / πV)²) · Φv(ω)
+/// ```
+///
+/// where Φw, Φv are the Dryden vertical and lateral spectra
+/// (σ² L / πV · (1 + 3(Lω/V)²) / (1 + (Lω/V)²)²). Integrated over ω ≥ 0 they
+/// give, independent of airspeed,
+///
+/// ```text
+/// σp = σw · π √(0.1 / (Lw b)) · (π Lw / 4b)^⅙
+/// σq = σw · √(π (2k + 3) / (8 b Lw)) / (1 + k),   k = 4b / (π Lw)
+/// σr = σv · √(π (2k + 3) / (6 b Lv)) / (1 + k),   k = 3b / (π Lv)
+/// ```
+///
+/// Gust penetration: the rotary spectra assume eddies at least as large as
+/// the airframe. Near the ground Lw = h is much shorter than a jet's span, and
+/// eddies that small partly cancel across it rather than rolling it harder (σp
+/// would otherwise grow as Lw^-⅓ toward the runway), so neither length scale is
+/// taken below the span.
+fn rotary_sigma(s: &Scales, b: f64) -> DVec3 {
+    let lw = s.l_w.max(b);
+    let lv = s.l_u.max(b);
+    let p = s.sigma_w * PI * (0.1 / (lw * b)).sqrt() * (PI * lw / (4.0 * b)).powf(1.0 / 6.0);
+    let kq = 4.0 * b / (PI * lw);
+    let q = s.sigma_w * (PI * (2.0 * kq + 3.0) / (8.0 * b * lw)).sqrt() / (1.0 + kq);
+    let kr = 3.0 * b / (PI * lv);
+    let r = s.sigma_u * (PI * (2.0 * kr + 3.0) / (6.0 * b * lv)).sqrt() / (1.0 + kr);
+    DVec3::new(p, q, r)
 }
 
 /// Wind field state around the aircraft.
@@ -157,11 +210,25 @@ impl Weather {
         self.rot
     }
 
+    /// MIL-F-8785C length scales and intensities at a height: low-altitude
+    /// scales below 1000 ft, medium-altitude (isotropic) above.
+    fn scales(&self, agl_m: f64) -> Scales {
+        let sigma_w = self.sigma_w(agl_m);
+        let h_ft = (agl_m / FT_TO_M).max(10.0);
+        if h_ft < 1000.0 {
+            let d = 0.177 + 0.000_823 * h_ft;
+            Scales { l_u: h_ft / d.powf(1.2) * FT_TO_M, l_w: h_ft * FT_TO_M, sigma_u: sigma_w / d.powf(0.4), sigma_w }
+        } else {
+            let l = 1750.0 * FT_TO_M;
+            Scales { l_u: l, l_w: l, sigma_u: sigma_w, sigma_w }
+        }
+    }
+
     /// Advances the gust filters by `dt` for an aircraft flying at `airspeed`
     /// with wingspan `span_m` at `agl_m` above the ground.
     pub fn step(&mut self, dt: f64, airspeed: f64, agl_m: f64, span_m: f64) {
-        let sigma_w = self.sigma_w(agl_m);
-        if sigma_w < 1e-4 {
+        let sc = self.scales(agl_m);
+        if sc.sigma_w < 1e-4 {
             // Let any residual gust decay smoothly to calm air.
             let k = (-dt * 2.0).exp();
             self.gust *= k;
@@ -169,31 +236,21 @@ impl Weather {
             return;
         }
         let v = airspeed.max(5.0);
-        let h_ft = (agl_m / FT_TO_M).max(10.0);
-        // MIL-F-8785C low-altitude scales, blending to medium altitude above 2000 ft.
-        let (lu, lw, sigma_u) = if h_ft < 1000.0 {
-            let lu = h_ft / (0.177 + 0.000_823 * h_ft).powf(1.2) * FT_TO_M;
-            let lw = h_ft * FT_TO_M;
-            (lu, lw, sigma_w / (0.177 + 0.000_823 * h_ft).powf(0.4))
-        } else {
-            let l = 1750.0 * FT_TO_M;
-            (l, l, sigma_w)
-        };
         let mut markov = |x: f64, sigma: f64, l: f64| {
             let a = v / l.max(1.0);
             let decay = (-a * dt).exp();
             x * decay + sigma * (1.0 - decay * decay).sqrt() * self.rng.gaussian()
         };
-        self.gust.x = markov(self.gust.x, sigma_u, lu);
-        self.gust.y = markov(self.gust.y, sigma_u, lu);
-        self.gust.z = markov(self.gust.z, sigma_w, lw);
-        // Rotational gusts: roll from the gust gradient across the span (strongest), smaller pitch/yaw.
+        self.gust.x = markov(self.gust.x, sc.sigma_u, sc.l_u);
+        self.gust.y = markov(self.gust.y, sc.sigma_u, sc.l_u);
+        self.gust.z = markov(self.gust.z, sc.sigma_w, sc.l_w);
+        // Rotational gusts: first-order processes with the Dryden RMS and the
+        // span filter's corner (πV/4b for roll and pitch, πV/3b for yaw).
         let b = span_m.max(5.0);
-        let sigma_p = 1.9 * sigma_w / (lw.max(b) * b).sqrt();
-        let rot_l = (4.0 * b / std::f64::consts::PI).max(1.0);
-        self.rot.x = markov(self.rot.x, sigma_p, rot_l);
-        self.rot.y = markov(self.rot.y, sigma_p * 0.45, rot_l);
-        self.rot.z = markov(self.rot.z, sigma_p * 0.35, rot_l);
+        let sigma = rotary_sigma(&sc, b);
+        self.rot.x = markov(self.rot.x, sigma.x, 4.0 * b / PI);
+        self.rot.y = markov(self.rot.y, sigma.y, 4.0 * b / PI);
+        self.rot.z = markov(self.rot.z, sigma.z, 3.0 * b / PI);
     }
 }
 
@@ -232,6 +289,63 @@ mod tests {
         let rms = (sum2 / n as f64).sqrt();
         let expected = w.sigma_w(1500.0);
         assert!((rms - expected).abs() < expected * 0.35, "rms {rms} vs {expected}");
+    }
+
+    /// Integrates a one-sided spectrum over ω in (0, ∞) on a log grid.
+    fn integrate(f: impl Fn(f64) -> f64) -> f64 {
+        let (lo, hi, n) = (1e-6_f64.ln(), 1e6_f64.ln(), 40_000);
+        let h = (hi - lo) / n as f64;
+        let g = |i: usize| {
+            let w = (lo + i as f64 * h).exp();
+            f(w) * w
+        };
+        (0..n).map(|i| 0.5 * (g(i) + g(i + 1)) * h).sum()
+    }
+
+    /// RMS roll, pitch and yaw rates of the MIL-F-8785C Dryden rotary spectra
+    /// at airspeed `v`, by numerical integration, with the length scales held
+    /// at no less than the span `b` (gust penetration).
+    fn dryden_rotary_rms(s: &Scales, b: f64, v: f64) -> [f64; 3] {
+        let (lw, lv) = (s.l_w.max(b), s.l_u.max(b));
+        let dryden = |sigma: f64, l: f64, w: f64| {
+            let x = l * w / v;
+            sigma * sigma * l / (PI * v) * (1.0 + 3.0 * x * x) / (1.0 + x * x).powi(2)
+        };
+        let span = |c: f64, w: f64| 1.0 / (1.0 + (c * b * w / (PI * v)).powi(2));
+        let p = integrate(|w| s.sigma_w.powi(2) / (lw * v) * 0.8 * (PI * lw / (4.0 * b)).cbrt() * span(4.0, w));
+        let q = integrate(|w| (w / v).powi(2) * span(4.0, w) * dryden(s.sigma_w, lw, w));
+        let r = integrate(|w| (w / v).powi(2) * span(3.0, w) * dryden(s.sigma_u, lv, w));
+        [p.sqrt(), q.sqrt(), r.sqrt()]
+    }
+
+    #[test]
+    fn rotary_gusts_match_the_dryden_spectra() {
+        // Moderate turbulence and a 15 kt wind. (span, airspeed, height):
+        // 737-size and C172-size in the flare (Lw = 20 ft, shorter than either
+        // span), and C172-size at 300 ft (Lw longer than the span).
+        let cases = [(35.8, 70.0, 20.0), (11.0, 33.0, 20.0), (11.0, 33.0, 300.0)];
+        for (b, v, h_ft) in cases {
+            let h = h_ft * FT_TO_M;
+            let mut w = Weather::default();
+            w.set(WeatherSettings { wind_from_deg: 250.0, wind_speed_ms: 7.7, turbulence: 0.45 });
+            let expected = dryden_rotary_rms(&w.scales(h), b, v);
+            let closed = rotary_sigma(&w.scales(h), b).to_array();
+            for i in 0..3 {
+                let err = closed[i] / expected[i] - 1.0;
+                assert!(err.abs() < 0.01, "span {b} at {h_ft} ft, axis {i}: closed form {} vs spectrum {}", closed[i], expected[i]);
+            }
+            let (dt, n) = (1.0 / 120.0, 120 * 1200);
+            let mut sum2 = DVec3::ZERO;
+            for _ in 0..n {
+                w.step(dt, v, h, b);
+                sum2 += w.rot * w.rot;
+            }
+            let rms = (sum2 / n as f64).to_array().map(f64::sqrt);
+            for i in 0..3 {
+                let err = rms[i] / expected[i] - 1.0;
+                assert!(err.abs() < 0.1, "span {b} at {h_ft} ft, axis {i}: simulated rms {:.4} vs spectrum {:.4} rad/s", rms[i], expected[i]);
+            }
+        }
     }
 
     #[test]
