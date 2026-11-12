@@ -12,17 +12,23 @@ export function useAtmosphereTextures() {
     // effect. StrictMode and Fast Refresh rerun that effect on the SAME generator.
     // Its queued disposal can then delete the active sky/cloud lighting textures
     // after precomputation finishes. A fresh generator per setup avoids that race.
-    const generator = new PrecomputedTexturesGenerator(renderer)
+    let generator: PrecomputedTexturesGenerator | null = null
     let active = true
     setTextures(null)
-    generator.update().then((result) => {
-      if (active) setTextures(result)
-    }).catch((error: unknown) => {
-      if (active) console.error('Atmosphere precomputation failed', error)
+    // React's development-only setup/cleanup runs before this frame, so only
+    // the mounted scene starts the expensive GPU work.
+    const start = requestAnimationFrame(() => {
+      generator = new PrecomputedTexturesGenerator(renderer)
+      generator.update().then((result) => {
+        if (active) setTextures(result)
+      }).catch((error: unknown) => {
+        if (active) console.error('Atmosphere precomputation failed', error)
+      })
     })
     return () => {
       active = false
-      generator.dispose()
+      cancelAnimationFrame(start)
+      generator?.dispose()
     }
   }, [renderer])
 

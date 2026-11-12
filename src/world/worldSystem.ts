@@ -1,10 +1,10 @@
 // Owns the streamed 3D Tiles layers: per-frame updates under the floating
 // origin, ground-height probing and collision rays.
 
-import { BufferGeometry, Mesh, Raycaster, Sphere, Vector3, type Intersection, type Object3D, type PerspectiveCamera, type Scene, type WebGLRenderer } from 'three'
+import { BufferGeometry, Mesh, Raycaster, Vector3, type Intersection, type PerspectiveCamera, type Scene, type WebGLRenderer } from 'three'
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh'
-import type { Settings } from '../state/store'
-import { createLayers, type StaticAttribution, type TileLayer } from './providers'
+import type { Quality, Settings } from '../state/store'
+import { createLayers, setTileQuality, type StaticAttribution, type TileLayer } from './providers'
 import { ecefToGeodetic, frame, geodeticToEcef } from './frame'
 import { FlightPrefetch } from './flightPrefetch'
 
@@ -21,7 +21,6 @@ export interface Attribution {
 const _origin = new Vector3()
 const _target = new Vector3()
 const _dir = new Vector3()
-const _sphere = new Sphere()
 const _ecef = new Vector3()
 
 export class WorldSystem {
@@ -29,10 +28,10 @@ export class WorldSystem {
   private readonly staticAttributions: StaticAttribution[]
   private readonly raycaster = new Raycaster()
   private readonly hits: Intersection[] = []
-  private readonly candidates: Mesh[] = []
+  private builtBoundsThisFrame = false
   private readonly prefetch = new FlightPrefetch()
   private prefetchActive = false
-  private readonly prefetchResolution: number
+  private prefetchResolution = 0
   failed = false
   lastError: string | null = null
   /** World-space surface normal of the most recent ray hit. */
@@ -44,12 +43,12 @@ export class WorldSystem {
     private camera: PerspectiveCamera,
     private scene: Scene,
   ) {
-    this.prefetchResolution = { low: 64, medium: 96, high: 128, ultra: 192 }[settings.quality]
     const { layers, attributions } = createLayers(settings, renderer)
     this.layers = layers
     this.staticAttributions = attributions
     ;(this.raycaster as Raycaster & { firstHitOnly?: boolean }).firstHitOnly = true
     for (const l of layers) {
+      l.tiles.group.matrixAutoUpdate = false
       // The streaming view can activate tiles outside the visible camera.
       // Let Three cull those meshes before submitting them to the GPU.
       l.tiles.autoDisableRendererCulling = false
@@ -65,6 +64,7 @@ export class WorldSystem {
       })
       scene.add(l.tiles.group)
     }
+    this.setQuality(settings.quality)
     this.syncTransforms()
   }
 
@@ -102,6 +102,15 @@ export class WorldSystem {
   detailScale = 1
   private readonly baseErrorTargets = new Map<TileLayer, number>()
 
+  setQuality(quality: Quality) {
+    this.prefetchResolution = { low: 64, medium: 96, high: 128, ultra: 192 }[quality]
+    for (const layer of this.layers) {
+      setTileQuality(layer, quality)
+      this.baseErrorTargets.set(layer, layer.tiles.errorTarget)
+      if (this.prefetchActive) layer.tiles.setResolution(this.prefetch.camera, this.prefetchResolution, this.prefetchResolution)
+    }
+  }
+
   setFlightPath(position: Vector3, velocity: Vector3, up: Vector3, agl: number, enabled: boolean) {
     const active = this.prefetch.update(position, velocity, up, agl, enabled)
     if (active === this.prefetchActive) return
@@ -119,14 +128,10 @@ export class WorldSystem {
   }
 
   update() {
+    this.builtBoundsThisFrame = false
     this.syncTransforms()
     for (const l of this.layers) {
-      let base = this.baseErrorTargets.get(l)
-      if (base === undefined) {
-        base = l.tiles.errorTarget
-        this.baseErrorTargets.set(l, base)
-      }
-      l.tiles.errorTarget = base * this.detailScale
+      l.tiles.errorTarget = this.baseErrorTargets.get(l)! * this.detailScale
       l.tiles.setResolutionFromRenderer(this.camera, this.renderer)
       l.tiles.update()
     }
@@ -147,39 +152,25 @@ export class WorldSystem {
     this.raycaster.set(origin, dir)
     this.raycaster.near = 0
     this.raycaster.far = far
-    const ray = this.raycaster.ray
     this.hits.length = 0
     for (const l of this.layers) {
       if (!l.ground) continue
-      if (l.bvh) {
-        // Build BVHs lazily, only for photogrammetry tiles the ray can touch.
-        const cands = this.candidates
-        cands.length = 0
-        l.tiles.group.traverseVisible((o: Object3D) => {
-          const m = o as Mesh
-          if (!m.isMesh || !m.geometry || m.geometry.boundsTree) return
-          const g = m.geometry
-          if (!g.boundingSphere) g.computeBoundingSphere()
-          if (!g.boundingSphere) return
-          _sphere.copy(g.boundingSphere).applyMatrix4(m.matrixWorld)
-          if (ray.intersectsSphere(_sphere) && g.attributes.position && g.attributes.position.count > 500) cands.push(m)
-        })
-        // A BVH over a dense photogrammetry tile takes several milliseconds. Build at
-        // most one per ray (the probes run 10-30 times a second); unbuilt meshes
-        // still raycast correctly, just without acceleration.
-        if (cands.length > 0) {
-          let largest = cands[0]
-          for (const m of cands) if (m.geometry.attributes.position.count > largest.geometry.attributes.position.count) largest = m
-          try {
-            largest.geometry.computeBoundsTree()
-          } catch {
-            // brute-force raycast fallback
-          }
-        }
-      }
       // TilesGroup.raycast defers to TilesRenderer.raycast, which also handles
       // plugin-generated (GPU-displaced) terrain.
+      const first = this.hits.length
       l.tiles.group.raycast(this.raycaster, this.hits)
+      const hit = this.hits[first]?.object as Mesh | undefined
+      const geometry = hit?.isMesh ? hit.geometry : undefined
+      if (l.bvh && !this.builtBoundsThisFrame && geometry && !geometry.boundsTree && geometry.attributes.position.count > 500) {
+        // The tile renderer has already narrowed the ray to the intersected tiles.
+        // Accelerate a dense mesh that was actually hit, once per frame at most.
+        this.builtBoundsThisFrame = true
+        try {
+          geometry.computeBoundsTree({ indirect: true })
+        } catch {
+          // The exact mesh raycast remains available for unsupported geometry.
+        }
+      }
     }
     if (this.hits.length === 0) return null
     let best = this.hits[0]

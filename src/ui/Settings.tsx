@@ -134,7 +134,7 @@ export function Settings({ onClose, full }: { onClose: () => void; full?: boolea
               <input type="range" min={0.5} max={1} step={0.05} value={s.renderScale} onChange={(e) => update({ renderScale: Number(e.target.value) })} />
             </div>
             <div className="toggle-row">
-              <span>Adaptive resolution (lowers resolution when frames run slow)</span>
+              <span>Adaptive cloud detail (holds the frame rate; scene resolution stays fixed)</span>
               <input type="checkbox" checked={s.adaptiveResolution} onChange={(e) => update({ adaptiveResolution: e.target.checked })} />
             </div>
             <div className="toggle-row">
@@ -150,7 +150,7 @@ export function Settings({ onClose, full }: { onClose: () => void; full?: boolea
               <input type="checkbox" checked={s.shadows} onChange={(e) => update({ shadows: e.target.checked })} />
             </div>
             <div className="toggle-row">
-              <span>Show FPS</span>
+              <span>Show FPS and render resolution</span>
               <input type="checkbox" checked={s.showFps} onChange={(e) => update({ showFps: e.target.checked })} />
             </div>
           </section>

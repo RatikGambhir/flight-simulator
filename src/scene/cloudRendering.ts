@@ -1,4 +1,5 @@
 import type { CloudsEffect } from '@takram/three-clouds'
+import type { AerialPerspectiveEffect } from '@takram/three-atmosphere'
 import { Quaternion, Uniform, Vector3, type Camera, type RawShaderMaterial } from 'three'
 import type { Effect } from 'postprocessing'
 
@@ -17,6 +18,120 @@ function stabilizeDensity(material: RawShaderMaterial) {
   material.fragmentShader = source
   material.needsUpdate = true
 }
+
+/**
+ * Temporal upscaling marches one pixel of every 4x4 block per frame and rebuilds
+ * the rest from reprojected history. The stock resolve breaks down in motion: in
+ * a turn the freshly marched pixels stand out against lagging history as a 4x4
+ * dot pattern, history ghosts cloud onto the aircraft as it rolls, and rejected
+ * pixels show one low-resolution texel per 4x4 block.
+ *
+ * This resolve keeps the stock path where the image is steady, and otherwise
+ * leans on a depth-aware, jitter-aligned reconstruction of the current frame
+ * (the same weighting the overlay upsample uses), accumulated against clipped
+ * history so it stays temporally stable. Near geometry (the aircraft, the ground
+ * on approach) never trusts history.
+ */
+const UPSCALE_RESOLVE = /* glsl */ `
+uniform highp sampler2D sceneDepthBuffer;
+uniform float nearHistoryDepth;
+
+// Weights for the four low-resolution texels around uv. Each texel was marched at
+// this frame's jittered position, against the scene depth found there.
+void upscaleWeights(const vec2 uv, const float center, out ivec2 base, out vec4 weights) {
+  vec2 lowSize = vec2(textureSize(colorBuffer, 0));
+  vec2 st = (uv - jitterOffset * texelSize) * lowSize - 0.5;
+  vec2 cell = floor(st);
+  vec2 f = st - cell;
+  base = ivec2(cell);
+  for (int i = 0; i < 4; ++i) {
+    vec2 offset = vec2(float(i & 1), float(i >> 1));
+    vec2 marched = (cell + offset + 0.5) / lowSize + jitterOffset * texelSize;
+    float depth = texture(sceneDepthBuffer, clamp(marched, vec2(0.0), vec2(1.0))).r;
+    vec2 bilinear = mix(1.0 - f, f, offset);
+    weights[i] = bilinear.x * bilinear.y * exp(-abs(depth - center) * 300.0) + 1e-5;
+  }
+  weights /= weights.x + weights.y + weights.z + weights.w;
+}
+
+vec4 upscaleFetch(const sampler2D buffer, const ivec2 base, const vec4 weights) {
+  ivec2 last = textureSize(buffer, 0) - 1;
+  vec4 sum = vec4(0.0);
+  for (int i = 0; i < 4; ++i) {
+    sum += weights[i] * texelFetch(buffer, clamp(base + ivec2(i & 1, i >> 1), ivec2(0), last), 0);
+  }
+  return sum;
+}
+
+void temporalUpscale(
+  const ivec2 coord,
+  const ivec2 lowResCoord,
+  const bool currentFrame,
+  out vec4 outputColor,
+  out float outputShadowLength
+) {
+  vec4 currentColor = texelFetch(colorBuffer, lowResCoord, 0);
+  float center = texture(sceneDepthBuffer, vUv).r;
+  ivec2 base;
+  vec4 weights;
+  upscaleWeights(vUv, center, base, weights);
+  // Each sample is a single noisy march, so this is only a stand-in where history
+  // is unusable, and a gentle pull in motion; accumulation still does the denoising.
+  vec4 spatialColor = upscaleFetch(colorBuffer, base, weights);
+  #ifdef SHADOW_LENGTH
+  vec4 currentShadowLength = vec4(texelFetch(shadowLengthBuffer, lowResCoord, 0).rgb, 1.0);
+  float spatialShadowLength = upscaleFetch(shadowLengthBuffer, base, weights).r;
+  #endif // SHADOW_LENGTH
+
+  vec4 depthVelocity = getClosestFragment(lowResCoord);
+  vec2 velocity = depthVelocity.gb;
+  vec2 prevUv = vUv - velocity;
+  if (resetHistory || center < nearHistoryDepth || any(isnan(prevUv)) || any(isinf(prevUv)) ||
+      prevUv.x < 0.0 || prevUv.x > 1.0 || prevUv.y < 0.0 || prevUv.y > 1.0) {
+    outputColor = spatialColor;
+    #ifdef SHADOW_LENGTH
+    outputShadowLength = spatialShadowLength;
+    #endif // SHADOW_LENGTH
+    return; // Rejection
+  }
+
+  // 0 while the image is steady, 1 once it moves a few pixels per frame.
+  float moving = smoothstep(0.5, 3.0, length(velocity / texelSize));
+  vec4 historyColor = texture(colorHistoryBuffer, prevUv);
+  if (any(isnan(historyColor)) || any(isinf(historyColor))) historyColor = spatialColor;
+  vec4 clippedColor = varianceClipping(colorBuffer, vUv, currentColor, historyColor, varianceGamma);
+  // A fresh sample keeps a little history, so it cannot pop out of stale neighbours.
+  vec4 settled = currentFrame ? mix(clippedColor, currentColor, 0.8) : clippedColor;
+  outputColor = mix(settled, mix(clippedColor, spatialColor, 0.2), moving);
+
+  #ifdef SHADOW_LENGTH
+  vec4 historyShadowLength = vec4(texture(shadowLengthHistoryBuffer, prevUv).rgb, 1.0);
+  if (isnan(historyShadowLength.r) || isinf(historyShadowLength.r)) historyShadowLength = currentShadowLength;
+  float clippedShadowLength = varianceClipping(shadowLengthBuffer, vUv, currentShadowLength, historyShadowLength, varianceGamma).r;
+  float settledShadowLength = currentFrame ? mix(clippedShadowLength, currentShadowLength.r, 0.8) : clippedShadowLength;
+  outputShadowLength = mix(settledShadowLength, mix(clippedShadowLength, spatialShadowLength, 0.2), moving);
+  #endif // SHADOW_LENGTH
+}
+
+`
+
+function upscaleResolve(source: string) {
+  const start = source.indexOf('void temporalUpscale(')
+  const end = source.indexOf('void temporalAntialiasing(')
+  if (start < 0 || end < start) throw new Error('Cloud shader changed: missing temporalUpscale')
+  return source.slice(0, start) + UPSCALE_RESOLVE + source.slice(end)
+}
+
+/** Feed the upscale resolve the scene depth the march used and the near-history cutoff. */
+function syncUpscaleInputs(effect: CloudsEffect, camera: Camera) {
+  const resolve = effect.cloudsPass.resolveMaterial.uniforms
+  if (!resolve.sceneDepthBuffer) return
+  resolve.sceneDepthBuffer.value = effect.cloudsPass.currentMaterial.uniforms.depthBuffer.value
+  const far = (camera as Camera & { far?: number }).far ?? 2e7
+  // The aircraft (and cockpit) sit well inside 400 m of the camera; terrain below does not.
+  resolve.nearHistoryDepth.value = Math.log2(1 + NEAR_HISTORY_M) / Math.log2(far + 1)
+}
+const NEAR_HISTORY_M = 400
 
 function stabilizeResolve(material: RawShaderMaterial, shadow: boolean) {
   let source = material.fragmentShader
@@ -38,6 +153,14 @@ function stabilizeResolve(material: RawShaderMaterial, shadow: boolean) {
       'texelFetch($1, clamp(coord + $2, ivec2(0), textureSize($1, 0) - 1), 0)')
     const shadowHistory = 'vec4 historyShadowLength = vec4(texture(shadowLengthHistoryBuffer, prevUv).rgb, 1.0);'
     source = replace(source, shadowHistory, `${shadowHistory}\n  if (isnan(historyShadowLength.r) || isinf(historyShadowLength.r)) historyShadowLength = currentShadowLength;`)
+  }
+  if (!shadow) {
+    source = upscaleResolve(source)
+    material.uniforms.sceneDepthBuffer = new Uniform(null)
+    material.uniforms.nearHistoryDepth = new Uniform(0)
+    // The stock gamma of 2 lets stale history linger for the 16 frames between a
+    // pixel's own samples, which reads as a dot pattern while turning.
+    material.uniforms.varianceGamma.value = 1.25
   }
   material.uniforms.resetHistory = new Uniform(true)
   material.fragmentShader = source
@@ -187,6 +310,7 @@ export class CloudHistory {
       this.sunDirection.distanceToSquared(effect.sunDirection) > 0.0025 ||
       this.position.distanceToSquared(camera.position) > 100 * 100 ||
       Math.abs(this.rotation.dot(camera.quaternion)) < 0.9
+    syncUpscaleInputs(effect, camera)
     effect.cloudsPass.resolveMaterial.uniforms.resetHistory.value = reset
     effect.shadowPass.resolveMaterial.uniforms.resetHistory.value = reset
     this.effect = effect
@@ -245,8 +369,44 @@ export function stabilizeNightClouds(effect: Effect) {
     .replace('texture2D(cloudOverlay, uv).a', 'sampleCloudOverlay(uv).a'))
 }
 
+/** Keep the aerial shader's inputs in sync with the cloud pass that just rendered. */
+function syncAerialInputs(effect: AerialPerspectiveEffect, getClouds?: () => CloudsEffect | null) {
+  const update = effect.update
+  const inputs = effect as unknown as {
+    updateOverlay(): boolean
+    updateShadow(): boolean
+    updateShadowLength(): boolean
+    updateLightingMask(): boolean
+    setChanged(): void
+  }
+  effect.update = (...args) => {
+    if (getClouds) {
+      const clouds = getClouds()
+      effect.overlay = clouds?.atmosphereOverlay ?? null
+      effect.shadow = clouds?.atmosphereShadow ?? null
+      effect.shadowLength = clouds?.atmosphereShadowLength ?? null
+    }
+
+    const { defines, overlay, shadow, shadowLength, lightingMask } = effect
+    if (defines.has('HAS_OVERLAY') !== (overlay != null) ||
+      defines.has('HAS_SHADOW') !== (shadow != null) ||
+      defines.has('HAS_SHADOW_LENGTH') !== (shadowLength != null) ||
+      defines.has('HAS_LIGHTING_MASK') !== (lightingMask != null) ||
+      (shadow != null && defines.get('SHADOW_CASCADE_COUNT') !== `${shadow.cascadeCount}`)) {
+      // The upstream update short-circuits after the first shader-define change.
+      // Set them together so a toggle never leaves disposed shadow buffers bound.
+      inputs.updateOverlay()
+      inputs.updateShadow()
+      inputs.updateShadowLength()
+      inputs.updateLightingMask()
+      inputs.setChanged()
+    }
+    update.apply(effect, args)
+  }
+}
+
 /** Depth-aware upsampling of the cloud overlay where the aerial perspective composites it. */
-export function stabilizeAerialPerspective(effect: Effect) {
+export function stabilizeAerialPerspective(effect: AerialPerspectiveEffect, getClouds?: () => CloudsEffect | null) {
   let source = effect.getFragmentShader()
   if (source.includes('sampleCloudOverlay')) return
   source = replace(source, `#ifdef HAS_OVERLAY
@@ -316,4 +476,5 @@ export function stabilizeAerialPerspective(effect: Effect) {
   source = replace(source, 'radiance = radiance + inscatter;',
     'radiance += max(inscatter, vec3(0.0));')
   setEffectFragment(effect, source)
+  syncAerialInputs(effect, getClouds)
 }

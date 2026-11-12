@@ -4,6 +4,7 @@ import { Flags, S } from '../sim/protocol'
 import { sim } from '../sim/simClient'
 import { CAMERA_MODES, useApp } from '../state/store'
 import { useWorldStatus } from '../scene/worldStatus'
+import { PERF_FORCED, perfMonitor, type PerfSnapshot } from '../scene/perfMonitor'
 import { ControlsHelp } from './ControlsHelp'
 import { Hud } from './Hud'
 import { LocationSelect } from './LocationSelect'
@@ -144,25 +145,16 @@ export function Attribution() {
 }
 
 function Fps() {
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    let frames = 0
-    let last = performance.now()
-    let raf = 0
-    const loop = () => {
-      raf = requestAnimationFrame(loop)
-      frames++
-      const now = performance.now()
-      if (now - last > 500) {
-        if (ref.current) ref.current.textContent = `${Math.round((frames * 1000) / (now - last))} fps`
-        frames = 0
-        last = now
-      }
-    }
-    loop()
-    return () => cancelAnimationFrame(raf)
-  }, [])
-  return <div className="fps" ref={ref} />
+  const [stats, setStats] = useState<PerfSnapshot | null>(perfMonitor.latest)
+  useEffect(() => perfMonitor.subscribe(setStats), [])
+  if (!stats) return null
+  return (
+    <div className="fps">
+      <div>{stats.fps.toFixed(0)} FPS · 1% low {stats.low1.toFixed(0)} · {stats.width} × {stats.height} @{stats.dpr.toFixed(2)}x</div>
+      <div>frame p50 {stats.p50.toFixed(1)} · p95 {stats.p95.toFixed(1)} · p99 {stats.p99.toFixed(1)} ms · CPU {stats.cpuMean.toFixed(1)} ms</div>
+      <div>{Math.round(stats.calls)} draws · {(stats.triangles / 1e6).toFixed(2)}M tris · {stats.textures} tex · {stats.geometries} geo · {stats.programs} programs{stats.heapMB !== null ? ` · ${stats.heapMB.toFixed(0)} MB heap` : ''}{perfMonitor.notes.cloudLevel !== undefined ? ` · clouds L${perfMonitor.notes.cloudLevel} (${perfMonitor.notes.cloudResolution})` : ''}</div>
+    </div>
+  )
 }
 
 function PauseMenu() {
@@ -251,7 +243,7 @@ export function FlightChrome() {
       </div> : null}
       <LoadingIndicator />
       {hudVisible && !pauseMenu ? <TakeoffGuide /> : null}
-      {showFps ? <Fps /> : null}
+      {showFps || PERF_FORCED ? <Fps /> : null}
       {help ? <ControlsHelp full onClose={() => useApp.getState().setHelpOverlay(false)} /> : null}
       {crashed && !pauseMenu ? <CrashOverlay reason={crashed} /> : null}
       {pauseMenu ? <PauseMenu /> : null}

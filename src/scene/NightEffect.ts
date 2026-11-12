@@ -273,15 +273,12 @@ async function loadCityMask(url: string, maxTextureSize: number) {
 
 /** Re-anchor the lamp grid only after this much travel; it is exact in between. */
 const LIGHT_FRAME_RANGE = 150_000
-/** Fetch the atlas this long after start even by day, so dusk never waits on it. */
-const PREFETCH_DELAY_MS = 6000
 export class NightEffect extends Effect {
   readonly albedoPass = new NightAlbedoPass()
   private readonly cityMapUrl?: string
   private readonly getCloudOverlay?: () => Texture | null
   private cityLoad: Promise<DataTexture> | null = null
   private cityMask: DataTexture | null = null
-  private readonly createdAt = typeof performance === 'undefined' ? 0 : performance.now()
   private readonly ecefFromWorld: Matrix4
   private readonly lightReference = new Vector3()
   private readonly referenceEast = new Vector3()
@@ -339,7 +336,9 @@ export class NightEffect extends Effect {
     this.uniforms.get('cloudOverlay')!.value = overlay
     this.uniforms.get('hasCloudOverlay')!.value = overlay !== null
     if (!this.cityMapUrl || this.cityLoad) return
-    if (this.uniforms.get('night')!.value < 0.001 && performance.now() - this.createdAt < PREFETCH_DELAY_MS) return
+    // Decoding and uploading the atlas can coincide with scenery streaming on
+    // startup. The atlas is only sampled after twilight begins.
+    if (this.uniforms.get('night')!.value <= 0.001) return
     const pending = loadCityMask(this.cityMapUrl, renderer.capabilities.maxTextureSize)
     this.cityLoad = pending
     void pending.then((mask) => {
@@ -359,6 +358,7 @@ export class NightEffect extends Effect {
 
   override dispose() {
     this.cityLoad = null
+    this.albedoPass.dispose()
     this.cityMask?.dispose()
     this.cityMask = null
     this.uniforms.get('cityMask')!.value = null

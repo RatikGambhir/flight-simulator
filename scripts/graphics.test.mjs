@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { CloudsEffect } from '@takram/three-clouds'
-import { BoxGeometry, Color, Group, Matrix4, Mesh, MeshBasicMaterial, MeshStandardMaterial, Object3D, PerspectiveCamera, Texture, Vector3 } from 'three'
+import { BoxGeometry, Color, Group, Matrix4, Mesh, MeshBasicMaterial, MeshStandardMaterial, Object3D, PerspectiveCamera, ShaderLib, Texture, Vector3 } from 'three'
+import { TerrainNormalPass } from '../src/scene/TerrainNormalPass.ts'
 import { EffectPass } from 'postprocessing'
 import { readFileSync } from 'node:fs'
 import { CloudHistory, setCloudNightLighting, stabilizeClouds, stabilizeNightClouds } from '../src/scene/cloudRendering.ts'
@@ -11,6 +12,49 @@ import { buildLakeGeometry, distanceToLake, lakeGeoid } from '../src/scene/lakeG
 import { ecefToGeodetic } from '../src/world/frame.ts'
 import { MAX_LAMPS, NightEffect } from '../src/scene/NightEffect.ts'
 import { CockpitLighting } from '../src/aircraft/cockpitLighting.ts'
+import { CLOUD_LEVELS, cloudBudget, initialCloudLevel, MAX_RENDER_PIXELS, sceneDpr } from '../src/scene/renderBudget.ts'
+
+test('scene resolution matches the display and never drops to 1x on Retina at 100% scale', () => {
+  const window1600 = 1600 * 960
+  // A 2x display renders near native at high and exactly native at ultra.
+  const high = sceneDpr('high', 1, 2, window1600, false)
+  assert.ok(high > 1.8 && high <= 2, `high on Retina: ${high}`)
+  assert.equal(sceneDpr('ultra', 1, 2, window1600, false), 2)
+  assert.ok(window1600 * high ** 2 <= MAX_RENDER_PIXELS.high + 1)
+  // A full-screen 14" MacBook Pro still renders well above 1x.
+  assert.ok(sceneDpr('high', 1, 2, 1728 * 1117, false) > 1.6)
+  // Never upsample past the display, and honour the explicit render-scale setting.
+  assert.equal(sceneDpr('ultra', 1, 1, window1600, false), 1)
+  assert.equal(sceneDpr('high', 0.5, 2, window1600, false), 1, 'render scale applies before the pixel budget')
+  assert.equal(sceneDpr('high', 0.75, 2, window1600, false), 1.5)
+  // The menu preview is a 1x, 30 FPS background.
+  assert.equal(sceneDpr('high', 1, 2, window1600, true), 1)
+})
+
+test('adaptive detail only trades cloud work, monotonically, within sane bounds', () => {
+  for (const quality of ['low', 'medium', 'high', 'ultra']) {
+    let previous = null
+    for (let level = 0; level < CLOUD_LEVELS.length; level++) {
+      const b = cloudBudget(quality, level)
+      assert.ok(b.resolutionScale > 0.15 && b.resolutionScale <= 1, `${quality} ${level} resolution`)
+      assert.ok(b.minStepSize >= 30 && b.minStepSize <= 200)
+      assert.equal(b.shadowMapSize % 64, 0)
+      assert.ok(b.perspectiveStepScale >= 1.01 && b.perspectiveStepScale <= 1.04)
+      if (previous) {
+        assert.ok(b.resolutionScale <= previous.resolutionScale)
+        assert.ok(b.minStepSize >= previous.minStepSize)
+        assert.ok(b.shadowMapSize <= previous.shadowMapSize)
+      }
+      previous = b
+    }
+  }
+  // Out-of-range levels clamp rather than producing undefined budgets.
+  assert.deepEqual(cloudBudget('high', 99), cloudBudget('high', CLOUD_LEVELS.length - 1))
+  assert.deepEqual(cloudBudget('high', -3), cloudBudget('high', 0))
+  assert.equal(initialCloudLevel(2e6), 0)
+  assert.equal(initialCloudLevel(5e6), 1)
+  assert.equal(initialCloudLevel(8e6), 2)
+})
 
 test('night cockpit lighting dims shared materials once and restores original daytime values', () => {
   const root = new Group(), geometry = new BoxGeometry(), texture = new Texture()
@@ -293,7 +337,69 @@ test('compatibility patches apply to the installed cloud shaders and are idempot
     assert.match(sources[0], /if \(frontDepth > 1.0\)/)
     assert.match(sources[1], /isnan\(historyColor\)/)
     assert.match(sources[3], /isnan\(history\)/)
+    // Temporal upscaling: rejected, near and moving pixels use a depth-aware, jitter-aligned
+    // reconstruction of the current frame, never one low-resolution texel per 4x4 block.
+    const [upscale, taa] = sources[1].split('void temporalAntialiasing(')
+    assert.match(upscale, /upscaleWeights\(vUv, center, base, weights\)/)
+    assert.match(upscale, /center < nearHistoryDepth/)
+    assert.match(upscale, /outputColor = spatialColor;/)
+    assert.match(upscale, /mix\(settled, mix\(clippedColor, spatialColor, 0.2\), moving\)/)
+    assert.equal(effect.cloudsPass.resolveMaterial.uniforms.varianceGamma.value, 1.25)
+    assert.doesNotMatch(upscale, /outputColor = currentColor;\s*#ifdef SHADOW_LENGTH\s*outputShadowLength = currentShadowLength.r;\s*#endif \/\/ SHADOW_LENGTH\s*return; \/\/ Rejection/)
+    assert.doesNotMatch(taa, /spatialColor/)
+    assert.ok(effect.cloudsPass.resolveMaterial.uniforms.sceneDepthBuffer)
   } finally { effect.dispose() }
+})
+
+test('terrain normal pass draws displaced tiles with bump-mapped normals and always restores materials', () => {
+  const geometry = new BoxGeometry()
+  const height = new Texture()
+  const terrainMaterial = new MeshBasicMaterial()
+  Object.assign(terrainMaterial, { displacementMap: height, displacementScale: 1.5, displacementBias: -2 })
+  const plain = new MeshBasicMaterial()
+  const tiles = new Group()
+  const tile = new Mesh(geometry, terrainMaterial)
+  const other = new Mesh(geometry, plain)
+  tiles.add(tile, other)
+  const camera = new PerspectiveCamera()
+  const pass = new TerrainNormalPass(camera)
+  pass.roots = [tiles]
+  const drawn = []
+  let fail = false
+  const renderer = {
+    autoClear: true, shadowMap: { autoUpdate: true },
+    getClearAlpha: () => 1, getClearColor: (c) => c.set(0x123456), setClearColor() {}, setRenderTarget() {}, clear() {},
+    render(root) {
+      drawn.push([root, tile.material, other.material])
+      if (fail) throw new Error('lost context')
+    },
+  }
+  try {
+    pass.render(renderer)
+    const [root, tileMaterial, otherMaterial] = drawn[0]
+    assert.equal(root, tiles)
+    assert.ok(tileMaterial.isMeshNormalMaterial)
+    assert.equal(tileMaterial.displacementMap, height)
+    assert.equal(tileMaterial.bumpMap, height, 'slopes come from the same elevation texture')
+    assert.equal(tileMaterial.displacementScale, 1.5)
+    assert.equal(tileMaterial.displacementBias, -2)
+    assert.equal(tileMaterial.bumpScale, 1.5)
+    assert.equal(otherMaterial, plain, 'undisplaced objects are left alone')
+    assert.equal(tile.material, terrainMaterial)
+    assert.equal(renderer.autoClear, true)
+    assert.equal(renderer.shadowMap.autoUpdate, true)
+    // The tile material is cached rather than rebuilt every frame.
+    pass.render(renderer)
+    assert.equal(drawn[1][1], tileMaterial)
+    fail = true
+    assert.throws(() => pass.render(renderer))
+    assert.equal(tile.material, terrainMaterial, 'restored even when rendering throws')
+    // The bump patch targets a chunk the installed normal material still includes.
+    const shader = { fragmentShader: '#include <bumpmap_pars_fragment>\nvoid main() {}', vertexShader: '' }
+    tileMaterial.onBeforeCompile(shader)
+    assert.match(shader.fragmentShader, /gradU \* dSTdx.x/)
+    assert.match(ShaderLib.normal.fragmentShader, /#include <bumpmap_pars_fragment>/)
+  } finally { pass.dispose(); geometry.dispose(); terrainMaterial.dispose(); plain.dispose(); height.dispose() }
 })
 
 test('normal flight accumulates history after the first frame', () => {
@@ -433,13 +539,15 @@ test('landing guide overlay tests depth by hand and never enters the lighting ma
   const material = new MeshBasicMaterial({ transparent: true, depthWrite: false })
   try {
     pass.prepare(material)
+    const depth = new Texture()
+    pass.setDepthTexture(depth)
     assert.equal(material.depthTest, false)
     assert.equal(material.depthWrite, false)
     const shader = { uniforms: {}, fragmentShader: 'void main() {\n#include <logdepthbuf_fragment>\n#include <opaque_fragment>\n}', vertexShader: '' }
     material.onBeforeCompile(shader)
-    assert.match(shader.fragmentShader, /#include <packing>/)
+    assert.match(shader.fragmentShader, /texelFetch\(overlayDepth, ivec2\(gl_FragCoord.xy\), 0\).r/)
     assert.match(shader.fragmentShader, /overlayFragDepth > sceneDepth/)
-    assert.ok(shader.uniforms.overlayDepth, 'samples a copy of the scene depth')
+    assert.equal(shader.uniforms.overlayDepth.value, depth, 'samples the composer’s detached depth texture')
     const source = readFileSync(new URL('../src/scene/LandingGuide.tsx', import.meta.url), 'utf8')
     assert.doesNotMatch(source, /layers\.enable/, 'mask-layer guide meshes leave the terrain behind them unlit (daylight at night)')
   } finally { material.dispose(); pass.dispose() }

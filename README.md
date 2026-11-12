@@ -240,8 +240,14 @@ over to full navigation.
     spoken radio‑altitude / GPWS callouts. The cockpit muffles outside sound.
 
 **Level of detail & memory:** 3d‑tiles‑renderer refines tiles by screen‑space error
-(the *Scenery detail* setting sets the error target), fades between levels, unloads tiles
-after a delay and keeps GPU memory under an LRU byte budget (350 MB–1.4 GB by quality).
+(the *Scenery detail* setting sets the error target), fades between levels and unloads tiles
+after a delay. Scenery layers share an estimated cache budget of 220–900 MB, depending on quality.
+The scene renders at a fixed, display-matched resolution (up to native 2x on Retina, within a
+per-quality pixel budget). *Adaptive cloud detail* holds the frame rate by trading only volumetric
+cloud work (cloud buffer size, march step and cloud-shadow resolution) when frames are GPU-bound.
+Enable *Show FPS* (or open the app with `?perf`) for frame-time percentiles, 1% lows, draw calls,
+triangles and GPU resource counts; `node scripts/bench.mjs <label>` benchmarks fixed flight
+scenarios in WKWebView (see `scripts/bench.mjs`).
 
 **Ground & elevation:** the renderer samples the real surface under the aircraft at 10 Hz
 and sends it to Rust, so you land on the actual runway / rooftop / mountain in the tiles.

@@ -23,7 +23,7 @@ import {
   UnloadTilesPlugin,
   XYZTilesOverlay,
 } from '3d-tiles-renderer/plugins'
-import { LinearFilter, LinearMipmapLinearFilter, type Mesh, type MeshBasicMaterial, type Object3D, type WebGLRenderer } from 'three'
+import { LinearFilter, LinearMipmapLinearFilter, Matrix4, Sphere, type Mesh, type MeshBasicMaterial, type Object3D, type WebGLRenderer } from 'three'
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
 import type { Quality, Settings } from '../state/store'
 
@@ -35,6 +35,8 @@ export interface TileLayer {
   bvh: boolean
   /** Heights are relative to mean sea level rather than the ellipsoid. */
   mslHeights?: boolean
+  cacheShare?: number
+  errorScale?: number
   label: string
 }
 
@@ -44,10 +46,10 @@ export interface StaticAttribution {
 }
 
 const QUALITY: Record<Quality, { errorTarget: number; bytes: number; jobs: number }> = {
-  low: { errorTarget: 28, bytes: 350e6, jobs: 12 },
-  medium: { errorTarget: 16, bytes: 600e6, jobs: 18 },
-  high: { errorTarget: 10, bytes: 900e6, jobs: 24 },
-  ultra: { errorTarget: 6, bytes: 1400e6, jobs: 30 },
+  low: { errorTarget: 28, bytes: 220e6, jobs: 12 },
+  medium: { errorTarget: 16, bytes: 350e6, jobs: 18 },
+  high: { errorTarget: 10, bytes: 550e6, jobs: 24 },
+  ultra: { errorTarget: 6, bytes: 900e6, jobs: 30 },
 }
 
 let draco: DRACOLoader | null = null
@@ -60,14 +62,12 @@ function getDraco() {
   return draco
 }
 
-function tune(tiles: TilesRenderer, q: Quality) {
+export function setTileQuality({ tiles, cacheShare = 1, errorScale = 1 }: TileLayer, q: Quality) {
   const cfg = QUALITY[q]
-  tiles.errorTarget = cfg.errorTarget
-  tiles.lruCache.maxBytesSize = cfg.bytes
-  tiles.lruCache.minBytesSize = cfg.bytes * 0.6
+  tiles.errorTarget = Math.max(2, cfg.errorTarget * errorScale)
+  tiles.lruCache.maxBytesSize = cfg.bytes * cacheShare
+  tiles.lruCache.minBytesSize = tiles.lruCache.maxBytesSize * 0.6
   tiles.downloadQueue.maxJobsPerOrigin = cfg.jobs
-  tiles.parseQueue.maxJobs = 4
-  tiles.group.matrixAutoUpdate = false
 }
 
 function photogrammetryPlugins(tiles: TilesRenderer) {
@@ -123,14 +123,12 @@ export const IMAGERY = {
 export const TERRARIUM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'
 
 export function createLayers(settings: Settings, renderer: WebGLRenderer): { layers: TileLayer[]; attributions: StaticAttribution[] } {
-  const q = settings.quality
   switch (settings.provider) {
     case 'google': {
       const tiles = new TilesRenderer()
       tiles.registerPlugin(new GoogleCloudAuthPlugin({ apiToken: settings.googleApiKey.trim(), autoRefreshToken: true }))
       photogrammetryPlugins(tiles)
       sharpenImagery(tiles, renderer)
-      tune(tiles, q)
       return { layers: [{ tiles, ground: true, bvh: true, label: 'Google Photorealistic 3D Tiles' }], attributions: [] }
     }
     case 'cesium': {
@@ -140,7 +138,6 @@ export function createLayers(settings: Settings, renderer: WebGLRenderer): { lay
         tiles.registerPlugin(new CesiumIonAuthPlugin({ apiToken: token, assetId: '2275207', autoRefreshToken: true }))
         photogrammetryPlugins(tiles)
         sharpenImagery(tiles, renderer)
-        tune(tiles, q)
         return { layers: [{ tiles, ground: true, bvh: true, label: 'Google Photorealistic 3D Tiles (via Cesium ion)' }], attributions: [] }
       }
       const terrain = new TilesRenderer()
@@ -150,17 +147,14 @@ export function createLayers(settings: Settings, renderer: WebGLRenderer): { lay
       )
       terrain.registerPlugin(new UnloadTilesPlugin({ delay: 4000 }))
       sharpenImagery(terrain, renderer)
-      tune(terrain, q)
       const buildings = new TilesRenderer()
       buildings.registerPlugin(new CesiumIonAuthPlugin({ apiToken: token, assetId: '96188', autoRefreshToken: true }))
       photogrammetryPlugins(buildings)
       sharpenImagery(buildings, renderer)
-      tune(buildings, q)
-      buildings.errorTarget = QUALITY[q].errorTarget * 1.5
       return {
         layers: [
-          { tiles: terrain, ground: true, bvh: false, label: 'Cesium World Terrain + Bing Maps Aerial' },
-          { tiles: buildings, ground: true, bvh: true, label: 'Cesium OSM Buildings' },
+          { tiles: terrain, ground: true, bvh: false, cacheShare: 0.6, label: 'Cesium World Terrain + Bing Maps Aerial' },
+          { tiles: buildings, ground: true, bvh: true, cacheShare: 0.4, errorScale: 1.5, label: 'Cesium OSM Buildings' },
         ],
         attributions: [],
       }
@@ -174,24 +168,33 @@ export function createLayers(settings: Settings, renderer: WebGLRenderer): { lay
         new TerrariumMeshPlugin({ url: TERRARIUM_URL, maxZoom: 15, overlay, applyOverlayTexture: true, unlit: true }),
       )
       tiles.registerPlugin(new UnloadTilesPlugin({ delay: 4000 }))
-      tune(tiles, q)
       sharpenImagery(tiles, renderer)
-      // The terrain is raised to its real height in the vertex shader, but three.js culls each
-      // mesh by the bounds of the flat, sea-level grid underneath. Low over high ground (parked at
-      // an airport 200 m up) that flat grid is below the bottom of the view, so the tiles nearest
-      // the camera vanished. The tile renderer already culls by each tile's true volume.
-      tiles.addEventListener('load-model', (e) => {
-        ;(e as unknown as { scene: Object3D }).scene.traverse((o) => {
-          o.frustumCulled = false
+      // The DEM plugin displaces a sea-level mesh on the GPU. Use its measured,
+      // skirt-inclusive tile bounds so the main view can cull prefetch-only terrain.
+      tiles.addEventListener('load-model', ({ scene, tile }) => {
+        const volume = (tile as { engineData?: { boundingVolume?: { getSphere(target: Sphere): void } } }).engineData?.boundingVolume
+        const sphere = new Sphere()
+        const localFromTiles = new Matrix4()
+        const tilesFromWorld = new Matrix4()
+        scene.updateWorldMatrix(true, true)
+        if (scene.parent) tilesFromWorld.copy(tiles.group.matrixWorld).invert()
+        volume?.getSphere(sphere)
+        scene.traverse((object) => {
+          const mesh = object as Mesh
+          if (!mesh.isMesh) return
+          if (!volume || !(sphere.radius > 0) || !Number.isFinite(sphere.radius)) {
+            mesh.frustumCulled = false
+            return
+          }
+          localFromTiles.multiplyMatrices(tilesFromWorld, mesh.matrixWorld).invert()
+          mesh.geometry.boundingSphere = sphere.clone().applyMatrix4(localFromTiles)
         })
       })
       // A terrain tile's "parse" step is mostly waiting on its elevation and imagery
       // downloads, so the default of 4 concurrent parses throttles the network.
       tiles.parseQueue.maxJobs = 16
-      // The terrain mesh plugin is efficient; allow a little more detail.
-      tiles.errorTarget = Math.max(2, QUALITY[q].errorTarget * 0.6)
       return {
-        layers: [{ tiles, ground: true, bvh: false, mslHeights: true, label: `AWS Terrain Tiles + ${img.label}` }],
+        layers: [{ tiles, ground: true, bvh: false, mslHeights: true, errorScale: 0.6, label: `AWS Terrain Tiles + ${img.label}` }],
         attributions: [
           { text: img.attribution },
           { text: 'Elevation: AWS Terrain Tiles (Mapzen) — SRTM, GMTED2010, ETOPO1, NED and other public sources' },

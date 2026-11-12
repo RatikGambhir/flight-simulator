@@ -2,16 +2,15 @@
 // textures whose effect cleanup has already disposed them, leaving a black sky.
 // @refresh reset
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { EffectComposer, EffectGroup, SMAA, ToneMapping } from '@react-three/postprocessing'
-import { AerialPerspective, Atmosphere, LightingMask, SkyLight, SunLight, type AtmosphereApi } from '@takram/three-atmosphere/r3f'
+import { EffectComposer, SMAA, ToneMapping } from '@react-three/postprocessing'
+import { AerialPerspective, Atmosphere, AtmosphereContext, SkyLight, SunLight, type AtmosphereApi } from '@takram/three-atmosphere/r3f'
 import { Clouds } from '@takram/three-clouds/r3f'
 import type { CloudsEffect } from '@takram/three-clouds'
 import { Dithering, LensFlare } from '@takram/three-geospatial-effects/r3f'
-import { SMAAPreset, ToneMappingMode, type Effect } from 'postprocessing'
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { EffectPass, SMAAPreset, ToneMappingMode } from 'postprocessing'
+import { memo, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { MathUtils, NoToneMapping, PCFShadowMap, Raycaster, Vector2, Vector3, type DirectionalLight, type HemisphereLight, type PerspectiveCamera } from 'three'
-import type { LightingMaskPass, SunDirectionalLight, SkyLightProbe } from '@takram/three-atmosphere'
-import type { ShaderMaterial } from 'three'
+import type { AerialPerspectiveEffect, SunDirectionalLight, SkyLightProbe } from '@takram/three-atmosphere'
 import { AircraftController, LIGHTING_MASK_LAYER } from '../aircraft/aircraftController'
 import { sound } from '../audio/sound'
 import { CameraRig, type AircraftPose } from '../camera/cameraRig'
@@ -19,10 +18,13 @@ import { weatherCommand } from '../flight'
 import { controls } from '../input/controls'
 import { Flags, S, type SimCommand } from '../sim/protocol'
 import { sim } from '../sim/simClient'
-import { useApp, type Quality } from '../state/store'
+import { useApp } from '../state/store'
 import { enuBasis, frame } from '../world/frame'
 import { WorldSystem } from '../world/worldSystem'
 import { worldStatus } from './worldStatus'
+import { PerfProbe } from './PerfProbe'
+import { applyTuning, PERF_FORCED, perfMonitor, TUNING } from './perfMonitor'
+import { CLOUD_LEVELS, cloudBudget, initialCloudLevel, sceneDpr } from './renderBudget'
 import { SkyEnvironment } from './SkyEnvironment'
 import { GradeEffect } from './Grade'
 import { Ocean } from './Ocean'
@@ -35,79 +37,15 @@ import { DestinationMarker } from './DestinationMarker'
 import { PrecipitationEffect } from './Precipitation'
 import { LandingGuide } from './LandingGuide'
 import { OverlayPass } from './OverlayPass'
+import { SurfaceMaskPass } from './SurfaceMaskPass'
+import { TerrainNormalPass } from './TerrainNormalPass'
 import { CelestialSky } from './CelestialSky'
 import { CelestialState, sceneDate } from './celestial'
 import { CLEAR_HAZE, pollWeather, useWeather, visualTargets, type Conditions } from '../weather/liveWeather'
 import { destinationPoint } from '../navigation/route'
 
-const CLOUD_QUALITY: Record<Quality, 'low' | 'medium' | 'high' | 'ultra'> = {
-  low: 'low',
-  medium: 'medium',
-  high: 'high',
-  ultra: 'ultra',
-}
-
-// Refresh every cloud pixel each frame, then temporally antialias. The stock
-// 4x4 Bayer reconstruction exposes a grid on moving aircraft/cloud boundaries.
-// The volumetric march is the most expensive pass in the frame: its cost scales
-// with resolution squared and inversely with the step size, and the temporal
-// accumulation hides the extra noise of a coarser march.
-const CLOUD_RESOLUTION: Record<Quality, number> = { low: 0.33, medium: 0.42, high: 0.5, ultra: 0.65 }
-const CLOUD_STEP: Record<Quality, number> = { low: 100, medium: 60, high: 40, ultra: 20 }
-
-/**
- * Cloud shadow cascade resolution; 512 leaves visibly blocky shadow edges on the
- * ground. Three cascades are ray marched every frame, so the texel count costs as
- * much as the clouds themselves: 2048 squared was 12.6 million marches a frame.
- */
-const CLOUD_SHADOW_SIZE: Record<Quality, Vector2> = {
-  low: new Vector2(256, 256),
-  medium: new Vector2(512, 512),
-  high: new Vector2(768, 768),
-  ultra: new Vector2(1280, 1280),
-}
-
-/** Render-resolution steps that adaptive resolution moves between when frames run long. */
-const ADAPTIVE_STEPS = [1, 0.85, 0.72, 0.6]
 /** Distances ahead (m) sampled for the autopilot's terrain awareness. */
 const TERRAIN_AHEAD_M = [1000, 2000, 3500, 5000, 7500, 10000]
-
-/**
- * Device-pixel-ratio cap per quality. Volumetric clouds and aerial perspective
- * are per-pixel ray marches, so rendering a Retina display at full 2x costs
- * roughly 1.8x the GPU time of 1.5x for a barely visible gain.
- */
-const MAX_DPR: Record<Quality, number> = { low: 1, medium: 1.25, high: 1.5, ultra: 2 }
-
-/**
- * The stock lighting-mask shader decodes depth as if the buffer were linear
- * perspective depth. With the logarithmic depth buffer every sample collapses
- * to nearly the same value, so a masked object counts as visible even when
- * terrain hides it. Require a match with the visible depth, since the opaque
- * override can also draw windows and other surfaces that never wrote scene depth.
- */
-const LIGHTING_MASK_FRAG = /* glsl */ `
-#include <common>
-#include <packing>
-uniform highp sampler2D depthBuffer0;
-uniform highp sampler2D depthBuffer1;
-uniform bool inverted;
-varying vec2 vUv;
-void main() {
-  float scene = unpackRGBAToDepth(texture2D(depthBuffer0, vUv));
-  float selected = unpackRGBAToDepth(texture2D(depthBuffer1, vUv));
-  bool keep = scene < 1.0 && selected < 1.0 && abs(selected - scene) <= 2e-7;
-  if (inverted) keep = !keep;
-  if (!keep) discard;
-  gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-}`
-
-function patchLightingMask(pass: LightingMaskPass | null) {
-  const material = (pass as unknown as { depthMaskMaterial?: ShaderMaterial } | null)?.depthMaskMaterial
-  if (!material || material.fragmentShader === LIGHTING_MASK_FRAG) return
-  material.fragmentShader = LIGHTING_MASK_FRAG
-  material.needsUpdate = true
-}
 
 const _sun = new Vector3()
 const _moon = new Vector3()
@@ -130,7 +68,9 @@ const _air = new Vector3()
 const _eye = new Vector3()
 
 function useWorld(): WorldSystem | null {
-  const { gl, camera, scene } = useThree()
+  const gl = useThree((s) => s.gl)
+  const camera = useThree((s) => s.camera)
+  const scene = useThree((s) => s.scene)
   const provider = useApp((s) => s.settings.provider)
   const googleApiKey = useApp((s) => s.settings.googleApiKey)
   const cesiumToken = useApp((s) => s.settings.cesiumToken)
@@ -147,12 +87,14 @@ function useWorld(): WorldSystem | null {
       worldStatus.set({ world: null })
       w.dispose()
     }
-  }, [gl, camera, scene, provider, googleApiKey, cesiumToken, cesiumMode, openImagery, quality])
+  }, [gl, camera, scene, provider, googleApiKey, cesiumToken, cesiumMode, openImagery])
+  useEffect(() => world?.setQuality(quality), [world, quality])
   return world
 }
 
 function useAircraft(): AircraftController | null {
-  const { gl, scene } = useThree()
+  const gl = useThree((s) => s.gl)
+  const scene = useThree((s) => s.scene)
   const aircraftId = useApp((s) => s.aircraftId)
   const [ac, setAc] = useState<AircraftController | null>(null)
   useEffect(() => {
@@ -549,8 +491,37 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
   return null
 }
 
-function SceneContents() {
+function SurfaceMask({ night }: { night: NightEffect }) {
+  const scene = useThree((s) => s.scene)
+  const camera = useThree((s) => s.camera)
+  const { transientStates } = useContext(AtmosphereContext)
+  const mask = useMemo(() => new SurfaceMaskPass(scene, camera, LIGHTING_MASK_LAYER), [scene, camera])
+  useEffect(() => () => mask.dispose(), [mask])
+  useLayoutEffect(() => {
+    if (transientStates) transientStates.lightingMask = { map: mask.texture, channel: 'r' }
+    night.setLightingMask(mask.texture)
+    return () => {
+      if (transientStates) transientStates.lightingMask = null
+      night.setLightingMask(null)
+    }
+  }, [mask, night, transientStates])
+  return <primitive object={mask} />
+}
+
+interface CloudDetail {
+  /** Adaptive cloud level (index into CLOUD_LEVELS). */
+  cloudLevel: number
+  preview: boolean
+}
+
+function SceneContents(detail: CloudDetail) {
   const atmosphereTextures = useAtmosphereTextures()
+  return atmosphereTextures ? <FlightWorld atmosphereTextures={atmosphereTextures} {...detail} /> : null
+}
+
+const FlightWorld = memo(function FlightWorld({ atmosphereTextures, cloudLevel, preview }: CloudDetail & {
+  atmosphereTextures: NonNullable<ReturnType<typeof useAtmosphereTextures>>
+}) {
   const world = useWorld()
   const aircraft = useAircraft()
   const atmosphere = useRef<AtmosphereApi>(null)
@@ -559,6 +530,13 @@ function SceneContents() {
   const celestial = useMemo(() => new CelestialState(), [])
   const cloudsRef = useRef<CloudsEffect>(null)
   const quality = useApp((s) => s.settings.quality)
+  const budget = useMemo(() => cloudBudget(quality, cloudLevel, preview), [quality, cloudLevel, preview])
+  useEffect(() => {
+    perfMonitor.notes.cloudLevel = cloudLevel
+    perfMonitor.notes.cloudResolution = budget.resolutionScale
+  }, [cloudLevel, budget])
+  const shadowSize = budget.shadowMapSize
+  const cloudShadowSize = useMemo(() => new Vector2(shadowSize, shadowSize), [shadowSize])
   const clouds = useApp((s) => s.settings.clouds)
   const shadows = useApp((s) => s.settings.shadows)
   const provider = useApp((s) => s.settings.provider)
@@ -578,17 +556,15 @@ function SceneContents() {
       waterMask.dispose()
     }
   }, [waterMask])
-  const night = useMemo(() => {
+  const [nightLighting, setNightLighting] = useState<{ effect: NightEffect; pass: EffectPass } | null>(null)
+  useEffect(() => {
     const effect = new NightEffect(frame.ecefFromWorld, `${import.meta.env.BASE_URL}atmosphere/city-lights.jpg`, getCloudOverlay)
     stabilizeNightClouds(effect)
     waterMask.maskNightLights(effect)
-    return effect
-  }, [waterMask, getCloudOverlay])
-  useEffect(() => () => night.dispose(), [night])
-  const bindLightingMask = useCallback((pass: LightingMaskPass | null) => {
-    patchLightingMask(pass)
-    night.setLightingMask(pass?.texture ?? null)
-  }, [night])
+    const pass = new EffectPass(camera, effect)
+    setNightLighting({ effect, pass })
+    return () => pass.dispose()
+  }, [camera, waterMask, getCloudOverlay])
   const nightFill = useRef<HemisphereLight>(null)
   const moonLight = useRef<DirectionalLight>(null)
   const guide = useMemo(() => new OverlayPass(camera, getCloudOverlay), [camera, getCloudOverlay])
@@ -598,19 +574,46 @@ function SceneContents() {
   useFrame(() => {
     sunLight.current?.color.multiplyScalar(sunThrough.current)
   }, 0.5)
+  // DEM terrain is displaced on the GPU and has no normals: draw smooth ones from its
+  // elevation textures for the aerial-perspective lighting (photogrammetry tiles carry
+  // their own, through the composer's normal pass).
+  const terrainNormals = useMemo(() => provider === 'open' ? new TerrainNormalPass(camera) : null, [provider, camera])
+  useEffect(() => () => terrainNormals?.dispose(), [terrainNormals])
+  useEffect(() => {
+    if (terrainNormals) terrainNormals.roots = world ? world.layers.map((l) => l.tiles.group) : []
+  }, [terrainNormals, world])
   const cloudHistory = useMemo(() => new CloudHistory(), [])
-  const bindAerial = useCallback((effect: Effect | null) => {
+  const bindAerial = useCallback((effect: AerialPerspectiveEffect | null) => {
     if (!effect) return
-    stabilizeAerialPerspective(effect)
+    stabilizeAerialPerspective(effect, () => cloudsRef.current)
     waterMask.shadeAerialPerspective(effect)
   }, [waterMask])
   const bindClouds = useCallback((effect: CloudsEffect | null) => {
-    if (effect) stabilizeClouds(effect)
     cloudsRef.current = effect
-  }, [])
+    if (!effect) return
+    stabilizeClouds(effect)
+    if (PERF_FORCED) {
+      // Per-stage GPU timing for `?bench=…&gpusync` profiling runs.
+      perfMonitor.track('Clouds: shadow cascades', effect.shadowPass, 'update')
+      const stages = effect.cloudsPass as unknown as { currentPass: object; resolvePass: object }
+      perfMonitor.track('Clouds: march', stages.currentPass)
+      perfMonitor.track('Clouds: temporal resolve', stages.resolvePass)
+    }
+    const update = effect.update
+    effect.update = (...args) => {
+      // The composer resizes its buffers immediately before rendering. Check
+      // history here so the first frame at the new size discards old samples.
+      const app = useApp.getState()
+      cloudHistory.update(effect, camera, frame.version, app.phase === 'menu' ? 'free' : app.camera, app.settings.quality)
+      update.apply(effect, args)
+    }
+    return () => {
+      effect.update = update
+      cloudsRef.current = null
+    }
+  }, [camera, cloudHistory])
 
-  // FlightLoop runs at -1; the effect composer runs at +1. Invalidate history
-  // after the camera has moved but before rendering the new cloud image.
+  // FlightLoop runs at -1; the effect composer runs at +1.
   useFrame(() => {
     if (sim.render.valid) waterMask.update(sim.latest[S.LAT], sim.latest[S.LON])
     if (aircraft) waterMask.protectAircraft(aircraft.position, Math.max(aircraft.model.span, aircraft.model.length))
@@ -619,9 +622,11 @@ function SceneContents() {
     // R3F applies the library's resolution default before its quality setter,
     // which also resets it to 1. Enforce the budget after those props settle,
     // including when the asynchronously loaded effect first mounts.
-    if (effect.resolutionScale !== CLOUD_RESOLUTION[quality]) effect.resolutionScale = CLOUD_RESOLUTION[quality]
-    effect.clouds.minStepSize = CLOUD_STEP[quality]
-    cloudHistory.update(effect, camera, frame.version, useApp.getState().camera, quality)
+    if (effect.resolutionScale !== budget.resolutionScale) effect.resolutionScale = budget.resolutionScale
+    if (!effect.temporalUpscale) effect.temporalUpscale = true
+    effect.clouds.minStepSize = budget.minStepSize
+    effect.clouds.perspectiveStepScale = budget.perspectiveStepScale
+    if (TUNING.length) applyTuning(effect, 'cloud')
   }, 0.25)
 
   useEffect(() => {
@@ -681,9 +686,10 @@ function SceneContents() {
     l.shadow.bias = -0.0004
     l.shadow.normalBias = 0.02
     l.shadow.camera.updateProjectionMatrix()
-  }, [aircraft, shadows, atmosphereTextures])
+  }, [aircraft, shadows, nightLighting])
 
-  if (!atmosphereTextures) return null
+  if (!nightLighting) return null
+  const { effect: night, pass: nightPass } = nightLighting
 
   return (
     <Atmosphere ref={atmosphere} textures={atmosphereTextures} correctAltitude>
@@ -700,16 +706,26 @@ function SceneContents() {
       {world && aircraft ? (
         <FlightLoop world={world} aircraft={aircraft} atmosphere={atmosphere} sunLight={sunLight} skyLight={skyLight} ocean={ocean} lakes={lakes} celestial={celestial} clouds={cloudsRef} precipitation={precipitation} night={night} nightFill={nightFill} moonLight={moonLight} sunThrough={sunThrough} />
       ) : null}
-      <EffectComposer multisampling={0} enableNormalPass={provider !== 'open'}>
+      <EffectComposer ref={PERF_FORCED ? perfMonitor.attachComposer : undefined} multisampling={0} enableNormalPass={provider !== 'open'}>
+        <SurfaceMask night={night} />
+        {/* Save the unlit scenery before aerial lighting. Keep these in separate
+            passes to stay within WebKit's fragment texture limit with clouds enabled. */}
+        <primitive object={night.albedoPass} />
+        {terrainNormals ? <primitive object={terrainNormals} /> : <></>}
+        {/* The clouds effect only marches and hands its overlay to the aerial perspective
+            (its own composite is a pass-through), so keep it adjacent: the composer then
+            merges both into one full-screen pass instead of copying the frame twice. */}
         {clouds ? (
           <Clouds
             ref={bindClouds}
-            qualityPreset={CLOUD_QUALITY[quality]}
-            temporalUpscale={false}
+            qualityPreset={quality}
+            // March 1/16 of the cloud pixels per frame and reconstruct the rest from
+            // reprojected history (cloudRendering.ts fixes the disocclusion fallback).
+            temporalUpscale
             // The camera sees to the horizon and beyond; without a cap the shadow cascades
             // are stretched over that whole range and cloud shadows smear into one sheet.
             shadow-maxFar={6e4}
-            shadow-mapSize={CLOUD_SHADOW_SIZE[quality]}
+            shadow-mapSize={cloudShadowSize}
             localWeatherTexture={`${import.meta.env.BASE_URL}clouds/local_weather.png`}
             shapeTexture={`${import.meta.env.BASE_URL}clouds/shape.bin`}
             shapeDetailTexture={`${import.meta.env.BASE_URL}clouds/shape_detail.bin`}
@@ -719,92 +735,108 @@ function SceneContents() {
         ) : (
           <></>
         )}
-        <LightingMask ref={bindLightingMask} selectionLayer={LIGHTING_MASK_LAYER} />
-        {/* Save the unlit scenery before aerial lighting. Keep these in separate
-            passes to stay within WebKit's fragment texture limit with clouds enabled. */}
-        <primitive object={night.albedoPass} />
-        <EffectGroup>
-          {/* The normal override pass misses shader-displaced DEM terrain, leaving
-              an unlit strip at the horizon. Its actual depth contains the heights. */}
-          <AerialPerspective ref={bindAerial} reconstructNormal={provider === 'open'} sunLight skyLight albedoScale={0.45} stbnTexture={`${import.meta.env.BASE_URL}clouds/stbn.bin`} />
-        </EffectGroup>
-        <EffectGroup>
-          <primitive object={night} />
-        </EffectGroup>
+        {/* The stock normal override pass misses shader-displaced DEM terrain, so the
+            open-data provider supplies its own displaced, bump-mapped terrain normals. */}
+        <AerialPerspective ref={bindAerial} {...(terrainNormals ? { normalBuffer: terrainNormals.texture } : {})} sunLight skyLight albedoScale={0.45} stbnTexture={`${import.meta.env.BASE_URL}clouds/stbn.bin`} />
+        <primitive object={nightPass} />
         {/* Emissive landing guide over the lit scene (still HDR, before the flare and tone mapping). */}
         <primitive object={guide} />
         {/* Finish lighting before the flare samples the image. Precipitation only
             reads its own pixel, so it rides in the same pass after the grade. */}
-        <EffectGroup>
-          <LensFlare />
-          <ToneMapping mode={ToneMappingMode.AGX} />
-          <primitive object={grade} />
-          <primitive object={precipitation} />
-        </EffectGroup>
+        <LensFlare />
+        <ToneMapping mode={ToneMappingMode.AGX} />
+        <primitive object={grade} />
+        <primitive object={precipitation} />
         <SMAA preset={quality === 'low' ? SMAAPreset.MEDIUM : SMAAPreset.ULTRA} />
         <Dithering />
       </EffectComposer>
     </Atmosphere>
   )
+})
+
+/** Keep the background preview moving without rendering at the display refresh rate. */
+function PreviewFrames({ fps }: { fps: number }) {
+  const invalidate = useThree((s) => s.invalidate)
+  useEffect(() => {
+    if (!fps) return
+    const timer = window.setInterval(() => {
+      if (!document.hidden) invalidate()
+    }, 1000 / fps)
+    return () => window.clearInterval(timer)
+  }, [fps, invalidate])
+  return null
 }
 
 /**
- * Steps the render resolution down while the median frame runs long, and back up
- * once there is headroom. Medians over ~1.5 s ignore one-off hitches (tile parsing,
- * shader compiles), and a resolution that failed soon after a step up becomes the
- * ceiling, so the resolution never oscillates (each change reallocates every buffer).
+ * Steps the cloud detail down while frames miss the 60 Hz deadline on the GPU, and
+ * back up once they hold it. The scene resolution never changes.
+ *
+ * Frame intervals are quantized by vsync (24 ms and 27 ms of work both present as
+ * ~33 ms), so they cannot tell whether a step helped. Main-thread time per frame
+ * can: a slow frame with an idle CPU is GPU-bound, and the volumetric clouds are
+ * most of the GPU frame. A CPU-bound frame leaves the clouds alone. Medians ignore
+ * one-off hitches; a level that failed soon after a step up becomes the floor for a
+ * minute, which keeps the level (and the cloud history it resets) from oscillating.
  */
-function AdaptiveResolution({ step, onStep }: { step: number; onStep: (step: number) => void }) {
-  const st = useRef({ samples: [] as number[], changedAt: 0, raisedAt: -1e9, slow: 0, fast: 0, floor: 0, ceiling: ADAPTIVE_STEPS.length - 1, before: 0 })
+function AdaptiveCloudDetail({ level, onLevel }: { level: number; onLevel: (level: number) => void }) {
+  const st = useRef({ intervals: [] as number[], cpu: [] as number[], elapsed: 0, start: 0, changedAt: -Infinity, raisedAt: -Infinity, slow: 0, fast: 0, floor: 0, flooredAt: -Infinity })
+  useFrame(() => { st.current.start = performance.now() }, -1000)
   useFrame((_, dt) => {
     const s = st.current
     const app = useApp.getState()
-    if (app.phase !== 'flying' || app.pauseMenu || document.hidden || dt <= 0 || dt > 0.5) {
-      s.samples.length = 0
+    if (app.phase !== 'flying' || app.pauseMenu || document.hidden || dt <= 0) {
+      s.intervals.length = s.cpu.length = 0
+      s.elapsed = 0
       return
     }
-    s.samples.push(dt)
-    if (s.samples.length < 90) return
-    s.samples.sort((a, b) => a - b)
-    const median = s.samples[s.samples.length >> 1]
-    s.samples.length = 0
     const now = performance.now()
-    if (now - s.changedAt < 3000) return
-    // The last step down bought nothing: the frame rate is limited elsewhere (CPU,
-    // a 30 Hz power-saving cap). Restore the resolution and stop lowering it.
-    if (s.before > 0) {
-      const helped = median < s.before * 0.9
-      s.before = 0
-      if (!helped && step > 0) {
-        s.ceiling = step - 1
-        s.changedAt = now
-        onStep(step - 1)
-        return
-      }
-    }
-    if (median > 1 / 40) {
+    s.intervals.push(dt)
+    s.cpu.push((now - s.start) / 1000)
+    s.elapsed += Math.min(dt, 0.25)
+    if (s.elapsed < 0.75 || s.intervals.length < 6) return
+    s.intervals.sort((a, b) => a - b)
+    s.cpu.sort((a, b) => a - b)
+    const median = s.intervals[s.intervals.length >> 1]
+    const cpu = s.cpu[s.cpu.length >> 1]
+    // Share of frames that missed a 60 Hz deadline (with slack for timer jitter).
+    let missed = 0
+    for (const interval of s.intervals) if (interval > 1 / 52) missed++
+    const missRate = missed / s.intervals.length
+    s.intervals.length = s.cpu.length = 0
+    s.elapsed = 0
+    // Changing level resizes the cloud buffers and restarts their history: be patient.
+    if (now - s.changedAt < 2000) return
+    if (s.floor > 0 && now - s.flooredAt > 60000) s.floor = 0
+    const gpuBound = cpu < median * 0.6
+    if (missRate > 0.12 && gpuBound) {
       s.slow++
       s.fast = 0
-    } else if (median < 1 / 56) {
+    } else if (missRate < 0.02 && median < 1 / 58) {
       s.fast++
       s.slow = 0
     } else {
       s.slow = s.fast = 0
     }
-    if (s.slow >= 2 && step < s.ceiling) {
-      // Stepping up did not hold: stay at this resolution from now on.
-      if (now - s.raisedAt < 20000) s.floor = step + 1
+    if (s.slow >= 2 && level < CLOUD_LEVELS.length - 1) {
+      // Stepping up did not hold: stay at this level for a while.
+      if (now - s.raisedAt < 15000) {
+        s.floor = level + 1
+        s.flooredAt = now
+      }
       s.slow = 0
-      s.before = median
       s.changedAt = now
-      onStep(step + 1)
-    } else if (s.fast >= 4 && step > s.floor) {
+      onLevel(level + 1)
+    } else if (s.fast >= 8 && level > s.floor) {
       s.fast = 0
       s.changedAt = s.raisedAt = now
-      onStep(step - 1)
+      onLevel(level - 1)
     }
-  })
+  }, 1000)
   return null
+}
+
+function viewportPixels() {
+  return Math.max(1, window.innerWidth * window.innerHeight)
 }
 
 export default function FlightScene() {
@@ -812,14 +844,45 @@ export default function FlightScene() {
   const shadows = useApp((s) => s.settings.shadows)
   const quality = useApp((s) => s.settings.quality)
   const adaptive = useApp((s) => s.settings.adaptiveResolution)
-  const [step, setStep] = useState(0)
-  // A new quality or resolution choice starts again from full resolution.
-  useEffect(() => setStep(0), [quality, renderScale, adaptive])
-  const dpr = Math.min(MAX_DPR[quality], typeof devicePixelRatio === 'number' ? devicePixelRatio : 1) * renderScale * (adaptive ? ADAPTIVE_STEPS[step] : 1)
+  const preview = useApp((s) => s.phase === 'menu')
+  const paused = useApp((s) => s.pauseMenu)
+  const showPerf = useApp((s) => s.settings.showFps) || PERF_FORCED
+  const getDpr = useCallback(() => {
+    const tuned = TUNING.find(([path]) => path[0] === 'dpr')?.[1] as number | undefined
+    const display = tuned === undefined ? window.devicePixelRatio : Math.min(tuned, window.devicePixelRatio)
+    return sceneDpr(quality, renderScale, display, viewportPixels(), preview)
+  }, [quality, renderScale, preview])
+  const [dpr, setDpr] = useState(getDpr)
+  useLayoutEffect(() => {
+    const update = () => setDpr(getDpr())
+    update()
+    // Moving the window to a display with another pixel ratio fires no resize in WebKit.
+    let media: MediaQueryList | null = null
+    const watchRatio = () => {
+      media?.removeEventListener('change', onRatio)
+      media = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+      media.addEventListener('change', onRatio)
+    }
+    const onRatio = () => { update(); watchRatio() }
+    watchRatio()
+    window.addEventListener('resize', update)
+    return () => {
+      window.removeEventListener('resize', update)
+      media?.removeEventListener('change', onRatio)
+    }
+  }, [getDpr])
+  const initialLevel = useCallback(() => initialCloudLevel(viewportPixels() * getDpr() ** 2), [getDpr])
+  const [level, setLevel] = useState(initialLevel)
+  // Start large framebuffers a step down and let measured frame time raise the detail.
+  useEffect(() => setLevel(initialLevel()), [initialLevel, adaptive])
+  const tunedLevel = TUNING.find(([path]) => path[0] === 'level')?.[1] as number | undefined
+  const cloudLevel = tunedLevel ?? (adaptive ? level : 0)
+  const previewFps = preview ? 30 : paused ? 12 : 0
   return (
     <Canvas
       className="flight-canvas"
       dpr={dpr}
+      frameloop={previewFps ? 'demand' : 'always'}
       shadows={shadows ? { type: PCFShadowMap } : false}
       gl={{ logarithmicDepthBuffer: true, antialias: false, powerPreference: 'high-performance', depth: true, stencil: false, toneMapping: NoToneMapping, toneMappingExposure: 10 }}
       camera={{ fov: 58, near: 0.3, far: 2e7 }}
@@ -827,9 +890,11 @@ export default function FlightScene() {
         gl.setClearColor('#000000')
       }}
     >
-      <SceneContents />
+      <SceneContents cloudLevel={cloudLevel} preview={preview} />
       <DestinationMarker />
-      {adaptive ? <AdaptiveResolution step={step} onStep={setStep} /> : null}
+      <PreviewFrames fps={previewFps} />
+      {showPerf ? <PerfProbe /> : null}
+      {adaptive ? <AdaptiveCloudDetail key={`${quality}-${renderScale}`} level={level} onLevel={setLevel} /> : null}
     </Canvas>
   )
 }

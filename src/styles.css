@@ -1101,8 +1101,13 @@ input[type='checkbox'] {
   position: absolute;
   top: 34px;
   left: 12px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: var(--panel);
   font-family: var(--hud-font);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
   color: var(--accent-2);
   pointer-events: none;
 }

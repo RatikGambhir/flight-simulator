@@ -1,8 +1,8 @@
 import {
-  Color, Data3DTexture, DataTexture, HalfFloatType, Mesh, MeshBasicMaterial,
-  PerspectiveCamera, PlaneGeometry, RedFormat, Scene, Texture, Vector3, WebGLRenderer,
+  Color, Data3DTexture, DataTexture, FloatType, HalfFloatType, LinearFilter, Mesh, MeshBasicMaterial,
+  PerspectiveCamera, PlaneGeometry, RedFormat, Scene, Texture, Uniform, Vector3, WebGLRenderer,
 } from 'three'
-import { EffectComposer, EffectPass, RenderPass, ToneMappingEffect, ToneMappingMode } from 'postprocessing'
+import { BlendFunction, CopyPass, Effect, EffectComposer, EffectPass, RenderPass, ToneMappingEffect, ToneMappingMode } from 'postprocessing'
 import { AerialPerspectiveEffect, PrecomputedTexturesGenerator, SkyMaterial } from '@takram/three-atmosphere'
 import { CloudsEffect } from '@takram/three-clouds'
 import {
@@ -10,6 +10,9 @@ import {
 } from '../src/scene/cloudRendering.ts'
 import { prepareSky } from '../src/scene/celestialRendering.ts'
 import { NightEffect } from '../src/scene/NightEffect.ts'
+import { OverlayPass } from '../src/scene/OverlayPass.ts'
+import { SurfaceMaskPass } from '../src/scene/SurfaceMaskPass.ts'
+import { TerrainNormalPass } from '../src/scene/TerrainNormalPass.ts'
 import { WaterMask } from '../src/scene/WaterMask.ts'
 import { frame } from '../src/world/frame.ts'
 
@@ -27,6 +30,86 @@ function texture(bytes, width = 1, height = 1) {
   const result = new DataTexture(bytes, width, height)
   result.needsUpdate = true
   return result
+}
+
+function checkOcclusion(renderer, pixel) {
+  const scene = new Scene()
+  const camera = new PerspectiveCamera(60, WIDTH / HEIGHT, 0.3, 2e7)
+  const layer = 2
+  camera.layers.enable(layer)
+  const surface = new Mesh(new PlaneGeometry(6, 3), new MeshBasicMaterial({ color: 0x00ff00 }))
+  surface.position.z = -8
+  surface.layers.enable(layer)
+  const terrain = new Mesh(new PlaneGeometry(1.5, 2), new MeshBasicMaterial({ color: 0xff0000 }))
+  terrain.position.set(-0.75, 0, -4)
+  scene.add(surface, terrain)
+
+  const mask = new SurfaceMaskPass(scene, camera, layer)
+  const probe = new EffectPass(camera, new Effect('MaskProbe', `
+    uniform sampler2D mask;
+    void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
+      outputColor = vec4(vec3(texture2D(mask, uv).r), 1.0);
+    }`, { blendFunction: BlendFunction.SRC, uniforms: new Map([['mask', new Uniform(mask.texture)]]) }))
+  const overlay = new OverlayPass(camera)
+  const guide = new Mesh(new PlaneGeometry(6, 1), new MeshBasicMaterial({ color: 0x0000ff, transparent: true }))
+  guide.position.z = -6
+  overlay.prepare(guide.material)
+  overlay.overlay.add(guide)
+
+  const composer = new EffectComposer(renderer, { multisampling: 0 })
+  for (const pass of [new RenderPass(scene, camera), mask, probe, overlay, new CopyPass()]) composer.addPass(pass)
+  overlay.enabled = false
+  composer.render(1 / 60)
+  check(pixel(0.4, 0.5)[0] > 245 && pixel(0.6, 0.5)[0] < 10, 'The surface mask only marks visible aircraft and water')
+  probe.enabled = false
+  overlay.enabled = true
+  composer.render(1 / 60)
+  const hidden = pixel(0.4, 0.5)
+  const visible = pixel(0.6, 0.5)
+  check(hidden[0] > 245 && hidden[2] < 10 && visible[2] > 245, 'The landing guide respects foreground depth')
+  composer.dispose()
+  for (const mesh of [surface, terrain, guide]) {
+    mesh.geometry.dispose()
+    mesh.material.dispose()
+  }
+}
+
+/** Displaced DEM terrain must produce smooth, correctly tilted normals on the WebKit GPU path. */
+function checkTerrainNormals(renderer) {
+  const camera = new PerspectiveCamera(40, WIDTH / HEIGHT, 0.3, 2e7)
+  camera.position.z = 30
+  camera.updateMatrixWorld()
+  const size = 64
+  const ramp = new Float32Array(size * size)
+  // Height rises 10 m across the 20 m wide tile along +x: a 26.6 degree slope.
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) ramp[y * size + x] = 10 * x / (size - 1)
+  const heights = new DataTexture(ramp, size, size, RedFormat, FloatType)
+  heights.minFilter = heights.magFilter = LinearFilter
+  heights.needsUpdate = true
+  const material = new MeshBasicMaterial()
+  Object.assign(material, { displacementMap: heights, displacementScale: 1, displacementBias: 0 })
+  const tile = new Mesh(new PlaneGeometry(20, 20, 32, 32), material)
+  const pass = new TerrainNormalPass(camera)
+  pass.roots = [tile]
+  pass.setSize(WIDTH, HEIGHT)
+  pass.render(renderer)
+  const target = pass.target
+  const read = (x, y) => {
+    const rgba = new Uint8Array(4)
+    renderer.readRenderTargetPixels(target, Math.floor(WIDTH * x), Math.floor(HEIGHT * y), 1, 1, rgba)
+    return [...rgba].map((v) => v / 127.5 - 1)
+  }
+  const samples = [0.42, 0.46, 0.5, 0.54, 0.58].map((x) => read(x, 0.5))
+  const expected = -Math.sin(Math.atan(0.5))
+  check(samples.every((n) => Math.abs(n[0] - expected) < 0.08 && Math.abs(n[1]) < 0.06),
+    `Terrain normals follow the displaced slope (${samples.map((n) => n[0].toFixed(2))} vs ${expected.toFixed(2)})`)
+  check(Math.max(...samples.map((n) => n[0])) - Math.min(...samples.map((n) => n[0])) < 0.04,
+    'Terrain normals are smooth across triangles and pixel quads')
+  check(read(0.02, 0.02).every((v) => v < -0.99), 'Pixels without terrain keep a zero (degenerate) normal')
+  pass.dispose()
+  tile.geometry.dispose()
+  material.dispose()
+  heights.dispose()
 }
 
 async function renderChecks() {
@@ -82,7 +165,7 @@ async function renderChecks() {
   aerial.stbnTexture = noise
   aerial.worldToECEFMatrix.copy(frame.ecefFromWorld)
   aerial.lightingMask = { map: lightingMask, channel: 'r' }
-  stabilizeAerialPerspective(aerial)
+  stabilizeAerialPerspective(aerial, () => cloudPass.enabled ? clouds : null)
   const water = new WaterMask()
   water.shadeAerialPerspective(aerial)
 
@@ -91,7 +174,8 @@ async function renderChecks() {
   Object.assign(clouds, atmosphere)
   clouds.qualityPreset = 'high'
   clouds.shadow.mapSize.set(32, 32)
-  clouds.temporalUpscale = false
+  // Production marches with temporal upscaling (1/16 of pixels per frame).
+  clouds.temporalUpscale = true
   clouds.localWeatherTexture = emptyWeather
   clouds.shapeTexture = noise
   clouds.shapeDetailTexture = noise
@@ -101,7 +185,7 @@ async function renderChecks() {
   clouds.clouds.hazeDensityScale = 0.01
   clouds.worldToECEFMatrix.copy(frame.ecefFromWorld)
 
-  const night = new NightEffect(frame.ecefFromWorld, undefined, () => clouds.atmosphereOverlay?.map ?? null)
+  const night = new NightEffect(frame.ecefFromWorld, undefined, () => cloudPass.enabled ? clouds.atmosphereOverlay?.map ?? null : null)
   stabilizeNightClouds(night)
   water.maskNightLights(night)
   night.setLightingMask(lightingMask)
@@ -120,7 +204,7 @@ async function renderChecks() {
   const up = new Vector3(0, 1, 0)
   const sun = new Vector3()
 
-  function render(elevation, darkness, weather = false) {
+  function render(elevation, darkness, weather = false, frames = 5) {
     sun.set(Math.sin(elevation), 0, Math.cos(elevation))
     sky.sunDirection.copy(sun)
     clouds.sunDirection.copy(sun)
@@ -128,11 +212,8 @@ async function renderChecks() {
     setCloudNightLighting(clouds, darkness, new Vector3(0, 1, 0), 0)
     night.setFrame(camera, darkness, 0, up, [], camera.position.y)
     cloudPass.enabled = weather
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < frames; i++) {
       history.update(clouds, camera, frame.version, 'chase', 'high')
-      aerial.overlay = weather ? clouds.atmosphereOverlay : null
-      aerial.shadow = weather ? clouds.atmosphereShadow : null
-      aerial.shadowLength = weather ? clouds.atmosphereShadowLength : null
       sky.shadowLength = aerial.shadowLength
       composer.render(1 / 60)
     }
@@ -184,6 +265,13 @@ async function renderChecks() {
   // Exercise all shader combinations on the same WebGL context as the desktop app.
   render(0.01, 0, true)
   check(brightness(pixel(0.5, 0.56)) > 20, 'Sunset with clouds and cloud shadows renders a visible sky')
+  render(0.01, 0, false, 1)
+  check(['HAS_OVERLAY', 'HAS_SHADOW', 'HAS_SHADOW_LENGTH'].every(define => !aerial.defines.has(define)),
+    'Disabling clouds clears all aerial cloud inputs on the first frame')
+  checkOcclusion(renderer, pixel)
+  checkTerrainNormals(renderer)
+  if (errors.length) throw new Error(errors.filter(Boolean).join('\n') || 'A WebGL shader failed to link')
+  if (gl.getError() !== gl.NO_ERROR) throw new Error('WebGL reported an error during depth compositing')
 }
 
 renderChecks().then(() => {
