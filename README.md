@@ -157,9 +157,12 @@ reversers, gear, flaps), never by moving the aircraft:
 * **Safety:** it goes around if the approach is not stable at 1,000 ft (500 ft in light
   aircraft), sinks too fast, is not lined up at 100 ft, floats or bounces, and tries
   again; after three attempts it holds and asks you to take over. In severe turbulence,
-  gusts beyond what an automatic landing can handle, or crosswinds/tailwinds beyond the
-  aircraft's limits, it circles the field instead of landing. Terrain reported ahead by
-  the renderer raises the minimum altitude, with a climb-away if it gets close.
+  gusts beyond what that type's automatic landing can handle, or crosswinds/tailwinds
+  beyond the aircraft's limits, it circles the field instead of landing. Each type has its
+  own measured gust limit: in Moderate turbulence the 737, Longitude and 172 land only with
+  less than about 8 kt of wind, the A320 and bizjet with up to about 24 kt, and the F‑16
+  in anything short of Severe. Terrain reported ahead by the renderer raises the minimum
+  altitude, with a climb-away if it gets close.
 * **Hand-back:** press `Z` again, or move the stick firmly (or brake during the takeoff
   roll) to take over; nothing changes abruptly. Using the throttle in flight only turns
   the autothrottle off.

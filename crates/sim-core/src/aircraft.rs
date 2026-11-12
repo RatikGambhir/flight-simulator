@@ -105,6 +105,11 @@ pub struct AircraftSpec {
     pub v_max_kt: f64,
     pub cruise_alt_ft: f64,
     pub max_alt_ft: f64,
+    /// Strongest gusts (RMS vertical, m/s, as reported at 10 m) the autopilot
+    /// will make an automatic landing in. Measured with the `autoflight stats`
+    /// example: about where four in five approaches still end in a landing
+    /// rather than three go-arounds.
+    pub autoland_max_gust_ms: f64,
     pub service_ceiling_note: &'static str,
 }
 
@@ -192,6 +197,7 @@ static CATALOG: &[AircraftSpec] = &[
         v_max_kt: 340.0,
         cruise_alt_ft: 35_000.0,
         max_alt_ft: 41_000.0,
+        autoland_max_gust_ms: 1.8,
         service_ceiling_note: "FL410",
     },
     AircraftSpec {
@@ -247,6 +253,7 @@ static CATALOG: &[AircraftSpec] = &[
         v_max_kt: 340.0,
         cruise_alt_ft: 36_000.0,
         max_alt_ft: 39_800.0,
+        autoland_max_gust_ms: 2.1,
         service_ceiling_note: "FL398",
     },
     AircraftSpec {
@@ -302,6 +309,7 @@ static CATALOG: &[AircraftSpec] = &[
         v_max_kt: 350.0,
         cruise_alt_ft: 41_000.0,
         max_alt_ft: 45_000.0,
+        autoland_max_gust_ms: 2.1,
         service_ceiling_note: "FL450",
     },
     AircraftSpec {
@@ -358,6 +366,7 @@ static CATALOG: &[AircraftSpec] = &[
         v_max_kt: 325.0,
         cruise_alt_ft: 41_000.0,
         max_alt_ft: 45_000.0,
+        autoland_max_gust_ms: 1.8,
         service_ceiling_note: "FL450",
     },
     AircraftSpec {
@@ -413,6 +422,7 @@ static CATALOG: &[AircraftSpec] = &[
         v_max_kt: 160.0,
         cruise_alt_ft: 5_500.0,
         max_alt_ft: 14_000.0,
+        autoland_max_gust_ms: 1.8,
         service_ceiling_note: "14,000 ft",
     },
     AircraftSpec {
@@ -474,6 +484,7 @@ static CATALOG: &[AircraftSpec] = &[
         v_max_kt: 800.0,
         cruise_alt_ft: 30_000.0,
         max_alt_ft: 50_000.0,
+        autoland_max_gust_ms: 3.2,
         service_ceiling_note: "50,000 ft",
     },
 ];

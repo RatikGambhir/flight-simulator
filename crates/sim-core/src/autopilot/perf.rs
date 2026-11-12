@@ -185,7 +185,7 @@ impl Perf {
             wingspan_m: s.wingspan_m,
             wheelbase_m: s.wheelbase_m,
             rest_pitch_deg: s.rest_pitch_deg,
-            max_gust_ms: if s.aerobatic { 3.2 } else if jet { 2.2 } else { 2.0 },
+            max_gust_ms: s.autoland_max_gust_ms,
             roll_gain: (0.75 / s.response_time_s).clamp(1.0, 4.5),
         }
     }

@@ -481,6 +481,22 @@ fn severe_weather_circles_instead_of_landing_then_lands_when_it_improves() {
     assert_stopped_on_runway(&h, "KORD");
 }
 
+#[test]
+fn gust_limit_depends_on_the_aircraft() {
+    // Moderate turbulence and 15 kt of wind (σw ≈ 1.9 m/s): beyond what the
+    // 737 lands reliably (autoland_max_gust_ms 1.8), within the A320's (2.1).
+    for (ac, declines) in [("b737", true), ("a320", false)] {
+        let mut h = Harness::new(ac, airport_terrain(&["KORD"]));
+        h.weather(250.0, 15.0, 0.45);
+        h.spawn_runway("KORD", "28R", RunwaySpawnKind::Approach);
+        h.toggle_ap();
+        h.run_for(300.0);
+        assert!(h.crashed.is_none(), "{ac}: {:?}", h.crashed);
+        let gusts = h.messages().iter().any(|m| m.contains("Gusts too strong") && m.contains("not landing"));
+        assert_eq!(gusts, declines, "{ac}: {:?}", h.messages());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Terrain, ground operations and modes
 // ---------------------------------------------------------------------------
