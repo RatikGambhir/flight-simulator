@@ -16,6 +16,7 @@ import {
   Quaternion as Quat,
   PointLight,
   SphereGeometry,
+  Texture,
   Vector3,
   type BufferGeometry,
   type Material,
@@ -281,6 +282,7 @@ function gearLeg(
   axis: 'x' | 'z',
   retracted: number,
   m: AircraftMaterials,
+  axles: readonly number[] = [0],
 ) {
   const pivot = new Object3D()
   pivot.position.copy(pivotPos)
@@ -289,14 +291,21 @@ function gearLeg(
   const strut = new CylinderGeometry(wheelR * 0.18, wheelR * 0.22, len, 12)
   strut.translate(0, -len / 2, 0)
   mesh(strut, m.chrome, pivot)
-  const axle = new CylinderGeometry(wheelR * 0.12, wheelR * 0.12, Math.max(0.1, Math.abs(wheels[wheels.length - 1] - wheels[0]) + wheelR * 0.6), 8)
-  axle.rotateZ(Math.PI / 2)
-  axle.translate((wheels[0] + wheels[wheels.length - 1]) / 2, -len, 0)
-  mesh(axle, m.darkMetal, pivot)
-  for (const x of wheels) {
-    const w = wheel(wheelR, wheelR * 0.62, m)
-    w.position.set(x, -len, 0)
-    pivot.add(w)
+  if (axles.length > 1) {
+    const bogie = new BoxGeometry(wheelR * 0.42, wheelR * 0.4, axles[axles.length - 1] - axles[0] + wheelR * 0.4)
+    bogie.translate(0, -len, (axles[0] + axles[axles.length - 1]) / 2)
+    mesh(bogie, m.darkMetal, pivot)
+  }
+  for (const z of axles) {
+    const axle = new CylinderGeometry(wheelR * 0.12, wheelR * 0.12, Math.max(0.1, Math.abs(wheels[wheels.length - 1] - wheels[0]) + wheelR * 0.6), 8)
+    axle.rotateZ(Math.PI / 2)
+    axle.translate((wheels[0] + wheels[wheels.length - 1]) / 2, -len, z)
+    mesh(axle, m.darkMetal, pivot)
+    for (const x of wheels) {
+      const w = wheel(wheelR, wheelR * 0.62, m)
+      w.position.set(x, -len, z)
+      pivot.add(w)
+    }
   }
   // Gear door
   const door = new BoxGeometry(0.04, len * 0.8, wheelR * 1.4)
@@ -551,6 +560,98 @@ const A320: AirlinerSpec = {
   finAt: new Vector3(0, 1.55, 13.0),
   mainGear: { x: 3.8, z: 1.5, wheelR: 0.6, bottom: 3.2 },
   noseGear: { z: -12.7, wheelR: 0.38, bottom: 3.08 },
+}
+
+function buildA380(): AircraftModel {
+  const livery = LIVERIES.a380
+  const noseZ = -34.7
+  const length = 72.7
+  const tailZ = noseZ + length
+  const radius = 3.55
+  const v = (metersFromNose: number) => metersFromNose / length
+  const fusTex = paintFuselage({
+    livery,
+    windowFrom: v(8.8), windowTo: v(59), windowCount: 85,
+    windowU: 0.242, windowSize: [0.013, v(0.29)],
+    doors: [8.1, 16.6, 31.4, 47.1, 59.9].map(v),
+    upperDeck: {
+      windowFrom: v(10.7), windowTo: v(60.5), windowCount: 79,
+      windowU: 0.146, windowSize: [0.014, v(0.29)],
+      doors: [10.2, 23.2, 45.7, 61.3].map(v),
+    },
+    cockpitV: [v(3.4), v(5.85)], cockpitU: [0.09, 0.225],
+    titleV: v(18.5),
+  })
+  const m = createMaterials(livery, fusTex, paintTail(livery))
+  const model = newModel('a380', 'airliner', m)
+  const root = model.root
+  const fuselage = airlinerStations({
+    noseZ, tailZ, radius, noseLen: 8.9, tailLen: 16.4,
+    flatten: 4.3 / radius, noseBluntness: 0.47, noseDroop: 0.33, upsweep: 0.7,
+  })
+  model.exteriorOnly.push(mesh(tubeGeometry(fuselage, 72, 2.16), m.fuselage, root, 'fuselage'))
+
+  const fairing = new SphereGeometry(1, 40, 20)
+  fairing.scale(4.05, 1.55, 17.4)
+  fairing.translate(0, -3.08, -1.7)
+  model.exteriorOnly.push(mesh(fairing, m.belly, root))
+
+  // The inner wing carries the trailing-edge kink where the outer wing begins.
+  const inner: WingParams = { span: 11.9, rootChord: 23.2, tipChord: 13.2, sweep: 38.5, dihedral: 5, thicknessRoot: 0.15, thicknessTip: 0.11 }
+  const outer: WingParams = { span: 25.1, rootChord: 13.2, tipChord: 2.2, sweep: 39, dihedral: 5, thicknessRoot: 0.11, thicknessTip: 0.09 }
+  const innerAt = new Vector3(2.9, -2.28, -15.6)
+  const outerAt = wingPoint(inner, 1, 0).add(innerAt)
+  buildWings(model, root, { params: inner, at: innerAt, flaps: [[0.08, 0.96]], spoilers: [0.28, 0.95], mat: m.wing, surfaceMat: m.wingDark })
+  buildWings(model, root, { params: outer, at: outerAt, flaps: [[0.03, 0.46]], aileron: [0.49, 0.96], spoilers: [0.05, 0.49], mat: m.wing, surfaceMat: m.wingDark })
+  model.span = 2 * (outerAt.x + outer.span)
+  model.length = length
+
+  const tip = wingPoint(outer, 1, 0).add(outerAt)
+  const engineLength = 5.5
+  const engineRadius = 1.68
+  const noseGearZ = noseZ + 4.97
+  const wheelCenterY = (z: number, r: number) => -6.0 + r + z * Math.tan(0.2 * Math.PI / 180)
+  for (const side of [1, -1] as const) {
+    // Short upper and lower wingtip fences characteristic of the A380-800.
+    for (const direction of [1, -1]) {
+      const fence: WingParams = { span: direction > 0 ? 1.2 : 0.65, rootChord: outer.tipChord, tipChord: 0.57, sweep: 40, dihedral: 0, thicknessRoot: 0.09, thicknessTip: 0.07, vertical: true }
+      const part = mesh(wingPanelGeometry(fence, 0, 1), m.tail, root)
+      part.position.copy(tip).setX(tip.x * side)
+      if (direction < 0) part.rotation.z = Math.PI
+    }
+
+    for (const [x, y] of [[14.8, -2.7], [25.7, -1.7]]) {
+      const e = (x - outerAt.x) / outer.span
+      const leading = wingPoint(outer, e, 0).add(outerAt)
+      const front = new Vector3(x * side, y, leading.z - engineLength * 0.62)
+      turbofan(model, root, front, engineLength, engineRadius, m)
+      const pylonAt = wingPoint(outer, e, 0.1).add(outerAt).setX(x * side)
+      const pylon: WingParams = {
+        span: pylonAt.y - y - engineRadius * 0.53, rootChord: 5.0, tipChord: 2.6,
+        sweep: -40, dihedral: 0, thicknessRoot: 0.13, thicknessTip: 0.14, vertical: true,
+      }
+      const mount = mesh(wingPanelGeometry(pylon, 0, 1), m.paint, root)
+      mount.position.copy(pylonAt)
+      mount.rotation.z = Math.PI
+    }
+
+    // Two four-wheel wing bogies and two six-wheel body bogies.
+    gearLeg(model, root, new Vector3(7.17 * side, -2.8, -1.12), wheelCenterY(-1.12, 0.68), 0.68, [-0.48, 0.48], 'z', -side * Math.PI / 2, m, [-0.78, 0.78])
+    gearLeg(model, root, new Vector3(2.63 * side, -3.12, 2.15), wheelCenterY(2.15, 0.68), 0.68, [-0.48, 0.48], 'x', Math.PI / 2, m, [-1.56, 0, 1.56])
+  }
+  gearLeg(model, root, new Vector3(0, -2.34, noseGearZ), wheelCenterY(noseGearZ, 0.52), 0.52, [-0.35, 0.35], 'x', Math.PI / 2, m)
+
+  const hstab: WingParams = { span: 14.4, rootChord: 10.8, tipChord: 2.65, sweep: 35, dihedral: 6, thicknessRoot: 0.11, thicknessTip: 0.085 }
+  const fin: WingParams = { span: 14.4, rootChord: 15.3, tipChord: 4.25, sweep: 40, dihedral: 0, thicknessRoot: 0.10, thicknessTip: 0.08, vertical: true }
+  tailSurface(model, root, hstab, new Vector3(0.8, 0.75, 24.4), 'elevator', m.paint, m.wingDark)
+  tailSurface(model, root, fin, new Vector3(0, 3.7, 19.2), 'rudder', m.tail, m.tail)
+
+  navLights(model, model.wingTipRight.clone().setX(tip.x + 0.09), new Vector3(0, 1.96, tailZ + 0.06), new Vector3(0, 4.36, -4), new Vector3(0, -4.7, 1), {
+    landing: [new Vector3(4.15, -2.18, -14.8), new Vector3(-4.15, -2.18, -14.8), new Vector3(0, -3.1, noseGearZ - 0.4)],
+    logo: { at: new Vector3(0, 10.5, 30.7), reach: 8.6 },
+  })
+  model.eye.set(-0.55, 1.75, noseZ + 6.25)
+  return model
 }
 
 // ---------------------------------------------------------------------------
@@ -1124,6 +1225,7 @@ const BUILDERS: Record<string, () => AircraftModel> = {
     return mdl
   },
   a320: () => buildAirliner(A320),
+  a380: buildA380,
   bizjet: buildBizjet,
   longitude: buildLongitude,
   c172: buildCessna,
@@ -1141,5 +1243,28 @@ export function buildAircraft(id: string, lightingLayer: number): AircraftModel 
     o.layers.enable(lightingLayer)
   })
   return model
+}
+
+/** Releases mesh resources owned by a procedural aircraft or cockpit. */
+export function disposeAircraftMeshes(root: Object3D, disposeTextures = true) {
+  const geometries = new Set<BufferGeometry>()
+  const materials = new Set<Material>()
+  const textures = new Set<Texture>()
+  root.traverse((object) => {
+    const mesh = object as Mesh
+    if (!mesh.isMesh) return
+    geometries.add(mesh.geometry)
+    for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) materials.add(material)
+  })
+  for (const material of materials) {
+    if (disposeTextures) {
+      for (const value of Object.values(material)) {
+        if (value instanceof Texture) textures.add(value)
+      }
+    }
+    material.dispose()
+  }
+  for (const geometry of geometries) geometry.dispose()
+  for (const texture of textures) texture.dispose()
 }
 

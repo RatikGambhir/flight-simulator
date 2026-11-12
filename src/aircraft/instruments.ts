@@ -309,13 +309,14 @@ export function drawND(g: CanvasRenderingContext2D, s: Float64Array, w: number, 
 }
 
 /** Engine and systems display. */
-export function drawEICAS(g: CanvasRenderingContext2D, s: Float64Array, w: number, h: number) {
+export function drawEICAS(g: CanvasRenderingContext2D, s: Float64Array, w: number, h: number, engineCount: number) {
   g.fillStyle = '#05070a'
   g.fillRect(0, 0, w, h)
   const n1 = 20 + s[S.ENGINE] * 81
-  for (const [i, x] of [w * 0.28, w * 0.72].entries()) {
+  for (let i = 0; i < engineCount; i++) {
+    const x = w * (0.06 + 0.88 * (i + 0.5) / engineCount)
     const cy = h * 0.27
-    const r = w * 0.17
+    const r = w * Math.min(0.17, 0.39 / engineCount)
     g.strokeStyle = WHITE
     g.lineWidth = 3
     g.beginPath()
@@ -329,7 +330,7 @@ export function drawEICAS(g: CanvasRenderingContext2D, s: Float64Array, w: numbe
     g.lineTo(x + Math.cos(a) * r * 0.92, cy + Math.sin(a) * r * 0.92)
     g.stroke()
     g.fillStyle = WHITE
-    g.font = font(h * 0.055, 700)
+    g.font = font(Math.min(h * 0.055, r * 0.45), 700)
     g.textAlign = 'center'
     g.fillText(n1.toFixed(1), x, cy + r * 0.62)
     g.font = font(h * 0.035)

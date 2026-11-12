@@ -44,9 +44,15 @@ export default function App() {
       }
     })
     // Show the selected departure behind the menu (paused) as a live preview.
-    sim.ready.then(() => applySelection({ paused: true })).catch((err) => console.error('Simulation failed to start', err))
+    let active = true
+    sim.ready.then(() => {
+      if (active && useApp.getState().phase === 'menu') applySelection({ paused: true })
+    }).catch((err) => {
+      if (active) console.error('Simulation failed to start', err)
+    })
     const unsync = syncDestination()
     return () => {
+      active = false
       unsync()
       off()
       controls.detach()

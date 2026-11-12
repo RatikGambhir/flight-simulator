@@ -1,23 +1,30 @@
 import { useEffect, useState } from 'react'
 import { applySelection } from '../flight'
 import { useApp } from '../state/store'
-import { aircraftThumbnail } from './thumbnails'
 import { useAircraftList } from './useAircraftList'
-
-function Thumb({ id }: { id: string }) {
-  const [src, setSrc] = useState<string | null>(null)
-  useEffect(() => {
-    // Defer so the sheet paints first.
-    const t = setTimeout(() => setSrc(aircraftThumbnail(id)), 30)
-    return () => clearTimeout(t)
-  }, [id])
-  return <div className="preview">{src ? <img src={src} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : null}</div>
-}
 
 export function AircraftSelect({ onClose }: { onClose: () => void }) {
   const list = useAircraftList()
   const aircraftId = useApp((s) => s.aircraftId)
   const setAircraft = useApp((s) => s.setAircraft)
+  const [thumbnails, setThumbnails] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    if (!list.length) return
+    let active = true
+    let stop: (() => void) | undefined
+    void import('./thumbnails').then(({ loadAircraftThumbnails }) => {
+      if (active) {
+        stop = loadAircraftThumbnails(list.map((aircraft) => aircraft.id), (id, src) => {
+          setThumbnails((current) => ({ ...current, [id]: src }))
+        })
+      }
+    }).catch((error) => console.warn('Aircraft previews unavailable', error))
+    return () => {
+      active = false
+      stop?.()
+    }
+  }, [list])
 
   const choose = (id: string) => {
     setAircraft(id)
@@ -38,7 +45,9 @@ export function AircraftSelect({ onClose }: { onClose: () => void }) {
         <div className="aircraft-grid">
           {list.map((a) => (
             <button key={a.id} className={`aircraft-card ${a.id === aircraftId ? 'on' : ''}`} onClick={() => choose(a.id)}>
-              <Thumb id={a.id} />
+              <div className="preview">
+                {thumbnails[a.id] ? <img src={thumbnails[a.id]} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : null}
+              </div>
               <div className="info">
                 <h3>{a.name}</h3>
                 <div className="muted" style={{ fontSize: 12 }}>

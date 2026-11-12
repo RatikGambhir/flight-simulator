@@ -20,7 +20,7 @@ import { S } from '../sim/protocol'
 import { BODY_FROM_MODEL, frame, geodeticToEcef } from '../world/frame'
 import { buildCockpit, type Cockpit } from './cockpit'
 import { CockpitLighting } from './cockpitLighting'
-import { buildAircraft, type AircraftModel, type LampKind } from './models'
+import { buildAircraft, disposeAircraftMeshes, type AircraftModel, type LampKind } from './models'
 import type { Lamp } from '../scene/NightEffect'
 import { setHingeAngle } from './geometry'
 
@@ -301,16 +301,10 @@ export class AircraftController {
 
   dispose() {
     this.shadowTarget.dispose()
+    this.cockpit.root.removeFromParent()
     this.cockpit.dispose()
-    this.container.traverse((o) => {
-      const m = o as Mesh
-      if (m.isMesh) {
-        m.geometry.dispose()
-        const mat = m.material as Material | Material[]
-        if (Array.isArray(mat)) mat.forEach((x) => x.dispose())
-        else mat.dispose()
-      }
-    })
+    disposeAircraftMeshes(this.cockpit.root, false)
+    disposeAircraftMeshes(this.model.root)
     this.shadow.geometry.dispose()
     ;(this.shadow.material as Material).dispose()
   }

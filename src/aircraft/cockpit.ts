@@ -60,7 +60,9 @@ export function buildCockpit(model: AircraftModel): Cockpit {
   const root = new Group()
   root.name = 'cockpit'
   const eye = model.eye
-  const sidestick = model.id === 'a320'
+  const isA380 = model.id === 'a380'
+  const sidestick = model.id === 'a320' || isA380
+  const engineCount = model.spinners.length
   const shell = new MeshStandardMaterial({ color: '#2b3036', roughness: 0.92, metalness: 0.02, side: DoubleSide, envMapIntensity: 0.3 })
   const panelMat = new MeshStandardMaterial({ color: '#22262b', roughness: 0.75, metalness: 0.1, envMapIntensity: 0.3 })
   const glare = new MeshStandardMaterial({ color: '#101113', roughness: 0.97, envMapIntensity: 0.2 })
@@ -83,6 +85,8 @@ export function buildCockpit(model: AircraftModel): Cockpit {
   // Floor, side walls, ceiling and rear bulkhead to enclose the view.
   const floorY = eye.y - 1.15
   const ceilY = eye.y + 0.5
+  const pedestalTop = floorY + (isA380 ? 0.56 : 0.75)
+  const pedestalHeight = isA380 ? 0.36 : 0.5
   const halfW = width / 2 + 0.2
   box(halfW * 2, 0.05, 2.6, shell, root, 0, floorY, eye.z - 0.2)
   for (const s of [1, -1]) box(0.05, eye.y - 0.25 - floorY, 2.6, shell, root, halfW * s, (eye.y - 0.25 + floorY) / 2, eye.z - 0.2)
@@ -105,9 +109,9 @@ export function buildCockpit(model: AircraftModel): Cockpit {
   {
     const pfd = new InstrumentCanvas(512, 512, drawPFD)
     const nd = new InstrumentCanvas(512, 512, drawND)
-    const eicas = new InstrumentCanvas(512, 512, drawEICAS)
+    const eicas = new InstrumentCanvas(512, 512, (g, s, w, h) => drawEICAS(g, s, w, h, engineCount))
     instruments.push(pfd, nd, eicas)
-    const sz = model.cockpit === 'bizjet' ? 0.2 : 0.2
+    const sz = isA380 ? 0.175 : 0.2
     const y = panelTop - 0.2
     for (const s of [-1, 1]) {
       const x0 = s * width * 0.36
@@ -116,7 +120,7 @@ export function buildCockpit(model: AircraftModel): Cockpit {
     }
     screen(eicas, sz, sz, root, new Vector3(0, y, faceZ), tilt)
     // Centre pedestal
-    box(0.36, 0.5, 0.75, panelMat, root, 0, floorY + 0.5, eye.z - 0.32)
+    box(0.36, pedestalHeight, 0.75, panelMat, root, 0, pedestalTop - pedestalHeight / 2, eye.z - 0.32)
   }
 
   // Yokes or sidesticks
@@ -156,13 +160,13 @@ export function buildCockpit(model: AircraftModel): Cockpit {
 
   // Throttle levers
   const throttles: Object3D[] = []
-  const nEng = 2
-  for (let i = 0; i < nEng; i++) {
+  const leverHeight = isA380 ? 0.14 : 0.22
+  for (let i = 0; i < engineCount; i++) {
     const lever = new Group()
-    lever.position.set((i - 0.5) * 0.08, floorY + 0.78, eye.z - 0.45)
+    lever.position.set((i - (engineCount - 1) / 2) * 0.08, pedestalTop + 0.03, eye.z - 0.45)
     root.add(lever)
-    box(0.015, 0.22, 0.015, blackMat, lever, 0, 0.11, 0)
-    box(0.06, 0.03, 0.03, blackMat, lever, 0, 0.23, 0)
+    box(0.015, leverHeight, 0.015, blackMat, lever, 0, leverHeight / 2, 0)
+    box(0.06, 0.03, 0.03, blackMat, lever, 0, leverHeight + 0.01, 0)
     throttles.push(lever)
   }
 

@@ -25,6 +25,7 @@ export interface Livery {
 export const LIVERIES: Record<string, Livery> = {
   b737: { base: '#f4f6f8', belly: '#c9d1da', stripe: '#13407a', accent: '#e5a823', tail: '#13407a', tailLogo: '#e5a823', title: 'GEOFLIGHT' },
   a320: { base: '#f6f6f4', belly: '#d7dbe0', stripe: '#b3123c', accent: '#2b2f3a', tail: '#b3123c', tailLogo: '#ffffff', title: 'GEOFLIGHT' },
+  a380: { base: '#f6f8fb', belly: '#cbd6df', stripe: '#15316a', accent: '#36b8cb', tail: '#15316a', tailLogo: '#36b8cb', title: 'GEOFLIGHT A380' },
   bizjet: { base: '#f7f7f7', belly: '#2d3440', stripe: '#8a6d3b', accent: '#2d3440', tail: '#f7f7f7', tailLogo: '#8a6d3b', title: 'N350GF' },
   longitude: { base: '#f8f8f6', belly: '#1c2a3f', stripe: '#1f6f86', accent: '#aeb6c0', tail: '#f8f8f6', tailLogo: '#1f6f86', title: 'N700GF' },
   c172: { base: '#fbfbf8', belly: '#fbfbf8', stripe: '#1f4f9c', accent: '#c8202f', tail: '#fbfbf8', tailLogo: '#1f4f9c', title: 'N172GF' },
@@ -110,8 +111,7 @@ export function paintFighterTail(livery: Livery): Texture {
   return tex
 }
 
-export interface FuselagePaint {
-  livery: Livery
+interface CabinDeckPaint {
   /** v (0 nose -> 1 tail) range with cabin windows. */
   windowFrom: number
   windowTo: number
@@ -119,10 +119,15 @@ export interface FuselagePaint {
   /** u of the window row centre (0.25 = right side midline). */
   windowU: number
   windowSize: [number, number]
+  doors: number[]
+}
+
+export interface FuselagePaint extends CabinDeckPaint {
+  livery: Livery
+  upperDeck?: CabinDeckPaint
   /** Cockpit window band (v range) and u spread from top. */
   cockpitV: [number, number]
   cockpitU: [number, number]
-  doors: number[]
   titleV: number
   ga?: boolean
 }
@@ -179,34 +184,36 @@ export function paintFuselage(p: FuselagePaint): Texture {
   g.globalCompositeOperation = 'source-atop'
   g.globalCompositeOperation = 'source-over'
 
-  // Cabin windows (both sides).
-  g.fillStyle = '#1b2430'
-  const [ww, wh] = p.windowSize
-  for (let i = 0; i < p.windowCount; i++) {
-    const v = p.windowFrom + ((p.windowTo - p.windowFrom) * i) / Math.max(1, p.windowCount - 1)
-    if (p.doors.some((d) => Math.abs(d - v) < 0.012)) continue
-    for (const u of [p.windowU, 1 - p.windowU]) {
-      const x = W * u - (W * ww) / 2
-      const y = H * v - (H * wh) / 2
-      g.beginPath()
-      g.roundRect(x, y, W * ww, H * wh, Math.min(W * ww, H * wh) * 0.45)
-      g.fill()
-      // A few shades drawn or seats dark, so the row does not look printed on.
-      const lit = [1, 0.85, 1, 0.25, 0.9, 1, 0.7, 1, 0.1, 0.95][(i * 7 + (u < 0.5 ? 0 : 3)) % 10]
-      eg.fillStyle = `rgba(255, 214, 150, ${lit})`
-      eg.beginPath()
-      eg.roundRect(x / 2, y / 2, (W * ww) / 2, (H * wh) / 2, Math.min(W * ww, H * wh) * 0.22)
-      eg.fill()
+  const decks = p.upperDeck ? [p, p.upperDeck] : [p]
+  for (const deck of decks) {
+    // Cabin windows on both sides, with a separate emissive layer for night.
+    g.fillStyle = '#1b2430'
+    const [ww, wh] = deck.windowSize
+    for (let i = 0; i < deck.windowCount; i++) {
+      const v = deck.windowFrom + ((deck.windowTo - deck.windowFrom) * i) / Math.max(1, deck.windowCount - 1)
+      if (deck.doors.some((d) => Math.abs(d - v) < 0.012)) continue
+      for (const u of [deck.windowU, 1 - deck.windowU]) {
+        const x = W * u - (W * ww) / 2
+        const y = H * v - (H * wh) / 2
+        g.beginPath()
+        g.roundRect(x, y, W * ww, H * wh, Math.min(W * ww, H * wh) * 0.45)
+        g.fill()
+        // A few shades drawn or seats dark, so the row does not look printed on.
+        const lit = [1, 0.85, 1, 0.25, 0.9, 1, 0.7, 1, 0.1, 0.95][(i * 7 + (u < 0.5 ? 0 : 3)) % 10]
+        eg.fillStyle = `rgba(255, 214, 150, ${lit})`
+        eg.beginPath()
+        eg.roundRect(x / 2, y / 2, (W * ww) / 2, (H * wh) / 2, Math.min(W * ww, H * wh) * 0.22)
+        eg.fill()
+      }
     }
-  }
-  // Doors (outlines).
-  g.strokeStyle = 'rgba(60,70,80,0.75)'
-  g.lineWidth = 3
-  for (const d of p.doors) {
-    for (const u of [p.windowU + 0.02, 1 - p.windowU - 0.02]) {
-      g.beginPath()
-      g.roundRect(W * u - W * 0.03, H * d - H * 0.012, W * 0.06, H * 0.024, 6)
-      g.stroke()
+    g.strokeStyle = 'rgba(60,70,80,0.75)'
+    g.lineWidth = 3
+    for (const d of deck.doors) {
+      for (const u of [deck.windowU + 0.02, 1 - deck.windowU - 0.02]) {
+        g.beginPath()
+        g.roundRect(W * u - W * 0.03, H * d - H * 0.012, W * 0.06, H * 0.024, 6)
+        g.stroke()
+      }
     }
   }
   // Cockpit windows: dark band split into panes.
@@ -236,7 +243,7 @@ export function paintFuselage(p: FuselagePaint): Texture {
     g.lineTo(W * u, H * cv1)
     g.stroke()
   }
-  // Title on both sides above the windows.
+  // Title above the main deck windows, between the rows on a double-decker.
   g.fillStyle = L.stripe
   g.font = `bold ${H * 0.045}px "Helvetica Neue", Arial, sans-serif`
   g.textAlign = 'center'

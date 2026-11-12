@@ -109,6 +109,7 @@ fn every_aircraft_type_completes_a_flight() {
         ("longitude", "KORD", "28R", "KMDW"),
         ("c172", "KORD", "28R", "KDPA"),
         ("f16", "KORD", "28R", "KMDW"),
+        ("a380", "KORD", "28R", "KMKE"),
     ] {
         let h = fly_route(ac, from, rwy, to, 2_400.0);
         check_route(&h, ac, to);

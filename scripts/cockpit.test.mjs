@@ -16,12 +16,62 @@ registerHooks({ resolve(specifier, context, next) {
 // Geometry/resource tests do not need a GPU or rasterized instrument text.
 // The actual canvas rendering is checked in the running application.
 globalThis.document = { createElement() {
-  const ctx = new Proxy({}, { get(target, key) { return target[key] ?? (() => {}) } })
-  return { width: 0, height: 0, getContext() { return ctx } }
+  const roundedRects = []
+  const methods = {
+    createLinearGradient: () => ({ addColorStop() {} }),
+    roundRect: (x, y, width, height) => roundedRects.push({ x, y, width, height }),
+  }
+  const ctx = new Proxy(methods, { get(target, key) { return target[key] ?? (() => {}) } })
+  return { width: 0, height: 0, roundedRects, getContext() { return ctx } }
 } }
 const { build737Cockpit } = await import('../src/aircraft/cockpit737.ts')
 const { S, Flags } = await import('../src/sim/protocol.ts')
 const eye = new Vector3(-0.52, 0.78, -16)
+
+test('A380 builds its widebody exterior, four engines, five gear legs and Airbus-style cockpit', async () => {
+  const { buildAircraft, disposeAircraftMeshes } = await import('../src/aircraft/models.ts')
+  const { buildCockpit } = await import('../src/aircraft/cockpit.ts')
+  const model = buildAircraft('a380', 3)
+  assert.equal(model.id, 'a380')
+  assert.ok(Math.abs(model.span - 79.8) < 0.001)
+  assert.ok(Math.abs(model.length - 72.7) < 0.001)
+  assert.equal(model.spinners.length, 4)
+  assert.deepEqual(model.gear.map(({ pivot }) => pivot.children.filter((child) => child.isGroup).length), [4, 6, 4, 6, 2])
+  assert.ok(model.root.getObjectByName('fuselage').layers.isEnabled(3))
+  const cabinLights = model.materials.fuselage.emissiveMap.image.roundedRects
+  assert.equal(new Set(cabinLights.map(({ x }) => x)).size, 4, 'two lit window rows per side')
+  assert.deepEqual(new Set(model.surfaces.map(({ kind }) => kind)), new Set(['flap', 'spoiler', 'aileron', 'elevator', 'rudder']))
+
+  const cockpit = buildCockpit(model)
+  let texturesDisposed = 0
+  for (const texture of [model.materials.fuselage.map, model.materials.fuselage.emissiveMap]) {
+    texture.addEventListener('dispose', () => texturesDisposed++)
+  }
+  try {
+    assert.ok(cockpit.stick)
+    assert.equal(cockpit.throttles.length, 4)
+    cockpit.update(new Float64Array(S.LEN), { pitch: 0.5, roll: 0, throttle: 1 })
+    assert.ok(cockpit.stick.rotation.x < 0)
+    assert.ok(cockpit.throttles.every((lever) => lever.rotation.x > 0))
+    const engineDisplay = cockpit.root.children.find((object) => object.material?.map === cockpit.instruments[2].texture)
+    assert.ok(engineDisplay)
+    for (const throttle of [0, 1]) {
+      cockpit.update(new Float64Array(S.LEN), { pitch: 0, roll: 0, throttle })
+      cockpit.root.updateMatrixWorld(true)
+      for (const x of [-0.07, 0, 0.07]) {
+        const direction = engineDisplay.localToWorld(new Vector3(x, -0.07, 0)).sub(model.eye).normalize()
+        const ray = new Raycaster(model.eye, direction, 0, 2)
+        assert.equal(ray.intersectObject(cockpit.root, true)[0]?.object, engineDisplay,
+          'the throttle quadrant must leave the engine display visible from the pilot seat')
+      }
+    }
+  } finally {
+    cockpit.dispose()
+    disposeAircraftMeshes(cockpit.root, false)
+    disposeAircraftMeshes(model.root)
+  }
+  assert.equal(texturesDisposed, 2, 'switching aircraft releases both livery textures')
+})
 
 function make() {
   const cockpit = build737Cockpit({ eye })

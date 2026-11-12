@@ -44,6 +44,7 @@ class SimClient {
   private eventListeners = new Set<(e: SimEvent) => void>()
   private lastInput: ControlInput = { pitch: 0, roll: 0, yaw: 0, throttle_rate: 0, brake: 0, reverse: 0 }
   private lastInputSent = 0
+  private transportReady = false
   readonly ready: Promise<void>
   snapshotsReceived = 0
 
@@ -68,7 +69,7 @@ class SimClient {
     this.ready = this.transport.start(
       (s) => this.onSnapshot(s),
       (events) => events.forEach((e) => this.eventListeners.forEach((l) => l(e))),
-    )
+    ).then(() => { this.transportReady = true })
   }
 
   get transportKind() {
@@ -159,6 +160,7 @@ class SimClient {
 
   /** Sends pilot inputs; deduplicated, with a 4 Hz keep-alive. */
   setInput(input: ControlInput) {
+    if (!this.transportReady) return
     const now = performance.now()
     const p = this.lastInput
     const same =
@@ -175,7 +177,8 @@ class SimClient {
   }
 
   command(cmd: SimCommand) {
-    this.transport.sendCommand(cmd)
+    if (this.transportReady) this.transport.sendCommand(cmd)
+    else void this.ready.then(() => this.transport.sendCommand(cmd), () => {})
   }
 
   query<T>(q: WorldQuery): Promise<T> {

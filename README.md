@@ -4,7 +4,7 @@ A macOS desktop flight simulator for exploring a real, photorealistic Earth.
 Built with **Tauri 2 + Rust** (simulation) and **React + TypeScript + Three.js /
 React Three Fiber** (rendering and UI).
 
-Pick an aircraft (737‑style, A320‑style, business jet, Longitude‑style super‑midsize jet or Cessna‑style single), choose any of
+Pick an aircraft (including the four-engine Airbus A380-800 double-decker), choose any of
 ~9,600 real airports or any point on the globe, take off with one simple control
 scheme, and fly over streamed, geographically accurate scenery: Google Photorealistic
 3D Tiles (real buildings and landmarks), Cesium ion, or a free open‑data terrain mode.
