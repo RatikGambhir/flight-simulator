@@ -5,14 +5,73 @@ import { BoxGeometry, Color, Group, Matrix4, Mesh, MeshBasicMaterial, MeshStanda
 import { TerrainNormalPass } from '../src/scene/TerrainNormalPass.ts'
 import { EffectPass } from 'postprocessing'
 import { readFileSync } from 'node:fs'
-import { CloudHistory, setCloudNightLighting, stabilizeClouds, stabilizeNightClouds } from '../src/scene/cloudRendering.ts'
+import { createHash } from 'node:crypto'
+import { CloudHistory, driftCloudField, setCloudNightLighting, stabilizeClouds, stabilizeNightClouds } from '../src/scene/cloudRendering.ts'
 import { hingeFrame, setHingeAngle, wingPanelGeometry, wingPoint, wingUpperPoint } from '../src/aircraft/geometry.ts'
 import { FlightPrefetch } from '../src/world/flightPrefetch.ts'
 import { buildLakeGeometry, distanceToLake, lakeGeoid } from '../src/scene/lakeGeometry.ts'
-import { ecefToGeodetic } from '../src/world/frame.ts'
+import { ecefToGeodetic, frame, geodeticToEcef } from '../src/world/frame.ts'
+import { WaterCoordinates } from '../src/scene/WaterCoordinates.ts'
 import { MAX_LAMPS, NightEffect } from '../src/scene/NightEffect.ts'
 import { CockpitLighting } from '../src/aircraft/cockpitLighting.ts'
 import { CLOUD_LEVELS, cloudBudget, initialCloudLevel, MAX_RENDER_PIXELS, sceneDpr } from '../src/scene/renderBudget.ts'
+import { BASE_EXPOSURE, twilightExposure } from '../src/scene/exposure.ts'
+
+test('cached cloud formations drift coherently in metres independent of frame rate', () => {
+  const effects = [new CloudsEffect(new PerspectiveCamera()), new CloudsEffect(new PerspectiveCamera())]
+  try {
+    for (let i = 0; i < effects.length; i++) {
+      const effect = effects[i]
+      stabilizeClouds(effect)
+      const hz = i === 0 ? 30 : 120
+      for (let frame = 0; frame < hz * 2; frame++) driftCloudField(effect, new Vector3(5, -2, 0), 1 / hz)
+      const field = effect.cloudsPass.currentMaterial.uniforms.cloudFieldOffset
+      assert.ok(field.value.distanceTo(new Vector3(-10, 4, 0)) < 1e-10)
+      assert.equal(field, effect.shadowPass.currentMaterial.uniforms.cloudFieldOffset)
+      assert.equal(effect.shapeVelocity.length(), 0)
+      assert.equal(effect.shapeDetailVelocity.length(), 0)
+      const before = field.value.clone()
+      driftCloudField(effect, new Vector3(), 1 / hz)
+      assert.ok(field.value.equals(before), 'calm air leaves the cached cloud field fixed')
+      driftCloudField(effect, new Vector3(5, 0, 0), 30)
+      assert.ok(field.value.distanceTo(before) <= 0.5, 'resuming after a pause cannot jump the cloud field')
+    }
+  } finally { effects.forEach(effect => effect.dispose()) }
+})
+
+test('cloud jitter uses the verified upstream blue-noise volume rather than patterned fallback noise', () => {
+  const bytes = readFileSync(new URL('../public/clouds/stbn.bin', import.meta.url))
+  assert.equal(bytes.length, 128 * 128 * 64)
+  assert.equal(createHash('sha256').update(bytes).digest('hex'),
+    '51f52f21e5578384585050390821a0a486dcb81e11a716fa7b92fbb6515ba852')
+})
+
+test('water coordinates follow distant locations without stretching and survive local rebases', () => {
+  const original = frame.origin.clone()
+  const water = new WaterCoordinates()
+  try {
+    for (const [lat, lon] of [[41.98, -87.9], [35.55, 139.79], [37.55, -123.25], [-33.95, 151.18], [78.2, 15.6]]) {
+      const origin = geodeticToEcef(lat, lon, 100)
+      frame.setOrigin(origin.x, origin.y, origin.z)
+      water.update(frame)
+      const base = new Vector3().applyMatrix4(water.matrix)
+      const east = new Vector3(100, 0, 0).applyMatrix4(water.matrix).sub(base)
+      const south = new Vector3(0, 0, 100).applyMatrix4(water.matrix).sub(base)
+      assert.ok(Math.abs(Math.hypot(east.x, east.z) - 100) < 1e-6, `${lat},${lon}: east scale`)
+      assert.ok(Math.abs(Math.hypot(south.x, south.z) - 100) < 1e-6, `${lat},${lon}: south scale`)
+      assert.ok(Math.abs(east.x * south.x + east.z * south.z) < 1e-6, 'wave axes stay orthogonal')
+      assert.ok(base.length() < 1e-5, 'GPU wave coordinates stay local, not Earth-sized')
+      const sample = new Vector3(1500, -100, -2500)
+      const ecef = frame.worldToEcef(sample)
+      const before = sample.clone().applyMatrix4(water.matrix)
+      const shifted = frame.worldToEcef(new Vector3(1400, 0, 1400))
+      frame.setOrigin(shifted.x, shifted.y, shifted.z)
+      water.update(frame)
+      const after = frame.ecefToWorld(ecef.x, ecef.y, ecef.z).applyMatrix4(water.matrix)
+      assert.ok(before.distanceTo(after) < 1e-7, 'ordinary origin shifts do not move the waves')
+    }
+  } finally { frame.setOrigin(original.x, original.y, original.z) }
+})
 
 test('scene resolution matches the display and never drops to 1x on Retina at 100% scale', () => {
   const window1600 = 1600 * 960
@@ -337,18 +396,213 @@ test('compatibility patches apply to the installed cloud shaders and are idempot
     assert.match(sources[0], /if \(frontDepth > 1.0\)/)
     assert.match(sources[1], /isnan\(historyColor\)/)
     assert.match(sources[3], /isnan\(history\)/)
-    // Temporal upscaling: rejected, near and moving pixels use a depth-aware, jitter-aligned
+    // Every ray samples the same shells of distance from the camera, clipped to the ray
+    // (so rays that end on nearby geometry are integrated exactly), and never takes its
+    // sample positions from per-frame noise or from where it entered the cloud shell.
+    const primaryMarch = sources[0].split('vec4 marchClouds(')[1].split('float marchShadowLength(')[0]
+    assert.match(sources[0], /float marchLatticeFloor\(const float t\)/)
+    assert.match(primaryMarch, /float cellStart = marchLatticeFloor\(rayNearFar\.x\);/)
+    assert.match(primaryMarch, /float cellStep = min\(maxStepSize, minStepSize \+ growth \* cellFrom\);/,
+      'horizon rays must not grow unbounded')
+    assert.match(primaryMarch, /stepSize = min\(cellStart, rayNearFar\.y\) - segmentStart;/)
+    assert.doesNotMatch(primaryMarch, /stepSize \*= perspectiveStepScale|jitter \* 2\.0|rayDistance \+= /,
+      'no step may depend on noise or on the ray\'s own entry point')
+    // Strides only cross the gaps between layers, and the last one is always retraced.
+    assert.equal(primaryMarch.split('strideEnd = segmentStart + maxStepSize').length, 2)
+    assert.match(primaryMarch, /#endif \/\/ !defined\(DEBUG_MARCH_INTERVALS\)\s*if \(rewindTo >= 0\.0\) \{\s*fineUntil = cellStart;\s*cellStart = rewindTo;/)
+    assert.match(primaryMarch, /if \(!any\(greaterThan\(weather\.density, vec4\(minDensity\)\)\)\) \{[^}]*\n\s*continue;\s*\}/)
+    // Each cell is probed three times and lit once, where its visible cloud lies; the
+    // cloud around the camera is thinned so the aircraft stays readable inside an overcast.
+    assert.match(primaryMarch, /for \(int probeIndex = 0; probeIndex < 3; \+\+probeIndex\)/)
+    assert.match(primaryMarch, /float nearClear = smoothstep\(0.0, 250.0, rayNearFar.x \+ probeDistance\);/)
+    assert.match(primaryMarch, /rayDistance = seenDistance \/ seen;\s*position = rayDistance \* rayDirection \+ rayOrigin;/)
+    assert.match(primaryMarch, /media\.extinction = opticalDepth \/ stepSize;/)
+    // Low sun: cloud with an open view downward sheds the deck's far shadow, and the
+    // warm glow around the sun is split from the rest of the sky light. Both fade out
+    // with the sun well up, so daylight is untouched.
+    assert.match(sources[0], /float lowSun = 1\.0 - smoothstep\(0\.0175, 0\.1564, dot\(sunDirection, surfaceNormal\)\);/)
+    assert.match(sources[0], /opticalDepth \+= shadowDepth \* \(1\.0 - lowSun \* underside\);/)
+    assert.match(sources[0], /underside = mix\(exp\(-groundOpticalDepth\), underside, smoothstep\(0\.3, 0\.5, mipLevel\)\);/)
+    assert.equal(sources[0].split('approximateRadianceFromGround(').length, 3, 'the ground march runs once per lit cell')
+    assert.match(sources[0], /vec3 warmSky = min\(vTwilightGlow, skyIrradiance\);/)
+    assert.match(sources[0], /\(skyIrradiance - warmSky\) \* skyGradient \+ warmSky \* mix\(0\.25, 2\.2, facingGlow\)/)
+    const vertex = effect.cloudsPass.currentMaterial.vertexShader
+    assert.match(vertex, /vTwilightGlow = twilightGlow\(vCameraPosition \+ altitudeCorrection\);/)
+    assert.match(vertex, /float lowSun = 1\.0 - smoothstep\(0\.1045, 0\.2419, elevation\);/)
+    assert.equal(vertex.split('vec3 twilightGlow(').length, 2, 'patched once')
+    // The noise a ray uses is fixed to its full-resolution pixel, not to the frame.
+    assert.match(sources[0], /float stbn = stableNoise\(\);/)
+    assert.match(sources[0], /vec3\(gl_FragCoord\.xy \* 4\.0 \+ temporalJitter \* resolution, 0\.5\) \* scale/)
+    assert.match(sources[0], /color\.rgb = color\.rgb \* \(1\.0 - haze\.a\) \+ haze\.rgb;/,
+      'haze radiance is already premultiplied by its opacity')
+    assert.doesNotMatch(sources[0], /density \/ hazeExponent \/ angle/,
+      'horizon haze must remain well-conditioned for grazing rays')
+    assert.doesNotMatch(sources[2], /nearClear/, 'cloud shadows keep their full density')
+    // Temporal upscaling: rejected and near pixels use a depth-aware, jitter-aligned
     // reconstruction of the current frame, never one low-resolution texel per 4x4 block.
     const [upscale, taa] = sources[1].split('void temporalAntialiasing(')
-    assert.match(upscale, /upscaleWeights\(vUv, center, base, weights\)/)
-    assert.match(upscale, /center < nearHistoryDepth/)
+    assert.match(upscale, /upscaleWeights\(vUv, center, base, weights, nearest\)/)
+    assert.match(upscale, /bool near = center < nearHistoryDepth;/)
     assert.match(upscale, /outputColor = spatialColor;/)
-    assert.match(upscale, /mix\(settled, mix\(clippedColor, spatialColor, 0.2\), moving\)/)
-    assert.equal(effect.cloudsPass.resolveMaterial.uniforms.varianceGamma.value, 1.25)
+    // History is read where the camera's move and the wind's drift put the cloud last
+    // frame, on every frame, whether or not a march ran. Offsetting it by the per-frame
+    // jitter slid the whole cloud image a different way every frame (a shaking horizon).
+    assert.match(upscale, /vec4 prevClip = historyClipFromView \* vec4\(viewPoint, 1\.0\);/)
+    // The pixel's ray comes from its point on the near plane. On the far plane (20,000 km)
+    // the unprojected w is the difference of two nearly equal single-precision numbers:
+    // zero with the cockpit's 3 cm near plane, so every pixel's history was rejected.
+    assert.match(upscale, /vec4 nearPoint = viewFromClip \* vec4\(vUv \* 2\.0 - 1\.0, -1\.0, 1\.0\);/)
+    for (const near of [0.03, 0.3]) {
+      const inverse = new Float32Array(new PerspectiveCamera(58, 1.6, near, 2e7).projectionMatrixInverse.elements)
+      const w = (z) => Math.fround(Math.fround(inverse[11] * z) + inverse[15])
+      assert.ok(Math.abs(w(-1) * near - 1) < 1e-4, 'the near plane unprojects exactly')
+      assert.ok(Math.abs(w(1)) < 1e-5, 'the far plane does not survive single precision')
+    }
+    assert.match(upscale, /depthVelocity\.r - cloudDriftView;/)
+    assert.doesNotMatch(upscale, /prevUv[^;]*jitterOffset|depthVelocity\.gb/)
+    assert.doesNotMatch(upscale, /getClosestFragment\(lowResCoord\)/, 'cloud never inherits the aircraft\'s motion')
+    assert.match(upscale, /step\(nearHistoryDepth, depth\)/, 'history is not clipped to cloud cut short by the aircraft')
+    // A pixel takes the sample marched through it outright, and only on a frame that
+    // marched; a still image is neither clipped nor eased, so it cannot change.
+    assert.match(upscale, /float fresh = step\(freshRows\.x, ownRow\) \* step\(ownRow, freshRows\.y\) \*/)
+    assert.match(upscale, /outputColor = mix\(historyColor, freshColor, fresh\);/)
+    assert.match(upscale, /historyColor = mix\(historyColor, mix\(clippedColor, spatialColor, upscaleFreshWeight\), moving\);/)
+    assert.match(upscale, /if \(moving > 0\.0 \|\| horizonFilter > 0\.0\) \{/)
+    assert.match(upscale, /outputColor = spatialColor \* nearFade;/)
+    assert.match(upscale, /clippedColor.a = clamp/)
+    assert.doesNotMatch(upscale, /pow\(nearest, 4.0\)/)
+    assert.equal(effect.cloudsPass.resolveMaterial.uniforms.upscaleFreshWeight.value, 0.08)
+    assert.equal(effect.cloudsPass.resolveMaterial.uniforms.varianceGamma.value, 2)
     assert.doesNotMatch(upscale, /outputColor = currentColor;\s*#ifdef SHADOW_LENGTH\s*outputShadowLength = currentShadowLength.r;\s*#endif \/\/ SHADOW_LENGTH\s*return; \/\/ Rejection/)
     assert.doesNotMatch(taa, /spatialColor/)
     assert.ok(effect.cloudsPass.resolveMaterial.uniforms.sceneDepthBuffer)
   } finally { effect.dispose() }
+})
+
+test('the cloud shadow maps and the cloud march take turns, and nothing waits after a cut or a rebase', () => {
+  const camera = new PerspectiveCamera(58, 1.6, 0.3, 2e7)
+  const effect = new CloudsEffect(camera)
+  try {
+    // Count the library's own work underneath the pacing.
+    const ran = { fit: 0, shadows: 0, march: 0, resolve: 0 }
+    const frames = []
+    effect.shadowMaps.update = () => { ran.fit++ }
+    effect.shadowPass.update = () => { ran.shadows++ }
+    const scissors = []
+    effect.cloudsPass.currentPass.render = () => {
+      ran.march++
+      const target = effect.cloudsPass.currentRenderTarget
+      scissors.push(target.scissorTest ? `${target.scissor.y}+${target.scissor.w}` : 'all')
+    }
+    effect.cloudsPass.update = function (_renderer, frame) {
+      frames.push(frame)
+      this.currentPass.render()
+      ran.resolve++
+    }
+    stabilizeClouds(effect)
+    const resolve = effect.cloudsPass.resolveMaterial.uniforms
+    const target = effect.cloudsPass.currentRenderTarget
+    target.setSize(64, 40)
+    const fresh = []
+    const frame = () => {
+      effect.shadowMaps.update(camera, new Vector3(0, 1, 0))
+      effect.shadowPass.update(null, 0, 0)
+      effect.cloudsPass.update(null, 0, 0)
+      fresh.push(resolve.freshRows.value.toArray().join('-'))
+    }
+    resolve.resetHistory.value = true
+    frame()
+    assert.deepEqual(ran, { fit: 1, shadows: 1, march: 1, resolve: 1 }, 'the first frame draws everything')
+    resolve.resetHistory.value = false
+    effect.shadowPass.resolveMaterial.uniforms.resetHistory.value = false
+    for (let i = 0; i < 8; i++) frame()
+    assert.deepEqual(ran, { fit: 3, shadows: 3, march: 7, resolve: 9 },
+      'then the lower half of the march, its upper half and the shadow maps take a frame each')
+    assert.deepEqual(fresh, ['0-1', '0-0.5', '0.5-1', '2-2', '0-0.5', '0.5-1', '2-2', '0-0.5', '0.5-1'],
+      'the resolve only takes samples from the rows marched this frame')
+    assert.deepEqual(frames, [1, 2, 2, 2, 3, 3, 3, 4, 4], 'the sample position advances once per whole march')
+    // Each half of the target is reconstructed with the position it was marched at,
+    // which is the library's own jitter for that march frame.
+    const libraryJitter = (marchFrame) => {
+      resolve.frame.value = marchFrame
+      effect.cloudsPass.resolveMaterial.onBeforeRender()
+      return resolve.jitterOffset.value.toArray()
+    }
+    assert.deepEqual(resolve.halfJitter.value.toArray(), [...libraryJitter(4), ...libraryJitter(4)])
+    frame()
+    assert.deepEqual(resolve.halfJitter.value.toArray(), [...libraryJitter(4), ...libraryJitter(4)])
+    frame()
+    assert.deepEqual(resolve.halfJitter.value.toArray(), [...libraryJitter(5), ...libraryJitter(4)],
+      'a new position starts in the lower half while the upper still holds the last')
+    assert.notDeepEqual(libraryJitter(5), libraryJitter(4))
+    assert.equal(resolve.halfSplit.value, 0.5)
+    assert.deepEqual(scissors.slice(0, 5), ['all', '0+20', '20+20', '0+20', '20+20'])
+    assert.equal(target.scissorTest, false)
+    // A cut (history reset) and a floating-origin rebase both run everything at once.
+    resolve.resetHistory.value = true
+    frame()
+    resolve.resetHistory.value = false
+    assert.deepEqual(ran, { fit: 5, shadows: 5, march: 9, resolve: 12 })
+    assert.equal(fresh.at(-1), '0-1')
+    const history = new CloudHistory()
+    effect.setSize(1280, 800)
+    history.update(effect, camera, 1, 'chase', 'high')
+    resolve.resetHistory.value = false
+    frame()
+    const before = { ...ran }
+    history.rebase(new Matrix4().makeTranslation(1400, 0, -900), 2)
+    frame()
+    assert.deepEqual(ran, { fit: before.fit + 1, shadows: before.shadows + 1, march: before.march + 1, resolve: before.resolve + 1 },
+      'a march never reads shadow cascades fitted in the old world frame')
+    // The resolve reprojects through last frame's camera, moved with the world on a rebase.
+    camera.position.set(30, 0, 0)
+    camera.updateMatrixWorld()
+    frame()
+    const reprojected = new Vector3(0, 0, -1000).applyMatrix4(resolve.historyClipFromView.value)
+    const expected = new Vector3(30, 0, -1000).applyMatrix4(camera.projectionMatrix)
+    assert.ok(reprojected.distanceTo(expected) < 1e-9)
+  } finally { effect.dispose() }
+})
+
+test('exposure opens up through sunset and twilight only, continuously, and less under an open sky', () => {
+  const sin = (degrees) => Math.sin(degrees * Math.PI / 180)
+  assert.equal(BASE_EXPOSURE, 10)
+  // Daylight and full night keep the exposure everything else is balanced against.
+  for (const degrees of [90, 45, 12, -10.5, -18, -90]) assert.equal(twilightExposure(sin(degrees)), 1)
+  for (const open of [0, 1]) assert.equal(twilightExposure(sin(30), open), 1)
+  let previous = twilightExposure(sin(-12))
+  let peak = 0
+  let peakAt = 0
+  for (let degrees = -12; degrees <= 14; degrees += 0.05) {
+    const gain = twilightExposure(sin(degrees))
+    assert.ok(Math.abs(gain - previous) < 0.03, `no jump at ${degrees.toFixed(2)} deg`)
+    assert.ok(gain >= 1)
+    if (gain > peak) { peak = gain; peakAt = degrees }
+    // Under an open sky the bright glow is in view: half the lift, never less than none.
+    const open = twilightExposure(sin(degrees), 1)
+    assert.ok(Math.abs(open - (1 + (gain - 1) / 2)) < 1e-9)
+    previous = gain
+  }
+  assert.ok(peak > 3 && peak < 4 && peakAt < 0 && peakAt > -6, 'the lift peaks in civil twilight')
+  assert.ok(twilightExposure(sin(1)) > 2.5, 'a sunset under cloud is no longer near-black')
+  assert.equal(twilightExposure(NaN), 1)
+})
+
+test('the march iteration limit reaches the far end of the longest ray at every quality and level', () => {
+  for (const quality of ['low', 'medium', 'high', 'ultra']) {
+    for (let level = 0; level < CLOUD_LEVELS.length; level++) {
+      const b = cloudBudget(quality, level)
+      let distance = 0
+      let cells = 0
+      const reach = quality === 'low' ? 1e5 : 2e5
+      while (distance < reach) {
+        distance += Math.min(1000, b.minStepSize + (b.perspectiveStepScale - 1) * distance)
+        cells++
+      }
+      assert.ok(b.maxIterationCount >= cells, `${quality} L${level}: ${b.maxIterationCount} < ${cells}`)
+      assert.ok(b.maxIterationCount <= cells + 64, `${quality} L${level} marches further than it shows`)
+    }
+  }
 })
 
 test('terrain normal pass draws displaced tiles with bump-mapped normals and always restores materials', () => {
@@ -463,6 +717,78 @@ for (const [name, change] of [
     } finally { state.effect.dispose() }
   })
 }
+
+test('cloud shadow passes bind a resized array target before the library looks up its texture', () => {
+  const { effect } = setup()
+  try {
+    for (const pass of [effect.shadowPass.currentPass, effect.shadowPass.resolvePass]) {
+      const output = {}
+      const calls = []
+      const renderer = {
+        setRenderTarget: (target) => calls.push(target),
+        // The library's own first step. Before the fix this ran with no GL texture to find.
+        properties: { get: () => { calls.push('lookup'); throw new Error('stop') } },
+      }
+      assert.throws(() => pass.render(renderer, null, output), /stop/)
+      assert.deepEqual(calls, [output, 'lookup'])
+    }
+  } finally { effect.dispose() }
+})
+
+test('resizing the cloud shadow maps discards the shadow history only', () => {
+  const { effect, update } = setup()
+  try {
+    update()
+    update()
+    effect.shadowMaps.mapSize.set(320, 320)
+    update()
+    assert.equal(effect.shadowPass.resolveMaterial.uniforms.resetHistory.value, true)
+    assert.equal(effect.cloudsPass.resolveMaterial.uniforms.resetHistory.value, false)
+    update()
+    assert.equal(effect.shadowPass.resolveMaterial.uniforms.resetHistory.value, false)
+  } finally { effect.dispose() }
+})
+
+test('a floating-origin rebase carries last frame\'s reprojection into the new world frame', () => {
+  const { effect, camera, history, update, isReset } = setup()
+  try {
+    camera.position.set(1200, 300, -2500)
+    camera.updateMatrixWorld()
+    update()
+    update()
+    const march = effect.cloudsPass.currentMaterial
+    march.copyReprojectionMatrix(camera)
+    // What a rendered frame leaves behind for the resolve's own reprojection.
+    const cadence = march.userData.geoflightCadence
+    cadence.previousView = camera.matrixWorldInverse.clone()
+    cadence.force = false
+    const cascade = effect.shadowPass.currentMaterial.uniforms.reprojectionMatrices.value[0]
+    cascade.makeRotationX(0.3).setPosition(5, 6, 7)
+    const point = new Vector3(400, 900, -6000)
+    const seen = point.clone().applyMatrix4(march.previousViewMatrix)
+    const shadowed = point.clone().applyMatrix4(cascade)
+
+    // The origin moves 2.9 km and the axes turn with the local vertical.
+    const worldFromOld = new Matrix4().makeRotationY(0.0004).setPosition(-2900, 1.2, 310)
+    history.rebase(worldFromOld, 2)
+    camera.position.applyMatrix4(worldFromOld)
+    camera.updateMatrixWorld()
+    point.applyMatrix4(worldFromOld)
+    assert.ok(point.clone().applyMatrix4(march.previousViewMatrix).distanceTo(seen) < 1e-6)
+    assert.ok(point.clone().applyMatrix4(cadence.previousView).distanceTo(seen) < 1e-6)
+    assert.equal(cadence.force, true, 'the shadow cascades are refitted in the new frame at once')
+    assert.ok(point.clone().applyMatrix4(cascade).distanceTo(shadowed) < 1e-6)
+    update(2)
+    assert.equal(isReset(), false, 'history survives the rebase')
+
+    // A rebase the history was not told about still resets, as does a respawn far away.
+    update(3)
+    assert.equal(isReset(), true)
+    history.rebase(new Matrix4().setPosition(9e5, 0, 0), 4)
+    update(4)
+    assert.equal(isReset(), true)
+  } finally { effect.dispose() }
+})
 
 test('turning clouds back on rejects the previous effect’s history', () => {
   const { effect, camera, history, update } = setup()

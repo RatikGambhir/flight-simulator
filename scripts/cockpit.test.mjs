@@ -161,3 +161,89 @@ test('Skyhawk cockpit builds with working throttle, flap and yoke controls', asy
     for (const m of materials) m.dispose()
   }
 })
+
+test('Airbus flight decks stay batched, keep every display in view and wire the working controls', async () => {
+  const { buildAircraft, disposeAircraftMeshes } = await import('../src/aircraft/models.ts')
+  const { buildCockpit } = await import('../src/aircraft/cockpit.ts')
+  for (const [id, engines] of [['a320', 2], ['a380', 4]]) {
+    const model = buildAircraft(id, 3)
+    const cockpit = buildCockpit(model)
+    try {
+      const meshes = []
+      cockpit.root.traverse((o) => { if (o instanceof Mesh) meshes.push(o) })
+      assert.ok(meshes.length < 150, `${id}: ${meshes.length} draw calls for the cockpit`)
+      assert.ok(meshes.some((m) => m.name === 'airbus-static-panel'))
+      assert.equal(cockpit.throttles.length, engines)
+      assert.equal(cockpit.yoke, null)
+      for (const m of meshes) {
+        const position = m.geometry.getAttribute('position')
+        for (let i = 0; i < position.count * 3; i++) assert.ok(Number.isFinite(position.array[i]))
+      }
+      // Every working control is wired, and nothing baked into the panel is clickable.
+      const active = meshes.filter((m) => m.userData.cockpitCommand)
+      assert.deepEqual(new Set(active.map((m) => m.userData.cockpitCommand.type)),
+        new Set(['toggle_gear', 'autopilot', 'toggle_autopilot', 'set_throttle', 'toggle_spoilers', 'flaps_down']))
+      assert.ok(meshes.filter((m) => m.name === 'airbus-static-panel').every((m) => !m.userData.cockpitCommand))
+      // From the captain's eye: all live displays and the autopilot controls are in plain view,
+      // with the thrust levers at either end of their travel.
+      const displays = meshes.filter((m) => m.name === 'live-display')
+      assert.equal(new Set(displays.map((m) => m.material.map)).size, cockpit.instruments.length)
+      for (const throttle of [0, 1]) {
+        cockpit.update(new Float64Array(S.LEN), { pitch: 0, roll: 0, throttle })
+        cockpit.root.updateMatrixWorld(true)
+        const targets = [...displays.filter((m) => m.position.x <= 0.2), ...active.filter((m) => ['autopilot', 'toggle_autopilot', 'toggle_gear'].includes(m.userData.cockpitCommand.type))]
+        for (const m of targets) {
+          const target = m.getWorldPosition(new Vector3())
+          const hit = new Raycaster(model.eye, target.sub(model.eye).normalize(), 0, 3).intersectObject(cockpit.root, true)[0]
+          assert.ok(hit?.object === m || (m.userData.cockpitCommand && hit?.object.userData.cockpitCommand === m.userData.cockpitCommand),
+            `${id}: ${m.userData.cockpitLabel ?? 'display'} at x=${m.position.x.toFixed(2)} is hidden behind ${hit?.object.name || 'another part'}`)
+        }
+      }
+      const s = new Float64Array(S.LEN)
+      s[S.GEAR] = 1
+      cockpit.update(s, { pitch: 0.5, roll: -0.5, throttle: 0.98 })
+      assert.ok(cockpit.stick.rotation.x < 0 && cockpit.stick.rotation.z > 0)
+      const grips = meshes.filter((m) => m.userData.cockpitCommand?.type === 'set_throttle')
+      assert.ok(grips.length >= engines)
+      for (const grip of grips) assert.equal(grip.userData.cockpitCommand.value, 1)
+    } finally {
+      cockpit.dispose()
+      disposeAircraftMeshes(cockpit.root, false)
+      disposeAircraftMeshes(model.root)
+    }
+  }
+})
+
+test('instruments are redrawn in turn, each on time, and unchanged ones are skipped', async () => {
+  const { InstrumentCanvas, InstrumentSchedule } = await import('../src/aircraft/instruments.ts')
+  const drawn = [0, 0, 0, 0, 0, 0]
+  const instruments = drawn.map((_, i) => new InstrumentCanvas(8, 8, () => { drawn[i]++ }))
+  try {
+    const schedule = new InstrumentSchedule(instruments, 50)
+    const s = new Float64Array(S.LEN)
+    schedule.update(s, 1000)
+    assert.deepEqual(drawn, [1, 1, 1, 1, 1, 1], 'nothing starts blank')
+    // 60 frames a second for one second: never more than a third of the deck in a frame.
+    let busiest = 0
+    for (let frame = 1; frame <= 60; frame++) {
+      const before = drawn.reduce((a, b) => a + b)
+      schedule.update(s, 1000 + frame * 1000 / 60)
+      busiest = Math.max(busiest, drawn.reduce((a, b) => a + b) - before)
+    }
+    assert.ok(busiest <= 3, `${busiest} instruments redrawn in one frame`)
+    for (const count of drawn) assert.ok(count >= 20 && count <= 22, `each refreshed 20 times a second (${count - 1})`)
+    // A long pause does not turn into a burst of catching up.
+    const before = drawn.reduce((a, b) => a + b)
+    schedule.update(s, 60000)
+    assert.ok(drawn.reduce((a, b) => a + b) - before <= 6)
+    // An instrument with a signature only redraws when what it shows changes.
+    let redraws = 0
+    const windowed = new InstrumentCanvas(8, 8, () => { redraws++ }, (state) => Math.round(state[S.AP_ALT_FT] / 100))
+    assert.equal(windowed.update(s), true)
+    assert.equal(windowed.update(s), false)
+    s[S.AP_ALT_FT] = 12000
+    assert.equal(windowed.update(s), true)
+    assert.equal(redraws, 2)
+    windowed.dispose()
+  } finally { instruments.forEach((i) => i.dispose()) }
+})

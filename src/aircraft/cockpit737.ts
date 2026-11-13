@@ -1,67 +1,11 @@
 // A dedicated 737NG interior. Coordinates are metres, relative to pilot eye
 // height/fore-aft position, with x=0 on the aircraft centreline.
-import {
-  BoxGeometry, CanvasTexture, CylinderGeometry, DoubleSide, Group, Mesh,
-  MeshBasicMaterial, MeshStandardMaterial, PlaneGeometry, SRGBColorSpace,
-  Vector3, type BufferGeometry, type Material, type Object3D,
-} from 'three'
-import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
+import { CylinderGeometry, Group, Mesh, MeshBasicMaterial, PlaneGeometry, type Object3D } from 'three'
 import { Flags, S, type SimCommand } from '../sim/protocol'
 import type { Cockpit } from './cockpit'
 import type { AircraftModel } from './models'
-import { drawND, drawPFD, InstrumentCanvas } from './instruments'
-
-type Draw = (g: CanvasRenderingContext2D, w: number, h: number) => void
-const INK = '#e3e4de'
-const PANEL = '#3d444c'
-
-function text(g: CanvasRenderingContext2D, value: string, x: number, y: number, size = 18, color = INK) {
-  g.fillStyle = color
-  g.font = `500 ${size}px Arial, sans-serif`
-  g.textAlign = 'center'
-  g.textBaseline = 'middle'
-  g.fillText(value, x, y)
-}
-
-function screw(g: CanvasRenderingContext2D, x: number, y: number) {
-  g.fillStyle = '#272a2d'
-  g.beginPath(); g.arc(x, y, 5, 0, Math.PI * 2); g.fill()
-  g.strokeStyle = '#aaa9a0'; g.lineWidth = 1
-  g.beginPath(); g.moveTo(x - 3, y); g.lineTo(x + 3, y); g.stroke()
-}
-
-function panelBackground(g: CanvasRenderingContext2D, w: number, h: number) {
-  g.fillStyle = PANEL; g.fillRect(0, 0, w, h)
-  // Fine deterministic stipple, baked once, gives painted metal a tactile finish.
-  for (let y = 0; y < h; y += 3) for (let x = 0; x < w; x += 3) {
-    const n = ((x * 73 + y * 137) % 31) / 31
-    g.fillStyle = `rgba(${n > 0.5 ? '255,255,255' : '0,0,0'},0.035)`
-    g.fillRect(x, y, 1, 1)
-  }
-  g.strokeStyle = '#292c2f'; g.lineWidth = 3; g.strokeRect(2, 2, w - 4, h - 4)
-  for (const x of [14, w - 14]) for (const y of [14, h - 14]) screw(g, x, y)
-}
-
-function button(g: CanvasRenderingContext2D, label: string, x: number, y: number, w = 65, h = 37, light = false) {
-  g.fillStyle = '#24282b'; g.fillRect(x - w / 2, y - h / 2, w, h)
-  g.strokeStyle = '#777b7a'; g.lineWidth = 1; g.strokeRect(x - w / 2, y - h / 2, w, h)
-  const rows = label.split('\n')
-  rows.forEach((row, i) => text(g, row, x, y + (i - (rows.length - 1) / 2) * 13, 12))
-  if (light) { g.fillStyle = '#6bd890'; g.fillRect(x - w / 2 + 5, y - h / 2 + 3, w - 10, 3) }
-}
-
-function dial(g: CanvasRenderingContext2D, x: number, y: number, r: number, label: string) {
-  g.fillStyle = '#161c20'; g.beginPath(); g.arc(x, y, r, 0, 2 * Math.PI); g.fill()
-  g.strokeStyle = '#b6bbb9'; g.lineWidth = 2; g.stroke()
-  for (let i = 0; i < 12; i++) {
-    const a = i / 12 * Math.PI * 2
-    g.beginPath(); g.moveTo(x + Math.sin(a) * r * 0.78, y - Math.cos(a) * r * 0.78)
-    g.lineTo(x + Math.sin(a) * r * 0.92, y - Math.cos(a) * r * 0.92); g.stroke()
-  }
-  g.beginPath(); g.moveTo(x, y); g.lineTo(x + r * 0.46, y - r * 0.6); g.stroke()
-  text(g, label, x, y + r * 0.42, r * 0.24)
-}
+import { button, cockpitMaterial, createCockpitKit, dial, INK, PANEL, panelBackground, screw, text } from './cockpitKit'
+import { drawND, drawPFD, InstrumentCanvas, InstrumentSchedule } from './instruments'
 
 function drawFmc(g: CanvasRenderingContext2D, w: number, h: number) {
   panelBackground(g, w, h)
@@ -163,47 +107,12 @@ function draw737Engines(g: CanvasRenderingContext2D, s: Float64Array, w: number,
 export function build737Cockpit(model: AircraftModel): Cockpit {
   const root = new Group(); root.name = 'cockpit'
   root.position.set(0, model.eye.y, model.eye.z)
-  const staticRoot = new Group(); root.add(staticRoot)
-  const textures: CanvasTexture[] = []
   const instruments: InstrumentCanvas[] = []
-  const material = (color: string, roughness = 0.85) => new MeshStandardMaterial({ color, roughness, metalness: 0.04, emissive: color, emissiveIntensity: 0.12 })
+  const material = cockpitMaterial
   const shell = material('#646b70'), panel = material('#3d444c'), dark = material('#191c20'), rubber = material('#141619', 0.96)
   const silver = material('#949b9c', 0.42), ivory = material('#ddd9c9'), seat = material('#a6a294')
   const red = material('#9c2b22'), amber = material('#a87726')
-
-  function mesh(geometry: BufferGeometry, mat: Material, parent: Object3D, x: number, y: number, z: number) {
-    const m = new Mesh(geometry, mat); m.position.set(x, y, z); parent.add(m); return m
-  }
-  function box(w: number, h: number, d: number, mat: Material, x: number, y: number, z: number, parent: Object3D = staticRoot, radius = 0) {
-    return mesh(radius ? new RoundedBoxGeometry(w, h, d, 2, radius) : new BoxGeometry(w, h, d), mat, parent, x, y, z)
-  }
-  function rod(a: number[], b: number[], radius: number, mat: Material, parent: Object3D = staticRoot) {
-    const from = new Vector3(...a), to = new Vector3(...b), direction = to.clone().sub(from)
-    const m = mesh(new CylinderGeometry(radius, radius, direction.length(), 10), mat, parent, ...from.add(to).multiplyScalar(0.5).toArray() as [number, number, number])
-    m.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), direction.normalize())
-    return m
-  }
-  function knob(x: number, y: number, z: number, radius = 0.022, parent: Object3D = staticRoot, mat: Material = ivory) {
-    const m = mesh(new CylinderGeometry(radius, radius * 1.08, 0.026, 12), mat, parent, x, y, z)
-    m.rotation.x = Math.PI / 2
-    const mark = box(0.003, radius * 0.7, 0.002, dark, x, y + radius * 0.35, z + 0.014, parent)
-    mark.userData = m.userData
-    return m
-  }
-  function surface(draw: Draw, width: number, height: number, x: number, y: number, z: number, parent: Object3D = staticRoot, resX = 1024, resY = 512) {
-    const canvas = document.createElement('canvas'); canvas.width = resX; canvas.height = resY
-    draw(canvas.getContext('2d')!, resX, resY)
-    const texture = new CanvasTexture(canvas); texture.colorSpace = SRGBColorSpace; texture.anisotropy = 8; textures.push(texture)
-    const mat = new MeshStandardMaterial({ map: texture, roughness: 0.9, emissiveMap: texture, emissive: '#ffffff', emissiveIntensity: 0.22, side: DoubleSide })
-    return mesh(new PlaneGeometry(width, height), mat, parent, x, y, z)
-  }
-  function display(instrument: InstrumentCanvas, x: number, y: number, width = 0.265, height = 0.265, z = -1.02, parent: Object3D = staticRoot) {
-    box(width + 0.037, height + 0.038, 0.035, dark, x, y, z - 0.008, parent, 0.014)
-    const mat = new MeshBasicMaterial({ map: instrument.texture, toneMapped: false })
-    const face = mesh(new PlaneGeometry(width, height), mat, parent, x, y, z + 0.012)
-    face.name = 'live-display'
-    for (const dx of [-1, 1]) for (const dy of [-1, 1]) knob(x + dx * (width / 2 + 0.009), y + dy * (height / 2 + 0.009), z + 0.01, 0.0035, parent, silver)
-  }
+  const { staticRoot, textures, mesh, box, rod, knob, surface, display, bake } = createCockpitKit(root, { dark, ivory, silver })
   // Structural shell and sloped, multi-pane windshield. The centre post stays
   // on the aircraft centreline, never in front of the captain's eye.
   box(2.65, 0.06, 2.9, dark, 0, -1.25, -0.05)
@@ -278,7 +187,13 @@ export function build737Cockpit(model: AircraftModel): Cockpit {
   knob(0.31, -0.89, -0.98, 0.02)
 
   // MCP and EFIS, above the glareshield. Dynamic values share one texture.
-  const mcp = new InstrumentCanvas(2048, 256, drawMcp); instruments.push(mcp)
+  // The largest canvas on the flight deck, and its windows only change with the selection.
+  const mcp = new InstrumentCanvas(2048, 256, drawMcp, (s) => {
+    const ap = ((s[S.FLAGS] | 0) & Flags.AP_ENGAGED) !== 0
+    return ap ? `ap ${Math.round(s[S.AP_SPEED_KT])} ${Math.round(s[S.AP_HEADING])} ${Math.round(s[S.AP_ALT_FT])}`
+      : `${Math.round(s[S.IAS_KT])} ${Math.round(s[S.HEADING])} ${Math.round(s[S.ALT_MSL_FT])}`
+  })
+  instruments.push(mcp)
   box(1.46, 0.185, 0.085, panel, 0.04, -0.15, -1.11, staticRoot, 0.012)
   mesh(new PlaneGeometry(1.44, 0.18), new MeshBasicMaterial({ map: mcp.texture, toneMapped: false }), staticRoot, 0.04, -0.15, -1.065)
   for (const u of [0.07, 0.28, 0.46, 0.63, 0.8, 0.94]) {
@@ -396,31 +311,13 @@ export function build737Cockpit(model: AircraftModel): Cockpit {
   // Caution light lenses on the forward panel.
   for (const x of [0.245, 0.285, 0.325]) box(0.021, 0.014, 0.004, amber, x, -0.37, -0.982)
 
-  // Bake decorative hardware by material: hundreds of small parts, only a few
-  // draw calls. Animated controls and clickable hit targets stay separate.
-  root.updateMatrixWorld(true)
-  const inverse = root.matrixWorld.clone().invert()
-  const batches = new Map<Material, BufferGeometry[]>()
-  staticRoot.traverse((o) => {
-    if (!(o instanceof Mesh)) return
-    const mat = o.material as Material
-    const geometry = (o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone()).applyMatrix4(inverse.clone().multiply(o.matrixWorld))
-    const batch = batches.get(mat) ?? []; batch.push(geometry); batches.set(mat, batch)
-    o.geometry.dispose()
-  })
-  root.remove(staticRoot)
-  for (const [mat, geometries] of batches) {
-    const merged = mergeGeometries(geometries)
-    if (merged) { const m = new Mesh(merged, mat); m.name = '737-static-panel'; root.add(m) }
-    geometries.forEach((g) => g.dispose())
-  }
+  bake('737-static-panel')
   root.traverse((o) => o.layers.enableAll())
-  let lastDraw = -Infinity
+  const schedule = new InstrumentSchedule(instruments)
   return {
     root, instruments, yoke: yokes[0], stick: null, throttles,
     update(s, c) {
-      const now = performance.now()
-      if (now - lastDraw >= 50) { lastDraw = now; for (const i of instruments) i.update(s) }
+      schedule.update(s)
       for (const column of yokes) {
         column.rotation.x = -c.pitch * 0.13
         ;(column.userData.wheel as Group).rotation.z = -c.roll * 0.9

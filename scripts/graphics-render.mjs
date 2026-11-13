@@ -1,8 +1,8 @@
 import {
   Color, Data3DTexture, DataTexture, FloatType, HalfFloatType, LinearFilter, Mesh, MeshBasicMaterial,
-  PerspectiveCamera, PlaneGeometry, RedFormat, Scene, Texture, Uniform, Vector3, WebGLRenderer,
+  PerspectiveCamera, PlaneGeometry, RedFormat, RepeatWrapping, Scene, Texture, TextureLoader, Uniform, Vector3, WebGLRenderer,
 } from 'three'
-import { BlendFunction, CopyPass, Effect, EffectComposer, EffectPass, RenderPass, ToneMappingEffect, ToneMappingMode } from 'postprocessing'
+import { BlendFunction, CopyPass, Effect, EffectComposer, EffectPass, RenderPass, ShaderPass, ToneMappingEffect, ToneMappingMode } from 'postprocessing'
 import { AerialPerspectiveEffect, PrecomputedTexturesGenerator, SkyMaterial } from '@takram/three-atmosphere'
 import { CloudsEffect } from '@takram/three-clouds'
 import {
@@ -14,11 +14,33 @@ import { OverlayPass } from '../src/scene/OverlayPass.ts'
 import { SurfaceMaskPass } from '../src/scene/SurfaceMaskPass.ts'
 import { TerrainNormalPass } from '../src/scene/TerrainNormalPass.ts'
 import { WaterMask } from '../src/scene/WaterMask.ts'
-import { frame } from '../src/world/frame.ts'
+import { Ocean } from '../src/scene/Ocean.ts'
+import { frame, geodeticToEcef } from '../src/world/frame.ts'
 
 const WIDTH = 256
 const HEIGHT = 160
 const results = []
+
+async function loadCloudFixtures(clouds) {
+  const fixtures = __CLOUD_FIXTURES__
+  const loader = new TextureLoader()
+  for (const [name, property] of [['local_weather.png', 'localWeatherTexture'], ['turbulence.png', 'turbulenceTexture']]) {
+    const map = await loader.loadAsync(`data:image/png;base64,${fixtures[name]}`)
+    map.wrapS = map.wrapT = RepeatWrapping
+    clouds[property] = map
+  }
+  for (const [name, property, width, depth] of [
+    ['shape.bin', 'shapeTexture', 128, 128], ['shape_detail.bin', 'shapeDetailTexture', 32, 32], ['stbn.bin', 'stbnTexture', 128, 64],
+  ]) {
+    const bytes = Uint8Array.from(atob(fixtures[name]), c => c.charCodeAt(0))
+    const map = new Data3DTexture(bytes, width, width, depth)
+    map.format = RedFormat
+    if (name !== 'stbn.bin') map.minFilter = map.magFilter = LinearFilter
+    map.wrapS = map.wrapT = map.wrapR = RepeatWrapping
+    map.needsUpdate = true
+    clouds[property] = map
+  }
+}
 
 function check(condition, message) {
   if (!condition) throw new Error(message)
@@ -30,6 +52,104 @@ function texture(bytes, width = 1, height = 1) {
   const result = new DataTexture(bytes, width, height)
   result.needsUpdate = true
   return result
+}
+
+async function checkCoastalCoverage(renderer) {
+  const coast = new WaterMask()
+  const point = new Vector3()
+  const albedo = new Vector3(0.2, 0.2, 0.2)
+  const probe = new Effect('WaterCoverageProbe', `uniform vec3 testPoint; uniform vec3 testAlbedo;
+    void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
+      outputColor = vec4(vec3(waterFromTile(testPoint, testAlbedo)), 1.0);
+    }`, { blendFunction: BlendFunction.SRC, uniforms: new Map([['testPoint',new Uniform(point)], ['testAlbedo',new Uniform(albedo)]]) })
+  coast.maskNightLights(probe)
+  const composer = new EffectComposer(renderer)
+  composer.addPass(new EffectPass(new PerspectiveCamera(), probe))
+  const bytes = Uint8Array.from(atob(__WATER_FIXTURE__), c => c.charCodeAt(0))
+  const url = URL.createObjectURL(new Blob([bytes]))
+  try {
+    await coast.load(url, new AbortController().signal)
+    coast.update(35.55, 139.79, 37)
+    const value = (lat, lon, ellipsoidHeight) => {
+      geodeticToEcef(lat,lon,ellipsoidHeight,point)
+      composer.render(1 / 60)
+      const gl = renderer.getContext(), pixel = new Uint8Array(4)
+      gl.readPixels(10, 10, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel)
+      return pixel[0]
+    }
+    // Actual runway endpoints from the bundled Haneda data, including the
+    // reclaimed offshore runway. Coastline generalization must not flood them.
+    const points = [[35.565897,139.78655,6.7], [35.53969,139.805142,6.1], [35.560452,139.768734,6.1],
+      [35.536591,139.785672,6.1], [35.524001,139.803469,14], [35.540598,139.822125,16.8], [35.55,139.79,10.7]]
+    const runwayCoverage = points.map(([lat,lon,height]) => value(lat,lon,height+37))
+    check(runwayCoverage.every(v => v < 166), `Haneda runways and apron retain tile imagery instead of water (${runwayCoverage})`)
+    check(value(35.48,139.9,37) > 250, 'Open Tokyo Bay retains animated water shading')
+    check(value(35.48,139.9,47) < 2, 'Actual tile elevation protects land even inside a coarse ocean polygon')
+    // A location outside the coarse ocean polygon: tiles can add real coastal
+    // water, but neutral or brown land at the same elevation must stay dry.
+    albedo.set(0.01,0.04,0.08)
+    check(value(35.6,139.7,37) > 250, 'Sea-level blue tile imagery refines water beyond the coarse map')
+    check(value(35.6,139.7,47) < 2, 'Raised blue surfaces are not mistaken for sea-level water')
+    albedo.set(0.2,0.2,0.2)
+    check(value(35.6,139.7,37) < 2, 'Neutral tile imagery keeps low coastal tarmac dry')
+    albedo.set(0.2,0.12,0.07)
+    check(value(35.6,139.7,37) < 2, 'Brown tile imagery keeps low coastal ground dry')
+    coast.update(43, -87.3, 0)
+    check(value(43,-87.3,177) > 250, 'Elevated inland lakes retain water shading above sea level')
+  } finally {
+    URL.revokeObjectURL(url)
+    coast.dispose()
+    composer.dispose()
+  }
+}
+
+/** Opacity must converge even when a dark sunset cloud has no RGB contrast. */
+function checkCloudResolve(renderer) {
+  const effect = new CloudsEffect(new PerspectiveCamera())
+  stabilizeClouds(effect)
+  const resolve = effect.cloudsPass.resolveMaterial
+  resolve.shadowLength = false
+  resolve.setSize(WIDTH, HEIGHT)
+  const make = rgba => texture(new Float32Array(rgba))
+  const current = make([0.02, 0.02, 0.02, 0])
+  const history = make([0.02, 0.02, 0.02, 1])
+  const velocity = make([1000, 0, 0, 0])
+  const depth = make([1, 0, 0, 0])
+  for (const map of [current, history, velocity, depth]) map.type = FloatType
+  Object.assign(resolve.uniforms.colorBuffer, { value: current })
+  resolve.uniforms.colorHistoryBuffer.value = history
+  resolve.uniforms.depthVelocityBuffer.value = velocity
+  resolve.uniforms.sceneDepthBuffer.value = depth
+  resolve.uniforms.nearClearDepth.value = 0.3
+  resolve.uniforms.nearHistoryDepth.value = 0.4
+  resolve.uniforms.resetHistory.value = false
+  const pass = new ShaderPass(resolve)
+  pass.renderToScreen = true
+  const gl = renderer.getContext()
+  const rgba = new Uint8Array(4)
+  const alpha = () => {
+    pass.render(renderer, null, null)
+    gl.readPixels(WIDTH / 2, HEIGHT / 2, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, rgba)
+    return rgba[3]
+  }
+  for (let f = 0; f < 16; f++) {
+    resolve.uniforms.frame.value = f
+    check(alpha() < 2, `Dark cloud opacity clears stale history at temporal phase ${f}`)
+  }
+  current.image.data[3] = 1
+  current.needsUpdate = true
+  history.image.data[3] = 0
+  history.needsUpdate = true
+  check(alpha() > 253, 'A newly opaque dark cloud cannot inherit a clear hole from the aircraft')
+  depth.image.data[0] = 0.2
+  depth.needsUpdate = true
+  for (const reset of [false, true]) {
+    resolve.uniforms.resetHistory.value = reset
+    check(alpha() < 2, `Near aircraft stays clear of stale cloud, including history reset=${reset}`)
+  }
+  for (const map of [current, history, velocity, depth]) map.dispose()
+  pass.dispose()
+  effect.dispose()
 }
 
 function checkOcclusion(renderer, pixel) {
@@ -115,6 +235,7 @@ function checkTerrainNormals(renderer) {
 async function renderChecks() {
   const renderer = new WebGLRenderer({ logarithmicDepthBuffer: true, preserveDrawingBuffer: true })
   renderer.setSize(WIDTH, HEIGHT)
+  await checkCoastalCoverage(renderer)
   renderer.toneMappingExposure = 10
   document.body.append(renderer.domElement)
   const errors = []
@@ -130,6 +251,16 @@ async function renderChecks() {
 
   const atmosphere = await new PrecomputedTexturesGenerator(renderer).update()
   frame.setOrigin(6378137, 0, 0)
+  const ocean = new Ocean(2)
+  const oceanPositions = ocean.mesh.geometry.getAttribute('position')
+  const outer = new Vector3().fromBufferAttribute(oceanPositions, oceanPositions.count - 1)
+  const earthRadius = 6371000
+  const cruiseHeight = 45000 * 0.3048
+  const horizonRadius = earthRadius * Math.sqrt(1 - (earthRadius / (earthRadius + cruiseHeight)) ** 2)
+  check(Math.hypot(outer.x, outer.z) > horizonRadius, 'Ocean mesh extends past the horizon even at 45,000 ft')
+  check(Math.abs(Math.hypot(outer.x, earthRadius + outer.y, outer.z) - earthRadius) < 0.1,
+    'Distant ocean geometry follows the curved Earth instead of a truncated flat approximation')
+  ocean.dispose()
   const scene = new Scene()
   const camera = new PerspectiveCamera(58, WIDTH / HEIGHT, 0.3, 2e7)
   camera.position.y = 100
@@ -205,7 +336,7 @@ async function renderChecks() {
   const sun = new Vector3()
 
   function render(elevation, darkness, weather = false, frames = 5) {
-    sun.set(Math.sin(elevation), 0, Math.cos(elevation))
+    sun.set(0, Math.sin(elevation), -Math.cos(elevation)).transformDirection(frame.ecefFromWorld)
     sky.sunDirection.copy(sun)
     clouds.sunDirection.copy(sun)
     aerial.sunDirection.copy(sun)
@@ -243,6 +374,38 @@ async function renderChecks() {
       `${label}: missing normals cannot expose daytime imagery (${dark.map(Math.round)})`)
   }
 
+  // A synthetic ocean polygon exercises the actual shoreline lookup and water
+  // shader, without depending on a network imagery service during the test.
+  const shoreline = new Int32Array([
+    0x31544157, 1, 1, -10000, -10000, 10000, 10000, 5,
+    -10000, -10000, 10000, -10000, 10000, 10000, -10000, 10000, -10000, -10000,
+    1, 1, 100000, 100000, 110000, 110000, 5,
+    100000, 100000, 110000, 100000, 110000, 110000, 100000, 110000, 100000, 100000,
+  ])
+  const shorelineUrl = URL.createObjectURL(new Blob([shoreline]))
+  await water.load(shorelineUrl, new AbortController().signal)
+  URL.revokeObjectURL(shorelineUrl)
+  render(0.65, 0)
+  const dry = pixel(0.4, 0.25)
+  water.update(0, 0)
+  render(0.65, 0)
+  const wet = pixel(0.4, 0.25)
+  check(delta(dry, wet) > 20 && wet[2] > wet[0], `Mapped water has blue reflected sky instead of flat terrain (${wet})`)
+  // Provider tiles and the physical sea shell can trade depth ordering as LOD
+  // changes. Their water must match rather than exposing rectangular seams.
+  lightingMask.image.data.fill(0)
+  lightingMask.needsUpdate = true
+  render(0.65, 0)
+  check(delta(wet, pixel(0.4, 0.25)) < 2, 'Provider water and the ocean shell have identical lighting across tile boundaries')
+  water.protectAircraft(new Vector3(0, 0, 0), 2000)
+  render(0.65, 0)
+  const protectedWater = pixel(0.4, 0.25)
+  aerial.uniforms.get('hasWaterCoverage').value = false
+  render(0.65, 0)
+  check(delta(protectedWater, pixel(0.4, 0.25)) < 2, 'Water coverage preserves aircraft materials')
+  lightingMask.image.data.fill(255)
+  lightingMask.needsUpdate = true
+
   render(0.01, 0)
   const sunset = pixel(0.5, 0.56)
   check(sunset[0] > sunset[2] + 8, `Sunset retains its warm sky color (${sunset})`)
@@ -268,8 +431,171 @@ async function renderChecks() {
   render(0.01, 0, false, 1)
   check(['HAS_OVERLAY', 'HAS_SHADOW', 'HAS_SHADOW_LENGTH'].every(define => !aerial.defines.has(define)),
     'Disabling clouds clears all aerial cloud inputs on the first frame')
+
+  // Use the real production density/noise fields for horizon and temporal checks.
+  await loadCloudFixtures(clouds)
+  clouds.coverage = 0.8
+  clouds.clouds.hazeDensityScale = 3e-5
+  for (const height of [5, 150, 740, 760, 1500, 8500]) {
+    camera.position.set(0, height, 0)
+    camera.updateMatrixWorld()
+    for (const elevation of [-0.04, 0.01, 0.08]) {
+      render(elevation, 0, true, 20)
+      const name = `horizon-${height}-${elevation}`
+      const dip = Math.acos(6360000 / (6360000 + height))
+      const horizon = Math.ceil((0.5 - 0.5 * Math.tan(dip) / Math.tan(camera.fov * Math.PI / 360)) * HEIGHT)
+      let darkest = 255
+      for (const x of [0.2, 0.4, 0.6, 0.8]) {
+        for (let y = horizon + 1; y < horizon + 10; y++) darkest = Math.min(darkest, brightness(pixel(x, y / HEIGHT)))
+      }
+      check(darkest > 2, `Sunset sky has no black horizon stripe at ${height} m, sun ${elevation} rad (${darkest.toFixed(1)})`)
+      window.webkit?.messageHandlers?.graphics?.postMessage({ snapshot: name, data: renderer.domElement.toDataURL().split(',')[1] })
+    }
+  }
+  clouds.coverage = 0.45
+  camera.position.set(0, 1000, 0)
+  camera.updateMatrixWorld()
+  render(0.01, 0, true, 32)
+  let previousPixels = null
+  let largestChange = 0
+  for (let f = 0; f < 48; f++) {
+    camera.position.x += 4
+    camera.position.z -= 8
+    camera.rotation.y += 0.001
+    camera.updateMatrixWorld()
+    render(0.01, 0, true, 1)
+    const pixels = new Uint8Array(WIDTH * HEIGHT * 4)
+    gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+    if (previousPixels) {
+      let change = 0
+      for (let i = 0; i < pixels.length; i += 4) {
+        for (let c = 0; c < 3; c++) change += Math.abs(pixels[i + c] - previousPixels[i + c])
+      }
+      largestChange = Math.max(largestChange, change / (WIDTH * HEIGHT * 3))
+    }
+    previousPixels = pixels
+  }
+  check(largestChange < 6, `Moving and turning through real sunset clouds stays continuous (${largestChange.toFixed(2)} / 255 peak change)`)
+
+  // Inspect opacity and light separately: dark night RGB can hide large shape
+  // changes in a whole-image average. Hold the camera and weather still at ORD.
+  const savedFrame = frame.origin.clone()
+  const chicago = geodeticToEcef(41.96, -87.89, 0)
+  frame.setOrigin(chicago.x, chicago.y, chicago.z)
+  clouds.worldToECEFMatrix.copy(frame.ecefFromWorld)
+  camera.position.set(0, 210, 0)
+  camera.rotation.set(0, Math.PI / 2, 0)
+  camera.updateMatrixWorld()
+  clouds.coverage = 0.5
+  Object.assign(clouds.cloudLayers[2], { densityScale: 0.0006, shapeAmount: 0.85, weatherExponent: 1.5, coverageFilterWidth: 0.3 })
+  const stabilityWidth = 768, stabilityHeight = 480
+  renderer.setSize(stabilityWidth, stabilityHeight)
+  composer.setSize(stabilityWidth, stabilityHeight)
+  clouds.resolutionScale = 0.6
+  clouds.clouds.minStepSize = 70
+  clouds.clouds.perspectiveStepScale = 1.025
+  const opacityMap = new Uniform(null)
+  const opacityProbe = new Effect('CloudOpacityProbe', `uniform sampler2D cloudMap;
+    void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
+      vec4 cloud = texture2D(cloudMap, uv);
+      float light = 1.0 - exp(-dot(cloud.rgb, vec3(0.213, 0.715, 0.072)) * 300.0);
+      outputColor = vec4(cloud.a, light, 0.0, 1.0);
+    }`, { blendFunction: BlendFunction.SRC, uniforms: new Map([['cloudMap', opacityMap]]) })
+  const opacityPass = new EffectPass(camera, opacityProbe)
+  composer.addPass(opacityPass)
+  for (const cloudHeight of [210, 1500]) {
+    camera.position.y = cloudHeight
+    camera.updateMatrixWorld()
+    render(-0.55, 1, true, 96)
+    let lastOpacity = null, peakOpacityChange = 0, peakLightChange = 0, edgeCount = Infinity
+    for (let f = 0; f < 32; f++) {
+      opacityMap.value = clouds.atmosphereOverlay.map
+      render(-0.55, 1, true, 4)
+      const pixels = new Uint8Array(stabilityWidth * stabilityHeight * 4)
+      gl.readPixels(0, 0, stabilityWidth, stabilityHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+      if (lastOpacity) {
+        const changes = []
+        const lightChanges = []
+        // Exclude the Earth tangent: this test measures cloud texture motion,
+        // not subpixel geometric coverage along the distant horizon.
+        const firstRow = cloudHeight < 1000 ? 0.58 : 0.3
+        for (let i = Math.floor(stabilityHeight * firstRow) * stabilityWidth * 4; i < pixels.length; i += 4) {
+          if ((pixels[i] > 10 && pixels[i] < 245) || (lastOpacity[i] > 10 && lastOpacity[i] < 245)) {
+            changes.push(Math.abs(pixels[i] - lastOpacity[i]))
+          }
+          if (pixels[i] > 10) lightChanges.push(Math.abs(pixels[i + 1] - lastOpacity[i + 1]))
+        }
+        changes.sort((a, b) => a - b)
+        edgeCount = Math.min(edgeCount, changes.length)
+        peakOpacityChange = Math.max(peakOpacityChange, changes[Math.floor(changes.length * 0.95)])
+        lightChanges.sort((a, b) => a - b)
+        peakLightChange = Math.max(peakLightChange, lightChanges[Math.floor(lightChanges.length * 0.99)])
+      }
+      lastOpacity = pixels
+    }
+    check(edgeCount > 100, `Cloud stability fixture at ${cloudHeight} m contains visible cloud edges (${edgeCount})`)
+    check(peakOpacityChange <= 1, `Stationary night cloud edge opacity at ${cloudHeight} m stays stable (${peakOpacityChange}/255 at 95th percentile)`)
+    check(peakLightChange <= 1, `Stationary night cloud lighting at ${cloudHeight} m stays stable (${peakLightChange}/255 at 99th percentile)`)
+  }
+  composer.removePass(opacityPass)
+  opacityPass.dispose()
+  renderer.setSize(WIDTH, HEIGHT)
+  composer.setSize(WIDTH, HEIGHT)
+  clouds.resolutionScale = 1
+  clouds.clouds.minStepSize = 50
+  clouds.clouds.perspectiveStepScale = 1.01
+  frame.setOrigin(savedFrame.x, savedFrame.y, savedFrame.z)
+  clouds.worldToECEFMatrix.copy(frame.ecefFromWorld)
+
+  // Ask for a resolve size not divisible by four (the cloud image is rounded up to one
+  // that is). Compare the march's depth classification against the actual geometry at
+  // every jitter phase.
+  camera.position.set(0, 1000, 0)
+  camera.rotation.set(0, 0, 0)
+  camera.updateMatrixWorld()
+  skyQuad.visible = false
+  const occluder = new Mesh(new PlaneGeometry(80, 16), new MeshBasicMaterial())
+  occluder.position.set(0, 1040, -100)
+  scene.add(occluder)
+  clouds.resolutionScale = 0.51
+  clouds.lightShafts = false
+  const march = clouds.cloudsPass.currentMaterial
+  if (!march.fragmentShader.includes('float stbn = stableNoise();')) throw new Error('Cloud march changed: missing noise lookup')
+  march.fragmentShader = march.fragmentShader.replace('float stbn = stableNoise();', `
+    outputColor = vec4(vec3(rayDistanceToScene > 0.0 && rayDistanceToScene < 200.0 ? 1.0 : 0.0), 1.0);
+    outputDepthVelocity = vec3(0.0);
+    return;
+    float stbn = stableNoise();`)
+  march.needsUpdate = true
+  const lower = new Vector3(-40, 1032, -100).project(camera)
+  const upper = new Vector3(40, 1048, -100).project(camera)
+  let mismatches = 0
+  // The march takes two frames in every three: 48 frames visit all 16 positions.
+  const phases = new Set()
+  for (let f = 0; f < 48; f++) {
+    render(0.01, 0, true, 1)
+    // Compare once both halves of the target hold this position.
+    if (march.userData.geoflightCadence.march !== 'upper') continue
+    phases.add(march.uniforms.frame.value % 16)
+    const target = clouds.cloudsPass.currentRenderTarget
+    const pixels = new Uint16Array(target.width * target.height * 4)
+    renderer.readRenderTargetPixels(target, 0, 0, target.width, target.height, pixels)
+    const jitter = march.uniforms.temporalJitter.value
+    for (let y = 0; y < target.height; y++) for (let x = 0; x < target.width; x++) {
+      const u = (Math.floor(((x + 0.5) / target.width + jitter.x) * WIDTH) + 0.5) / WIDTH * 2 - 1
+      const v = (Math.floor(((y + 0.5) / target.height + jitter.y) * HEIGHT) + 0.5) / HEIGHT * 2 - 1
+      const expected = u > lower.x && u < upper.x && v > lower.y && v < upper.y
+      const actual = pixels[(y * target.width + x) * 4] > 0
+      if (actual !== expected) mismatches++
+    }
+  }
+  check(mismatches === 0 && phases.size === 16, `Cloud rays and foreground depth align across all 16 phases (${mismatches} mismatches, ${phases.size} phases)`)
+  occluder.geometry.dispose()
+  occluder.material.dispose()
+  scene.remove(occluder)
   checkOcclusion(renderer, pixel)
   checkTerrainNormals(renderer)
+  checkCloudResolve(renderer)
   if (errors.length) throw new Error(errors.filter(Boolean).join('\n') || 'A WebGL shader failed to link')
   if (gl.getError() !== gl.NO_ERROR) throw new Error('WebGL reported an error during depth compositing')
 }
@@ -279,6 +605,7 @@ renderChecks().then(() => {
   window.webkit?.messageHandlers?.graphics?.postMessage({ passed: true, results })
 }).catch((error) => {
   document.title = 'FAIL — GeoFlight graphics'
-  document.querySelector('pre').textContent += '\n' + (error.stack ?? String(error))
-  window.webkit?.messageHandlers?.graphics?.postMessage({ passed: false, results, error: String(error.stack ?? error) })
+  const detail = error instanceof Error ? `${error.message}\n${error.stack ?? ''}` : String(error)
+  document.querySelector('pre').textContent += '\n' + detail
+  window.webkit?.messageHandlers?.graphics?.postMessage({ passed: false, results, error: detail })
 })

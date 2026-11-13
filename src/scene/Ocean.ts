@@ -1,7 +1,7 @@
 // Ocean surface for the open-data world. Raster DEM terrain includes
 // bathymetry, so a water shell at mean sea level (the geoid) floods exactly
 // the areas below sea level. The mesh is a curved, camera-centred disc with
-// exponentially spaced rings (fine detail nearby, 250 km reach) and an
+// exponentially spaced rings (fine detail nearby, 600 km reach) and an
 // animated two-layer normal map in world space for waves and sun glint.
 
 import {
@@ -16,14 +16,17 @@ import { WaterMaterial } from './WaterMaterial'
 
 const EARTH_R = 6371000
 
-function makeDisc(maxRadius: number, rings = 72, segments = 96) {
+function makeDisc(maxRadius: number, rings = 96, segments = 192) {
   const pos: number[] = []
   const idx: number[] = []
   pos.push(0, 0, 0)
   const r0 = 2
   for (let i = 1; i <= rings; i++) {
     const r = r0 * Math.pow(maxRadius / r0, (i - 1) / (rings - 1))
-    const drop = (r * r) / (2 * EARTH_R)
+    // Exact spherical sagitta, evaluated without subtracting two Earth-sized
+    // values. The old 250 km disc ended before the horizon at cruise altitude.
+    const verticalRadius = Math.sqrt(EARTH_R * EARTH_R - r * r)
+    const drop = (r * r) / (EARTH_R + verticalRadius)
     for (let j = 0; j < segments; j++) {
       const a = (j / segments) * Math.PI * 2
       pos.push(Math.cos(a) * r, -drop, Math.sin(a) * r)
@@ -45,12 +48,9 @@ function makeDisc(maxRadius: number, rings = 72, segments = 96) {
   g.setAttribute('position', new Float32BufferAttribute(pos, 3))
   const normals = new Float32Array(pos.length)
   for (let i = 0; i < normals.length; i += 3) {
-    const nx = pos[i] / EARTH_R
-    const nz = pos[i + 2] / EARTH_R
-    const length = Math.hypot(nx, 1, nz)
-    normals[i] = nx / length
-    normals[i + 1] = 1 / length
-    normals[i + 2] = nz / length
+    normals[i] = pos[i] / EARTH_R
+    normals[i + 1] = (EARTH_R + pos[i + 1]) / EARTH_R
+    normals[i + 2] = pos[i + 2] / EARTH_R
   }
   g.setAttribute('normal', new Float32BufferAttribute(normals, 3))
   g.setAttribute('uv', new Float32BufferAttribute(new Float32Array((pos.length / 3) * 2), 2))
@@ -68,7 +68,7 @@ export class Ocean {
 
   constructor(lightingLayer: number) {
     const mat = new WaterMaterial()
-    this.mesh = new Mesh(makeDisc(250000), mat)
+    this.mesh = new Mesh(makeDisc(600000), mat)
     this.mesh.frustumCulled = false
     this.mesh.receiveShadow = true
     this.mesh.renderOrder = -1

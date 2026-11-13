@@ -33,7 +33,25 @@ node scripts/build_lakes.mjs /tmp/ne_10m_lakes.geojson
 polygons, including island holes. The renderer uses them to give the interiors
 of water bodies consistent lighting across imagery tiles and keeps the
 scenery provider's finer detail at the shore. Coverage follows the Natural
-Earth map, which is generalized at local scales.
+Earth map, which is generalized at local scales. It is a water hint rather
+than a replacement for the loaded 3D tiles: ocean shading also checks the
+tile surface against local mean sea level, preserving elevated reclaimed
+land, runways and buildings. Blue imagery on sea-level tiles also extends
+water coverage into inlets missed by the map; neutral tarmac, brown ground
+and raised blue surfaces do not extend it. These checks use the streamed
+tiles and current location, with no airport-specific exclusions. Inland
+lakes retain their own elevations.
+
+Water on imagery tiles uses animated, mipmapped wave normals at three scales,
+view-dependent sky reflection and a sun highlight. The provider's coastal
+colors remain visible near shore. Physical ocean/Great Lakes meshes and imagery
+water share the same shading so streamed tile boundaries do not expose different
+water colors. Aircraft materials remain protected. Wave coordinates stay anchored
+across ordinary floating-origin changes. After a distant location change,
+their tangent plane is reset near the new location so waves cannot stretch
+across a plane inherited from a different continent.
+The open-data ocean mesh follows Earth's curvature out to 600 km so its edge
+does not cut across the horizon at normal airliner cruise altitudes.
 
 Regenerate from the repository root with the lake source above and the
 [Natural Earth ocean polygons](https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-ocean/).

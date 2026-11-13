@@ -1,11 +1,13 @@
 // Cockpit interiors: built around the pilot eye point, with working displays
-// and animated yoke/sidestick and throttle levers.
+// and animated controls. The 737, the Airbus types, the light single and the fighter
+// have their own flight decks; the generic one below serves the business jets.
 
 import { BoxGeometry, CylinderGeometry, DoubleSide, Group, Mesh, MeshStandardMaterial, Object3D, PlaneGeometry, TorusGeometry, Vector3, type Material } from 'three'
-import { drawEICAS, drawND, drawPFD, InstrumentCanvas } from './instruments'
+import { drawEICAS, drawND, drawPFD, InstrumentCanvas, InstrumentSchedule } from './instruments'
 import type { AircraftModel } from './models'
 import { build172Cockpit } from './cockpit172'
 import { build737Cockpit } from './cockpit737'
+import { buildAirbusCockpit } from './cockpitAirbus'
 import { buildFighterCockpit } from './cockpitFighter'
 
 export interface Cockpit {
@@ -55,13 +57,12 @@ function windowFrame(parent: Object3D, mat: Material, eye: Vector3, width: numbe
 
 export function buildCockpit(model: AircraftModel): Cockpit {
   if (model.id === 'b737') return build737Cockpit(model)
+  if (model.id === 'a320' || model.id === 'a380') return buildAirbusCockpit(model)
   if (model.cockpit === 'ga') return build172Cockpit(model)
   if (model.cockpit === 'fighter') return buildFighterCockpit(model)
   const root = new Group()
   root.name = 'cockpit'
   const eye = model.eye
-  const isA380 = model.id === 'a380'
-  const sidestick = model.id === 'a320' || isA380
   const engineCount = model.spinners.length
   const shell = new MeshStandardMaterial({ color: '#2b3036', roughness: 0.92, metalness: 0.02, side: DoubleSide, envMapIntensity: 0.3 })
   const panelMat = new MeshStandardMaterial({ color: '#22262b', roughness: 0.75, metalness: 0.1, envMapIntensity: 0.3 })
@@ -85,8 +86,8 @@ export function buildCockpit(model: AircraftModel): Cockpit {
   // Floor, side walls, ceiling and rear bulkhead to enclose the view.
   const floorY = eye.y - 1.15
   const ceilY = eye.y + 0.5
-  const pedestalTop = floorY + (isA380 ? 0.56 : 0.75)
-  const pedestalHeight = isA380 ? 0.36 : 0.5
+  const pedestalTop = floorY + 0.75
+  const pedestalHeight = 0.5
   const halfW = width / 2 + 0.2
   box(halfW * 2, 0.05, 2.6, shell, root, 0, floorY, eye.z - 0.2)
   for (const s of [1, -1]) box(0.05, eye.y - 0.25 - floorY, 2.6, shell, root, halfW * s, (eye.y - 0.25 + floorY) / 2, eye.z - 0.2)
@@ -111,7 +112,7 @@ export function buildCockpit(model: AircraftModel): Cockpit {
     const nd = new InstrumentCanvas(512, 512, drawND)
     const eicas = new InstrumentCanvas(512, 512, (g, s, w, h) => drawEICAS(g, s, w, h, engineCount))
     instruments.push(pfd, nd, eicas)
-    const sz = isA380 ? 0.175 : 0.2
+    const sz = 0.2
     const y = panelTop - 0.2
     for (const s of [-1, 1]) {
       const x0 = s * width * 0.36
@@ -123,44 +124,33 @@ export function buildCockpit(model: AircraftModel): Cockpit {
     box(0.36, pedestalHeight, 0.75, panelMat, root, 0, pedestalTop - pedestalHeight / 2, eye.z - 0.32)
   }
 
-  // Yokes or sidesticks
+  // Yokes
   let yoke: Object3D | null = null
-  let stick: Object3D | null = null
   const yokes: Object3D[] = []
   const seats = [eye.x, -eye.x]
   for (const sx of seats) {
-    if (sidestick) {
-      const st = new Group()
-      st.position.set(sx + Math.sign(sx) * 0.42, eye.y - 0.62, eye.z - 0.05)
-      root.add(st)
-      box(0.03, 0.16, 0.03, blackMat, st, 0, 0.08, 0)
-      box(0.05, 0.06, 0.07, blackMat, st, 0, 0.18, 0)
-      if (sx === eye.x) stick = st
-      yokes.push(st)
-    } else {
-      const col = new Group()
-      col.position.set(sx, eye.y - 0.5, zPanel + 0.32)
-      root.add(col)
-      const wheel = new Group()
-      wheel.position.set(0, 0.12, 0)
-      col.add(wheel)
-      const rim = new Mesh(new TorusGeometry(0.15, 0.015, 8, 28, Math.PI * 1.2), blackMat)
-      rim.rotation.z = Math.PI * -0.1 + Math.PI
-      wheel.add(rim)
-      box(0.28, 0.04, 0.03, blackMat, wheel, 0, -0.01, 0)
-      const shaft = new Mesh(new CylinderGeometry(0.02, 0.02, 0.12, 8), blackMat)
-      shaft.rotation.x = Math.PI / 2
-      shaft.position.z = -0.06
-      wheel.add(shaft)
-      box(0.06, 0.55, 0.06, blackMat, col, 0, -0.3, 0)
-      if (sx === eye.x) yoke = col
-      yokes.push(col)
-    }
+    const col = new Group()
+    col.position.set(sx, eye.y - 0.5, zPanel + 0.32)
+    root.add(col)
+    const wheel = new Group()
+    wheel.position.set(0, 0.12, 0)
+    col.add(wheel)
+    const rim = new Mesh(new TorusGeometry(0.15, 0.015, 8, 28, Math.PI * 1.2), blackMat)
+    rim.rotation.z = Math.PI * -0.1 + Math.PI
+    wheel.add(rim)
+    box(0.28, 0.04, 0.03, blackMat, wheel, 0, -0.01, 0)
+    const shaft = new Mesh(new CylinderGeometry(0.02, 0.02, 0.12, 8), blackMat)
+    shaft.rotation.x = Math.PI / 2
+    shaft.position.z = -0.06
+    wheel.add(shaft)
+    box(0.06, 0.55, 0.06, blackMat, col, 0, -0.3, 0)
+    if (sx === eye.x) yoke = col
+    yokes.push(col)
   }
 
   // Throttle levers
   const throttles: Object3D[] = []
-  const leverHeight = isA380 ? 0.14 : 0.22
+  const leverHeight = 0.22
   for (let i = 0; i < engineCount; i++) {
     const lever = new Group()
     lever.position.set((i - (engineCount - 1) / 2) * 0.08, pedestalTop + 0.03, eye.z - 0.45)
@@ -182,28 +172,19 @@ export function buildCockpit(model: AircraftModel): Cockpit {
   // Everything in the cockpit is lit by the scene lights.
   root.traverse((o) => o.layers.enableAll())
 
-  let lastDraw = 0
+  const schedule = new InstrumentSchedule(instruments)
   return {
     root,
     instruments,
     yoke,
-    stick,
+    stick: null,
     throttles,
     update(s, c) {
-      const now = performance.now()
-      if (now - lastDraw > 50) {
-        lastDraw = now
-        for (const i of instruments) i.update(s)
-      }
+      schedule.update(s)
       for (const y of yokes) {
-        if (sidestick) {
-          y.rotation.x = -c.pitch * 0.3
-          y.rotation.z = -c.roll * 0.3
-        } else {
-          y.position.z = zPanel + 0.32 + c.pitch * 0.07
-          const wheel = y.children[0]
-          if (wheel) wheel.rotation.z = -c.roll * 0.9
-        }
+        y.position.z = zPanel + 0.32 + c.pitch * 0.07
+        const wheel = y.children[0]
+        if (wheel) wheel.rotation.z = -c.roll * 0.9
       }
       for (const t of throttles) t.rotation.x = -0.6 + c.throttle * 1.0
     },

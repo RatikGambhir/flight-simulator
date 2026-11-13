@@ -1,23 +1,17 @@
-// Generates public/clouds/stbn.bin: a 128x128x64 R8 spatio-temporal noise
-// volume used by the volumetric clouds for ray-march jitter. Takram's
-// original blue-noise file lives in Git LFS; this substitute uses
-// interleaved gradient noise with a golden-ratio temporal offset per slice,
-// which gives similarly low-discrepancy jitter once temporally accumulated.
-import { writeFileSync, mkdirSync } from 'node:fs'
-const W = 128, H = 128, D = 64
-const buf = new Uint8Array(W * H * D)
-const fract = (x) => x - Math.floor(x)
-for (let z = 0; z < D; z++) {
-  const ox = (z * 5.588238) % W
-  const oy = (z * 5.588238 * 1.618) % H
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const ign = fract(52.9829189 * fract(0.06711056 * (x + ox) + 0.00583715 * (y + oy)))
-      const v = fract(ign + z * 0.61803398875)
-      buf[z * W * H + y * W + x] = Math.min(255, Math.floor(v * 256))
-    }
-  }
+// Restore the pinned upstream spatiotemporal blue-noise volume. The old IGN
+// substitute produced coherent diagonal/checker patterns in moving clouds.
+import { createHash } from 'node:crypto'
+import { mkdir, writeFile } from 'node:fs/promises'
+
+const revision = '9627216cc50057994c98a2118f3c4a23765d43b9'
+const url = `https://media.githubusercontent.com/media/takram-design-engineering/three-geospatial/${revision}/packages/core/assets/stbn.bin`
+const sha256 = '51f52f21e5578384585050390821a0a486dcb81e11a716fa7b92fbb6515ba852'
+const response = await fetch(url, { signal: AbortSignal.timeout(30_000) })
+if (!response.ok) throw new Error(`STBN download failed: HTTP ${response.status}`)
+const bytes = Buffer.from(await response.arrayBuffer())
+if (bytes.length !== 128 * 128 * 64 || createHash('sha256').update(bytes).digest('hex') !== sha256) {
+  throw new Error('STBN download has the wrong size or checksum; keeping the existing texture')
 }
-mkdirSync(new URL('../public/clouds/', import.meta.url), { recursive: true })
-writeFileSync(new URL('../public/clouds/stbn.bin', import.meta.url), buf)
-console.log('stbn.bin', buf.length)
+await mkdir(new URL('../public/clouds/', import.meta.url), { recursive: true })
+await writeFile(new URL('../public/clouds/stbn.bin', import.meta.url), bytes)
+console.log(`Restored upstream STBN: ${bytes.length} bytes, SHA-256 ${sha256}`)

@@ -7,7 +7,7 @@ import { BoxGeometry, DoubleSide, Group, Mesh, MeshBasicMaterial, MeshStandardMa
 import { phaseName } from '../sim/autopilotStatus'
 import { Flags, S } from '../sim/protocol'
 import type { Cockpit } from './cockpit'
-import { drawND, InstrumentCanvas } from './instruments'
+import { drawND, InstrumentCanvas, InstrumentSchedule } from './instruments'
 import type { AircraftModel } from './models'
 
 /** Throttle lever position where the afterburner range starts (sim-core `f16.afterburner_detent`). */
@@ -299,7 +299,7 @@ export function buildFighterCockpit(model: AircraftModel): Cockpit {
   // the combiner unlit (see OverlayPass). Layer 0 alone renders it normally.
   combiner.layers.set(0)
 
-  let lastDraw = 0
+  const schedule = new InstrumentSchedule(instruments, 33)
   return {
     root,
     instruments,
@@ -307,11 +307,7 @@ export function buildFighterCockpit(model: AircraftModel): Cockpit {
     stick,
     throttles: [throttle],
     update(s, c) {
-      const now = performance.now()
-      if (now - lastDraw > 33) {
-        lastDraw = now
-        for (const i of instruments) i.update(s)
-      }
+      schedule.update(s)
       // The real side-stick barely moves (it senses force); show a little travel.
       stick.rotation.x = -c.pitch * 0.12
       stick.rotation.z = -c.roll * 0.12

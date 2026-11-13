@@ -61,6 +61,11 @@ final class Bench: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNa
                       let png = rep.representation(using: .png, properties: [:]) else { return }
                 try? png.write(to: self.out.appendingPathComponent("\(name).png"))
             }
+        case "frame":
+            if let name = body["name"] as? String, let encoded = body["data"] as? String,
+               let png = Data(base64Encoded: encoded) {
+                try? png.write(to: out.appendingPathComponent("\(name).png"))
+            }
         case "result":
             let name = body["name"] as? String ?? "result"
             if let result = body["result"], let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]) {

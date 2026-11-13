@@ -22,7 +22,7 @@ import {
 } from 'three'
 import { S, type SimCommand } from '../sim/protocol'
 import type { Cockpit } from './cockpit'
-import { drawGaEngine, drawSixPack, drawWhiskeyCompass, GA_PANEL, InstrumentCanvas } from './instruments'
+import { drawGaEngine, drawSixPack, drawWhiskeyCompass, GA_PANEL, InstrumentCanvas, InstrumentSchedule } from './instruments'
 import type { AircraftModel } from './models'
 
 const PANEL_W = 1.06
@@ -530,7 +530,7 @@ export function build172Cockpit(model: Pick<AircraftModel, 'eye'>): Cockpit {
   // Everything in the cockpit is lit by the scene lights.
   root.traverse((o) => o.layers.enableAll())
 
-  let lastDraw = 0
+  const schedule = new InstrumentSchedule(instruments)
   return {
     root,
     instruments,
@@ -538,11 +538,7 @@ export function build172Cockpit(model: Pick<AircraftModel, 'eye'>): Cockpit {
     stick: null,
     throttles: [throttle.g],
     update(s, c) {
-      const now = performance.now()
-      if (now - lastDraw > 50) {
-        lastDraw = now
-        for (const i of instruments) i.update(s)
-      }
+      schedule.update(s)
       for (const column of yokes) {
         column.position.z = c.pitch * 0.06
         ;(column.userData.wheel as Group).rotation.z = -c.roll * 0.9

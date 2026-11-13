@@ -8,7 +8,7 @@ so you only need these scripts to refresh them.
 | `data/airports.tsv`, `data/runways.tsv`, `data/places.tsv` | `python3 scripts/build_data.py <dir>` | `<dir>` containing OurAirports `airports.csv`, `runways.csv`, `countries.csv` and Natural Earth `ne_10m_populated_places_simple.geojson` saved as `places.geojson` |
 | `data/geoid_1deg.bin` | `node scripts/build_geoid.mjs <egm96-universal esm file>` | `npm pack egm96-universal`, then point at `package/dist/egm96-universal.esm.js` (needs `rfc4648` installed next to it) |
 | `src/assets/world-land.json` | `python3 scripts/build_worldmap.py ne_50m_land.geojson` | Natural Earth 1:50m land GeoJSON |
-| `public/clouds/stbn.bin` | `node scripts/build_stbn.mjs` | — |
+| `public/clouds/stbn.bin` | `node scripts/build_stbn.mjs` | Pinned upstream download; SHA-256 verified |
 | `public/water/great-lakes.json` | `node scripts/build_lakes.mjs ne_10m_lakes.geojson` | Natural Earth 1:10m lakes and bundled `data/geoid_1deg.bin`; see `public/water/README.md` |
 | `public/sim/sim.wasm` | `npm run build:wasm` | — (browser dev mode only) |
 

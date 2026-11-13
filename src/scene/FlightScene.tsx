@@ -4,7 +4,7 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { EffectComposer, SMAA, ToneMapping } from '@react-three/postprocessing'
 import { AerialPerspective, Atmosphere, AtmosphereContext, SkyLight, SunLight, type AtmosphereApi } from '@takram/three-atmosphere/r3f'
-import { Clouds } from '@takram/three-clouds/r3f'
+import { CloudLayer, Clouds } from '@takram/three-clouds/r3f'
 import type { CloudsEffect } from '@takram/three-clouds'
 import { Dithering, LensFlare } from '@takram/three-geospatial-effects/r3f'
 import { EffectPass, SMAAPreset, ToneMappingMode } from 'postprocessing'
@@ -25,11 +25,12 @@ import { worldStatus } from './worldStatus'
 import { PerfProbe } from './PerfProbe'
 import { applyTuning, PERF_FORCED, perfMonitor, TUNING } from './perfMonitor'
 import { CLOUD_LEVELS, cloudBudget, initialCloudLevel, sceneDpr } from './renderBudget'
+import { BASE_EXPOSURE, twilightExposure } from './exposure'
 import { SkyEnvironment } from './SkyEnvironment'
 import { GradeEffect } from './Grade'
 import { Ocean } from './Ocean'
 import { LakeWater } from './LakeWater'
-import { CloudHistory, setCloudNightLighting, stabilizeAerialPerspective, stabilizeClouds, stabilizeNightClouds } from './cloudRendering'
+import { CloudHistory, driftCloudField, setCloudNightLighting, stabilizeAerialPerspective, stabilizeClouds, stabilizeNightClouds } from './cloudRendering'
 import { WaterMask } from './WaterMask'
 import { NightEffect } from './NightEffect'
 import { useAtmosphereTextures } from './useAtmosphereTextures'
@@ -317,6 +318,8 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
       }
       st.dark = dark
       st.moon = moon
+      // sunThrough: how much direct sun reaches the aircraft through the cloud above it.
+      gl.toneMappingExposure = BASE_EXPOSURE * (sunWorld ? twilightExposure(sunWorld.dot(up), sunThrough.current) : 1)
     }
     const sl = sunLight.current
     if (sl) {
@@ -383,7 +386,7 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
     night.setFrame(camera, st.dark, st.moon, frame.upAt(camera.position, _eyeUp), aircraft.lamps, eyeHeight)
     precipitation.setFrame(camera, dt, wx.precip, wx.snow, _air, wx.eyeVelocity, _u, daylight * (1 - 0.3 * wx.coverage), gl.domElement.height)
 
-    // Cloud shapes drift with the wind (texture offsets are in ECEF metres x repeat).
+    // Cached cloud formations drift as a whole with the horizontal wind.
     if (cl) {
       wx.effect = cl
       cl.coverage = wx.coverage
@@ -391,8 +394,7 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
       setCloudNightLighting(cl, st.dark, celestial.moonDirection, celestial.illuminatedFraction)
       enuBasis(s[S.LAT], s[S.LON], _we, _wn, _wu)
       _wind.set(0, 0, 0).addScaledVector(_we, s[S.WIND_E]).addScaledVector(_wn, s[S.WIND_N])
-      cl.shapeVelocity.copy(_wind).multiplyScalar(-cl.shapeRepeat.x)
-      cl.shapeDetailVelocity.copy(_wind).multiplyScalar(-cl.shapeDetailRepeat.x)
+      driftCloudField(cl, _wind, dt)
     }
 
     // Direct sun on the aircraft through the shadow-casting cloud decks above it. The
@@ -583,6 +585,7 @@ const FlightWorld = memo(function FlightWorld({ atmosphereTextures, cloudLevel, 
     if (terrainNormals) terrainNormals.roots = world ? world.layers.map((l) => l.tiles.group) : []
   }, [terrainNormals, world])
   const cloudHistory = useMemo(() => new CloudHistory(), [])
+  useEffect(() => frame.onRebase((worldFromOld) => cloudHistory.rebase(worldFromOld, frame.version)), [cloudHistory])
   const bindAerial = useCallback((effect: AerialPerspectiveEffect | null) => {
     if (!effect) return
     stabilizeAerialPerspective(effect, () => cloudsRef.current)
@@ -615,7 +618,7 @@ const FlightWorld = memo(function FlightWorld({ atmosphereTextures, cloudLevel, 
 
   // FlightLoop runs at -1; the effect composer runs at +1.
   useFrame(() => {
-    if (sim.render.valid) waterMask.update(sim.latest[S.LAT], sim.latest[S.LON])
+    if (sim.render.valid) waterMask.update(sim.latest[S.LAT], sim.latest[S.LON], world?.geoidOffset)
     if (aircraft) waterMask.protectAircraft(aircraft.position, Math.max(aircraft.model.span, aircraft.model.length))
     const effect = cloudsRef.current
     if (!effect) return
@@ -626,6 +629,7 @@ const FlightWorld = memo(function FlightWorld({ atmosphereTextures, cloudLevel, 
     if (!effect.temporalUpscale) effect.temporalUpscale = true
     effect.clouds.minStepSize = budget.minStepSize
     effect.clouds.perspectiveStepScale = budget.perspectiveStepScale
+    effect.clouds.maxIterationCount = budget.maxIterationCount
     if (TUNING.length) applyTuning(effect, 'cloud')
   }, 0.25)
 
@@ -717,10 +721,11 @@ const FlightWorld = memo(function FlightWorld({ atmosphereTextures, cloudLevel, 
             merges both into one full-screen pass instead of copying the frame twice. */}
         {clouds ? (
           <Clouds
+            key="stable-cloud-sampling-v5"
             ref={bindClouds}
             qualityPreset={quality}
-            // March 1/16 of the cloud pixels per frame and reconstruct the rest from
-            // reprojected history (cloudRendering.ts fixes the disocclusion fallback).
+            // Use a fixed low-resolution lattice and reconstruct with reprojected
+            // history. cloudRendering.ts prevents per-frame sample reshuffling.
             temporalUpscale
             // The camera sees to the horizon and beyond; without a cap the shadow cascades
             // are stretched over that whole range and cloud shadows smear into one sheet.
@@ -731,7 +736,11 @@ const FlightWorld = memo(function FlightWorld({ atmosphereTextures, cloudLevel, 
             shapeDetailTexture={`${import.meta.env.BASE_URL}clouds/shape_detail.bin`}
             turbulenceTexture={`${import.meta.env.BASE_URL}clouds/turbulence.png`}
             stbnTexture={`${import.meta.env.BASE_URL}clouds/stbn.bin`}
-          />
+          >
+            {/* Thin, broken cirrus instead of a solid stripe at cruise altitude.
+                Use the layer component: the wrapper resets layers after refs bind. */}
+            <CloudLayer index={2} densityScale={0.0006} shapeAmount={0.85} weatherExponent={1.5} coverageFilterWidth={0.3} />
+          </Clouds>
         ) : (
           <></>
         )}
@@ -767,6 +776,9 @@ function PreviewFrames({ fps }: { fps: number }) {
   return null
 }
 
+/** How long a failed step up keeps the cloud level from being raised again, at first. */
+const FLOOR_HOLD_MS = 60000
+
 /**
  * Steps the cloud detail down while frames miss the 60 Hz deadline on the GPU, and
  * back up once they hold it. The scene resolution never changes.
@@ -776,10 +788,12 @@ function PreviewFrames({ fps }: { fps: number }) {
  * can: a slow frame with an idle CPU is GPU-bound, and the volumetric clouds are
  * most of the GPU frame. A CPU-bound frame leaves the clouds alone. Medians ignore
  * one-off hitches; a level that failed soon after a step up becomes the floor for a
- * minute, which keeps the level (and the cloud history it resets) from oscillating.
+ * minute, and for twice as long each time it fails again (up to ten minutes). Every
+ * change of level restarts the cloud history, which shows as a moment of coarse cloud,
+ * so a scene that cannot hold the next level stops being asked to.
  */
 function AdaptiveCloudDetail({ level, onLevel }: { level: number; onLevel: (level: number) => void }) {
-  const st = useRef({ intervals: [] as number[], cpu: [] as number[], elapsed: 0, start: 0, changedAt: -Infinity, raisedAt: -Infinity, slow: 0, fast: 0, floor: 0, flooredAt: -Infinity })
+  const st = useRef({ intervals: [] as number[], cpu: [] as number[], elapsed: 0, start: 0, changedAt: -Infinity, raisedAt: -Infinity, slow: 0, fast: 0, floor: 0, flooredAt: -Infinity, floorHold: FLOOR_HOLD_MS, lastFloor: -1 })
   useFrame(() => { st.current.start = performance.now() }, -1000)
   useFrame((_, dt) => {
     const s = st.current
@@ -806,7 +820,7 @@ function AdaptiveCloudDetail({ level, onLevel }: { level: number; onLevel: (leve
     s.elapsed = 0
     // Changing level resizes the cloud buffers and restarts their history: be patient.
     if (now - s.changedAt < 2000) return
-    if (s.floor > 0 && now - s.flooredAt > 60000) s.floor = 0
+    if (s.floor > 0 && now - s.flooredAt > s.floorHold) s.floor = 0
     const gpuBound = cpu < median * 0.6
     if (missRate > 0.12 && gpuBound) {
       s.slow++
@@ -820,7 +834,9 @@ function AdaptiveCloudDetail({ level, onLevel }: { level: number; onLevel: (leve
     if (s.slow >= 2 && level < CLOUD_LEVELS.length - 1) {
       // Stepping up did not hold: stay at this level for a while.
       if (now - s.raisedAt < 15000) {
-        s.floor = level + 1
+        // The same step up failed again: wait twice as long before the next attempt.
+        s.floorHold = s.floor === 0 && level + 1 === s.lastFloor ? Math.min(s.floorHold * 2, 600000) : FLOOR_HOLD_MS
+        s.floor = s.lastFloor = level + 1
         s.flooredAt = now
       }
       s.slow = 0
@@ -884,7 +900,7 @@ export default function FlightScene() {
       dpr={dpr}
       frameloop={previewFps ? 'demand' : 'always'}
       shadows={shadows ? { type: PCFShadowMap } : false}
-      gl={{ logarithmicDepthBuffer: true, antialias: false, powerPreference: 'high-performance', depth: true, stencil: false, toneMapping: NoToneMapping, toneMappingExposure: 10 }}
+      gl={{ logarithmicDepthBuffer: true, antialias: false, powerPreference: 'high-performance', depth: true, stencil: false, toneMapping: NoToneMapping, toneMappingExposure: BASE_EXPOSURE }}
       camera={{ fov: 58, near: 0.3, far: 2e7 }}
       onCreated={({ gl }) => {
         gl.setClearColor('#000000')

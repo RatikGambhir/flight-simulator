@@ -63,7 +63,25 @@ export interface CloudBudget {
   resolutionScale: number
   minStepSize: number
   perspectiveStepScale: number
+  /** Enough march iterations to reach the far end of the longest ray. */
+  maxIterationCount: number
   shadowMapSize: number
+}
+
+/** The library's longest step, and how far its quality presets march (m). */
+const MAX_STEP = 1000
+const MARCH_REACH: Record<Quality, number> = { low: 1e5, medium: 2e5, high: 2e5, ultra: 2e5 }
+
+/**
+ * Cells of the march lattice (cloudRendering.ts) between the camera and `reach`: steps
+ * grow by `scale` from `minStep` until they reach MAX_STEP. Every cell inside a cloud
+ * layer is visited, so a lower limit would cut the clouds off short of the horizon.
+ */
+function marchCells(minStep: number, scale: number, reach: number) {
+  const growing = Math.ceil(Math.log(MAX_STEP / minStep) / Math.log(scale))
+  const cappedAt = minStep / (scale - 1) * (scale ** growing - 1)
+  if (reach <= cappedAt) return Math.ceil(Math.log(1 + reach * (scale - 1) / minStep) / Math.log(scale))
+  return growing + Math.ceil((reach - cappedAt) / MAX_STEP)
 }
 
 export function cloudBudget(quality: Quality, level: number, preview = false): CloudBudget {
@@ -71,10 +89,13 @@ export function cloudBudget(quality: Quality, level: number, preview = false): C
   const l = CLOUD_LEVELS[Math.max(0, Math.min(CLOUD_LEVELS.length - 1, Math.round(level)))]
   // The 30 FPS menu preview renders a smaller framebuffer; give its clouds the middle level.
   const s = preview ? CLOUD_LEVELS[2] : l
+  const minStepSize = Math.round(base.step * s.step)
   return {
     resolutionScale: Math.round(base.resolution * s.resolution * 100) / 100,
-    minStepSize: Math.round(base.step * s.step),
+    minStepSize,
     perspectiveStepScale: s.perspective,
+    // ...plus the cells revisited after each stride across a gap between layers.
+    maxIterationCount: marchCells(minStepSize, s.perspective, MARCH_REACH[quality]) + 48,
     // Multiples of 64 keep cascade texel grids stable between levels.
     shadowMapSize: Math.max(192, Math.round(base.shadow * s.shadow / 64) * 64),
   }

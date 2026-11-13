@@ -27,6 +27,11 @@ final class GraphicsTest: NSObject, NSApplicationDelegate, WKScriptMessageHandle
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        if let body = message.body as? [String: Any], let name = body["snapshot"] as? String,
+           let encoded = body["data"] as? String, let data = Data(base64Encoded: encoded) {
+            try? data.write(to: url.deletingLastPathComponent().appendingPathComponent("\(name).png"))
+            return
+        }
         guard let body = message.body as? [String: Any], let passed = body["passed"] as? Bool else {
             fputs("Unexpected WebKit graphics test result.\n", stderr)
             exit(1)

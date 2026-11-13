@@ -1,6 +1,6 @@
 // Frame-rate benchmark in WKWebView (the Tauri engine on macOS).
 //
-//   node scripts/bench.mjs <label> [scenario…] [--no-build] [--gpusync] [--quality=high] [--adaptive=0]
+//   node scripts/bench.mjs <label> [scenario…] [--no-build] [--gpusync] [--quality=high] [--adaptive=0] [--provider=google]
 //
 // Builds the production bundle, serves it locally, runs each scenario in its own
 // fresh WKWebView window (1600x960 points: the app's default window) and writes
@@ -42,6 +42,9 @@ if (option('quality')) query.set('quality', option('quality'))
 if (option('adaptive')) query.set('adaptive', option('adaptive'))
 if (option('tune')) query.set('tune', option('tune'))
 if (option('glass')) query.set('glass', option('glass'))
+if (option('provider')) query.set('provider', option('provider'))
+if (option('relevel')) query.set('relevel', option('relevel'))
+if (flags.has('--frames')) query.set('frames', '1')
 
 const results = []
 try {
@@ -66,13 +69,13 @@ try {
 
 const f = (v, d = 1) => (typeof v === 'number' ? v.toFixed(d) : '—')
 const rows = results.map((r) => r.failed
-  ? `| ${r.scenario} | failed |||||||||||`
-  : `| ${r.scenario} | ${f(r.fps)} | ${f(r.low1)} | ${f(r.p50)} | ${f(r.p95)} | ${f(r.p99)} | ${f(r.cpuMean)} | ${r.gpuWait == null ? '—' : f(r.gpuWait)} | ${Math.round(r.calls)} | ${f(r.triangles / 1e6, 2)}M | ${r.width}×${r.height} (${f(r.dpr, 2)}x) | ${r.textures}/${r.geometries} | ${r.spikes} |`)
+  ? `| ${r.scenario} | failed ||||||||||||||`
+  : `| ${r.scenario} | ${f(r.fps)} | ${f(r.low1)} | ${f(r.p50)} | ${f(r.p95)} | ${f(r.p99)} | ${f(r.cpuMean)} | ${r.gpuWait == null ? '—' : f(r.gpuWait)} | ${Math.round(r.calls)} | ${f(r.triangles / 1e6, 2)}M | ${r.width}×${r.height} (${f(r.dpr, 2)}x) | ${r.textures}/${r.geometries} | ${r.spikes} | ${f(r.stability?.flicker, 2)} | ${f(r.stability?.flickerPeak, 2)} | ${f(r.stability?.edgeJitter, 2)} |`)
 const table = [
   `## ${label}`,
   '',
-  '| scenario | avg FPS | 1% low | p50 ms | p95 ms | p99 ms | CPU ms | GPU wait ms | draws | tris | render size | tex/geo | spikes |',
-  '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+  '| scenario | avg FPS | 1% low | p50 ms | p95 ms | p99 ms | CPU ms | GPU wait ms | draws | tris | render size | tex/geo | spikes | flicker | peak | edge px |',
+  '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|',
   ...rows,
   '',
 ].join('\n')

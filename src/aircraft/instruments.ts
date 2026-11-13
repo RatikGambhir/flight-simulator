@@ -10,11 +10,17 @@ export class InstrumentCanvas {
   readonly canvas: HTMLCanvasElement
   readonly ctx: CanvasRenderingContext2D
   readonly texture: CanvasTexture
+  private shown: string | number | undefined
 
+  /**
+   * `signature` names everything the instrument shows: while it is unchanged the redraw
+   * and the texture upload are skipped (a panel of autopilot windows changes rarely).
+   */
   constructor(
     readonly width: number,
     readonly height: number,
     private draw: (g: CanvasRenderingContext2D, s: Float64Array, w: number, h: number) => void,
+    private signature?: (s: Float64Array) => string | number,
   ) {
     this.canvas = document.createElement('canvas')
     this.canvas.width = width
@@ -25,13 +31,51 @@ export class InstrumentCanvas {
     this.texture.anisotropy = 4
   }
 
+  /** Returns false when the instrument already shows this state. */
   update(s: Float64Array) {
+    if (this.signature) {
+      const next = this.signature(s)
+      if (next === this.shown) return false
+      this.shown = next
+    }
     this.draw(this.ctx, s, this.width, this.height)
     this.texture.needsUpdate = true
+    return true
   }
 
   dispose() {
     this.texture.dispose()
+  }
+}
+
+/**
+ * Redraws a cockpit's instruments in turn. Each one is still refreshed every `periodMs`,
+ * but a frame redraws only its share of them: drawing and uploading all of a flight
+ * deck's canvases on the same frame (megabytes of texture) made every third frame late.
+ */
+export class InstrumentSchedule {
+  private next = 0
+  private due = -Infinity
+
+  constructor(private readonly instruments: readonly InstrumentCanvas[], private readonly periodMs = 50) {}
+
+  update(s: Float64Array, now = performance.now()) {
+    const count = this.instruments.length
+    if (count === 0) return
+    if (this.due === -Infinity) {
+      // First frame: nothing may be left blank.
+      for (const instrument of this.instruments) instrument.update(s)
+      this.due = now
+      return
+    }
+    const slot = this.periodMs / count
+    // After a pause, do not catch up on more than one round.
+    if (now - this.due > this.periodMs) this.due = now - this.periodMs
+    while (now - this.due >= slot) {
+      this.due += slot
+      this.instruments[this.next].update(s)
+      this.next = (this.next + 1) % count
+    }
   }
 }
 
