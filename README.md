@@ -334,9 +334,10 @@ npm run test:graphics # Node 22.18+; clouds, aircraft geometry/hinges, lake surf
 npm run test:graphics:gpu # macOS with WebGL 2; checks rendered pixels for day, sunset and night
 ```
 
-Clouds refresh one of four samples per 2×2 block each frame. The resolve uses scene
-depth to reconstruct the cloud image around the aircraft and terrain. History is
-reset on camera cuts, relocation, world-origin changes, resolution and quality changes.
+The custom volumetric clouds drift with the wind through a fixed Earth-space density
+field. They use scene depth to composite around the aircraft and terrain and cast
+shadows from the same density field. In the web build, add `?clouds=legacy` to compare
+with the previous renderer and its four-phase reconstruction.
 Atmosphere precomputation is owned per effect lifetime so development reloads
 cannot dispose the lighting textures still used by the sky and clouds.
 
@@ -384,9 +385,11 @@ You can drop the original `stbn.bin` in its place.
   lowers cloud quality) or turn clouds off in Settings.
 * **Weather**: with *Live weather* on (Settings → Weather; needs the Weather API enabled on
   the Google Maps Platform key) cloud cover, haze, rain, snow, wind and turbulence follow
-  the Google Weather API report at the aircraft. The report describes surface conditions:
-  cloud layers sit at fixed heights, precipitation stops above the low deck, and haze is
-  capped so the ground stays visible. Thunderstorms add turbulence but no lightning.
+  the Google Weather API report at the aircraft. The renderer estimates the cloud
+  type and altitude from surface conditions. Fog forms a low layer, persistent
+  precipitation produces a thicker deck, and showers and thunderstorms form
+  taller clouds. Precipitation tapers within the layer. Thunderstorms add
+  turbulence and have no lightning simulation.
 * **Night** (real time, or the Night preset) uses a subtle cool terrain fill, moon-aware
   aircraft lighting, airglow and occluded aircraft lamps. City lights are not simulated.
   Stars retain catalog positions, colors and magnitudes, fade through twilight and dim

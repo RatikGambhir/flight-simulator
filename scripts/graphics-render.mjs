@@ -10,8 +10,11 @@ import {
 } from '../src/scene/cloudRendering.ts'
 import { prepareSky } from '../src/scene/celestialRendering.ts'
 import { NightEffect } from '../src/scene/NightEffect.ts'
+import { VolumetricCloudPass } from '../src/scene/VolumetricCloudPass.ts'
+import { bindCloudGroundLighting } from '../src/scene/cloudGroundLighting.ts'
 import { WaterMask } from '../src/scene/WaterMask.ts'
 import { frame } from '../src/world/frame.ts'
+import { CUMULUS, cloudProfileForWeather } from '../src/weather/cloudProfiles.ts'
 
 const WIDTH = 256
 const HEIGHT = 160
@@ -210,6 +213,128 @@ async function renderChecks() {
   camera.updateMatrixWorld()
   render(0.65, 0, true)
   check(brightness(pixel(0.5, 0.68)) > 25, 'A cockpit cut produces valid cloud lighting')
+
+  camera.near = 0.3
+  camera.fov = 58
+  camera.updateProjectionMatrix()
+  const volume = new VolumetricCloudPass(camera, frame.ecefFromWorld)
+  composer.removePass(cloudPass)
+  composer.addPass(volume, 1)
+  sky.shadowLength = aerial.shadow = aerial.shadowLength = null
+  aerial.overlay = volume.overlay
+  bindCloudGroundLighting(aerial, volume)
+  // Measure the custom cloud composite without the legacy night overlay.
+  const day = new Vector3(0.8, 0, 0.6)
+  const calm = new Vector3()
+  const wind = new Vector3(0, 20, 0)
+  let coverage = 0.63
+  let profile = CUMULUS
+  sky.sunDirection.copy(day)
+  aerial.sunDirection.copy(day)
+  camera.position.set(0, 250, 0)
+  camera.lookAt(0, 670, -1200)
+  night.setFrame(camera, 0, 0, up, [], 250)
+
+  function cloudFrame(seconds = 0, velocity = calm, shadows = false) {
+    volume.setWeather(seconds, { coverage, haze: 3e-5, sun: day, moon: calm, moonPhase: 0, wind: velocity, shadows, profile })
+    composer.render(1 / 60)
+    if (errors.length) throw new Error(errors.filter(Boolean).join('\n') || 'Custom cloud shader failed to link')
+    const error = gl.getError()
+    if (error !== gl.NO_ERROR) throw new Error(`Custom cloud WebGL error 0x${error.toString(16)}`)
+    const samples = new Uint8Array(WIDTH * HEIGHT * 4)
+    gl.readPixels(0, 0, WIDTH, HEIGHT, gl.RGBA, gl.UNSIGNED_BYTE, samples)
+    return samples
+  }
+  const meanDifference = (a, b) => {
+    let difference = 0
+    for (let i = 0; i < a.length; ++i) difference += Math.abs(a[i] - b[i])
+    return difference / a.length
+  }
+  coverage = 0
+  const clear = cloudFrame()
+  coverage = 0.002
+  check(meanDifference(clear, cloudFrame()) < 0.15, 'The first visible traces of coverage fade in continuously')
+  coverage = 0.63
+  const stationary = cloudFrame()
+  check(meanDifference(stationary, clear) > 2, 'The custom volumetric deck contributes visible radiance')
+  check(meanDifference(stationary, cloudFrame(180)) === 0, 'Three minutes in calm air leave stationary clouds pixel-identical')
+  check(meanDifference(stationary, cloudFrame(1 / 60, wind)) < 0.5, 'The first frame of wind moves the cloud field continuously')
+  const drifted = cloudFrame(90, wind)
+  check(meanDifference(stationary, drifted) > 1, 'Sustained wind advects visible formations')
+  check(meanDifference(drifted, cloudFrame(30)) === 0, 'Stopping the wind keeps the accumulated displacement')
+  camera.position.x += wind.y * (90 + 1 / 60)
+  const followingWind = cloudFrame()
+  check(meanDifference(stationary, followingWind) < meanDifference(stationary, drifted) * 0.45,
+    'Moving with the wind holds the same recognizable formations in view')
+  camera.position.x = 0
+  cloudFrame()
+
+  const fixedView = frame.ecefFromWorld.clone().multiply(camera.matrixWorld)
+  frame.setOrigin(6378137, 4100, -2700)
+  const rebasedView = frame.worldFromEcef.clone().multiply(fixedView)
+  rebasedView.decompose(camera.position, camera.quaternion, camera.scale)
+  sky.worldToECEFMatrix.copy(frame.ecefFromWorld)
+  aerial.worldToECEFMatrix.copy(frame.ecefFromWorld)
+  const rebased = cloudFrame()
+  check(meanDifference(drifted, rebased) < 0.3, 'A floating-origin shift preserves the cloud image at the same ECEF camera pose')
+  const original = camera.quaternion.clone()
+  camera.rotateY(1.4)
+  const turned = cloudFrame()
+  check(meanDifference(turned, rebased) > 3, 'A camera cut immediately renders the new view')
+  camera.quaternion.copy(original)
+  check(meanDifference(rebased, cloudFrame()) === 0, 'Returning from a camera cut restores the same image without history')
+
+  const panel = new Mesh(new PlaneGeometry(40, 40), new MeshBasicMaterial({ color: 0x383838, fog: false }))
+  panel.position.set(0, 0, -4).applyQuaternion(camera.quaternion).add(camera.position)
+  panel.quaternion.copy(camera.quaternion)
+  scene.add(panel)
+  const overPanel = cloudFrame()
+  coverage = 0
+  check(meanDifference(overPanel, cloudFrame()) === 0, 'Scene depth occludes the custom volume in front of the camera')
+  // Render a continuous surface so the shadow pass and its integration into
+  // the direct-light term are exercised independently of the cloud composite.
+  scene.remove(panel)
+  panel.geometry.dispose()
+  panel.material.dispose()
+  frame.setOrigin(6378137, 0, 0)
+  sky.worldToECEFMatrix.copy(frame.ecefFromWorld)
+  aerial.worldToECEFMatrix.copy(frame.ecefFromWorld)
+  aerial.overlay = null
+  camera.position.set(0, 800, 0)
+  camera.lookAt(0, 0, -1000)
+  terrain.visible = true
+  coverage = 0.95
+  const lit = cloudFrame()
+  const shadowed = cloudFrame(0, calm, true)
+  check(meanDifference(lit, shadowed) > 3 && brightness(pixel(0.5, 0.45)) > 35,
+    'Custom clouds cast ground shadows while ambient lighting remains visible')
+  check(meanDifference(lit, cloudFrame()) === 0, 'Turning shadows off restores unshadowed terrain immediately')
+
+  terrain.visible = false
+  aerial.overlay = volume.overlay
+  camera.position.set(0, 2300, 0)
+  camera.lookAt(0, 3100, -1500)
+  coverage = 0.68
+  profile = cloudProfileForWeather({ type: 'FOG', precip: 'none', thunder: false, cloudCover: 0.95 })
+  const beforeWeather = cloudFrame()
+  check(meanDifference(beforeWeather, cloudFrame(1 / 60)) < 0.7,
+    'A new weather report starts changing the cloud shape gradually')
+  const fogBelow = cloudFrame(180)
+  coverage = 0
+  check(meanDifference(fogBelow, cloudFrame()) === 0, 'Low stratus from a fog report stays below an aircraft climbing away from it')
+  camera.position.set(0, 140, 0)
+  camera.lookAt(0, 180, -1500)
+  const clearAtGround = cloudFrame()
+  coverage = 0.68
+  check(meanDifference(clearAtGround, cloudFrame()) > 2, 'A fog report fills the low atmosphere with a visible cloud layer')
+  camera.position.set(0, 4000, 0)
+  camera.lookAt(0, 5000, -1500)
+  profile = cloudProfileForWeather({ type: 'THUNDERSTORM', precip: 'rain', thunder: true, cloudCover: 0.95 })
+  const towers = cloudFrame(180)
+  coverage = 0
+  check(meanDifference(towers, cloudFrame()) > 2, 'Thunderstorm towers extend above the ordinary cumulus deck')
+  composer.dispose()
+  cloudPass.dispose()
 }
 
 renderChecks().then(() => {
@@ -218,5 +343,5 @@ renderChecks().then(() => {
 }).catch((error) => {
   document.title = 'FAIL — GeoFlight graphics'
   document.querySelector('pre').textContent += '\n' + (error.stack ?? String(error))
-  window.webkit?.messageHandlers?.graphics?.postMessage({ passed: false, results, error: String(error.stack ?? error) })
+  window.webkit?.messageHandlers?.graphics?.postMessage({ passed: false, results, error: `${error}\n${error.stack ?? ''}` })
 })

@@ -3,12 +3,12 @@
 // @refresh reset
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { EffectComposer, EffectGroup, SMAA, ToneMapping } from '@react-three/postprocessing'
-import { AerialPerspective, Atmosphere, LightingMask, SkyLight, SunLight, type AtmosphereApi } from '@takram/three-atmosphere/r3f'
+import { AerialPerspective, Atmosphere, AtmosphereContext, LightingMask, SkyLight, SunLight, type AtmosphereApi } from '@takram/three-atmosphere/r3f'
 import { Clouds } from '@takram/three-clouds/r3f'
 import type { CloudsEffect } from '@takram/three-clouds'
 import { Dithering, LensFlare } from '@takram/three-geospatial-effects/r3f'
 import { SMAAPreset, ToneMappingMode, type Effect } from 'postprocessing'
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { MathUtils, NoToneMapping, PCFShadowMap, Raycaster, Vector2, Vector3, type DirectionalLight, type HemisphereLight, type PerspectiveCamera } from 'three'
 import type { LightingMaskPass, SunDirectionalLight, SkyLightProbe } from '@takram/three-atmosphere'
 import type { ShaderMaterial } from 'three'
@@ -28,6 +28,8 @@ import { GradeEffect } from './Grade'
 import { Ocean } from './Ocean'
 import { LakeWater } from './LakeWater'
 import { CloudHistory, setCloudNightLighting, stabilizeAerialPerspective, stabilizeClouds, stabilizeNightClouds } from './cloudRendering'
+import { VolumetricCloudPass } from './VolumetricCloudPass'
+import { bindCloudGroundLighting } from './cloudGroundLighting'
 import { WaterMask } from './WaterMask'
 import { NightEffect } from './NightEffect'
 import { useAtmosphereTextures } from './useAtmosphereTextures'
@@ -38,6 +40,7 @@ import { OverlayPass } from './OverlayPass'
 import { CelestialSky } from './CelestialSky'
 import { CelestialState, sceneDate } from './celestial'
 import { CLEAR_HAZE, pollWeather, useWeather, visualTargets, type Conditions } from '../weather/liveWeather'
+import { CUMULUS, cloudProfileForWeather } from '../weather/cloudProfiles'
 import { destinationPoint } from '../navigation/route'
 
 const CLOUD_QUALITY: Record<Quality, 'low' | 'medium' | 'high' | 'ultra'> = {
@@ -125,6 +128,17 @@ const _wu = new Vector3()
 const _wind = new Vector3()
 const _air = new Vector3()
 const _eye = new Vector3()
+const CUSTOM_CLOUDS = new URLSearchParams(window.location.search).get('clouds') !== 'legacy'
+
+function CustomCloudOverlay({ pass }: { pass: VolumetricCloudPass }) {
+  const { transientStates } = useContext(AtmosphereContext)
+  useLayoutEffect(() => {
+    if (!transientStates) return
+    transientStates.overlay = pass.overlay
+    return () => { transientStates.overlay = null }
+  }, [pass, transientStates])
+  return <primitive object={pass} />
+}
 
 function useWorld(): WorldSystem | null {
   const { gl, camera, scene } = useThree()
@@ -174,6 +188,7 @@ interface LoopProps {
   lakes: LakeWater | null
   celestial: CelestialState
   clouds: React.RefObject<CloudsEffect | null>
+  customClouds: VolumetricCloudPass | null
   precipitation: PrecipitationEffect
   night: NightEffect
   nightFill: React.RefObject<HemisphereLight | null>
@@ -182,7 +197,7 @@ interface LoopProps {
   sunThrough: React.RefObject<number>
 }
 
-function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, lakes, celestial, clouds, precipitation, night, nightFill, moonLight, sunThrough }: LoopProps) {
+function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, lakes, celestial, clouds, customClouds, precipitation, night, nightFill, moonLight, sunThrough }: LoopProps) {
   const camera = useThree((s) => s.camera) as PerspectiveCamera
   const gl = useThree((s) => s.gl)
   const rig = useMemo(() => new CameraRig(camera), [camera])
@@ -192,7 +207,8 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
     lastPoll: -1e9,
     report: null as Conditions | null,
     target: null as ReturnType<typeof visualTargets> | null,
-    effect: null as CloudsEffect | null,
+    profile: CUMULUS,
+    effect: null as CloudsEffect | VolumetricCloudPass | null,
     coverage: 0,
     haze: CLEAR_HAZE,
     precip: 0,
@@ -413,16 +429,21 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
     if (report !== wx.report) {
       wx.report = report
       wx.target = report ? visualTargets(report) : null
+      wx.profile = report ? cloudProfileForWeather(report) : CUMULUS
     }
     const target = wx.target
     const cl = clouds.current
+    const cloudEffect = cl ?? customClouds
     // Snap when there is nothing to ease from: manual settings, or a freshly mounted effect.
-    const snap = !target || (cl !== null && cl !== wx.effect)
+    const snap = !target || (cloudEffect !== null && cloudEffect !== wx.effect)
+    wx.effect = cloudEffect
     const ease = snap ? 1 : 1 - Math.exp(-dt / 10)
     wx.coverage += ((target ? target.coverage : settings.cloudCoverage) - wx.coverage) * ease
     wx.haze += ((target ? target.haze : CLEAR_HAZE) - wx.haze) * ease
-    // Precipitation falls from the low cloud deck: none once we climb through it.
-    const below = 1 - Math.min(1, Math.max(0, (s[S.HEIGHT] - 1300) / 700))
+    // Start tapering precipitation lower in the cloud and stop above the deck.
+    const rainBase = customClouds ? MathUtils.lerp(customClouds.base, customClouds.top, 0.24) : 1300
+    const rainDepth = customClouds ? customClouds.top - rainBase : 700
+    const below = MathUtils.clamp(1 - (s[S.HEIGHT] - rainBase) / rainDepth, 0, 1)
     wx.precip += ((target ? target.precip * below : 0) - wx.precip) * Math.min(1, dt / 3)
     if (target && target.precip > 0) wx.snow = target.snow
     _air.set(0, 0, 0).addScaledVector(_e, s[S.WIND_E]).addScaledVector(_n, s[S.WIND_N]).addScaledVector(_u, s[S.WIND_U])
@@ -440,7 +461,6 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
 
     // Cloud shapes drift with the wind (texture offsets are in ECEF metres x repeat).
     if (cl) {
-      wx.effect = cl
       cl.coverage = wx.coverage
       cl.clouds.hazeDensityScale = wx.haze
       setCloudNightLighting(cl, st.dark, celestial.moonDirection, celestial.illuminatedFraction)
@@ -449,19 +469,33 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
       cl.shapeVelocity.copy(_wind).multiplyScalar(-cl.shapeRepeat.x)
       cl.shapeDetailVelocity.copy(_wind).multiplyScalar(-cl.shapeDetailRepeat.x)
     }
+    if (customClouds) {
+      const bearing = MathUtils.degToRad(report?.windFromDeg ?? settings.windFromDeg)
+      const speed = 0.514444 * (report ? Math.min(60, report.windKt) : settings.windSpeedKt)
+      enuBasis(s[S.LAT], s[S.LON], _we, _wn, _wu)
+      _wind.copy(_we).multiplyScalar(-speed * Math.sin(bearing)).addScaledVector(_wn, -speed * Math.cos(bearing))
+      customClouds.setWeather(Math.min(rawDt, 0.25), {
+        coverage: wx.coverage, haze: wx.haze, wind: _wind, sun: celestial.sunDirection,
+        moon: celestial.moonDirection, moonPhase: celestial.illuminatedFraction,
+        shadows: settings.shadows, profile: wx.profile,
+      })
+    }
 
     // Direct sun on the aircraft through the shadow-casting cloud decks above it. The
     // terrain is shaded by the cloud shadow map in the post-process lighting, but the
     // aircraft's own sun light knew nothing of clouds: under an overcast it glowed white
     // over dim, shadowed ground.
     let through = 1
+    const opacity = MathUtils.smoothstep(wx.coverage, 0.25, 0.8)
     if (cl) {
-      const opacity = MathUtils.smoothstep(wx.coverage, 0.25, 0.8)
       for (const layer of cl.cloudLayers) {
         if (!layer.shadow || layer.height <= 0) continue
         const above = MathUtils.clamp((layer.altitude + layer.height - s[S.HEIGHT]) / layer.height, 0, 1)
         through *= 1 - 0.85 * opacity * Math.min(1, layer.densityScale * 5) * above
       }
+    } else if (customClouds) {
+      const above = MathUtils.clamp((customClouds.top - s[S.HEIGHT]) / (customClouds.top - customClouds.base), 0, 1)
+      through = 1 - 0.70 * opacity * above
     }
     sunThrough.current += (through - sunThrough.current) * Math.min(1, dt * 1.5)
 
@@ -560,12 +594,18 @@ function SceneContents() {
   const shadows = useApp((s) => s.settings.shadows)
   const provider = useApp((s) => s.settings.provider)
   const camera = useThree((s) => s.camera)
+  const customClouds = useMemo(() => CUSTOM_CLOUDS ? new VolumetricCloudPass(camera as PerspectiveCamera, frame.ecefFromWorld) : null, [camera])
+  useEffect(() => () => customClouds?.dispose(), [customClouds])
+  const activeCustomClouds = clouds ? customClouds : null
   const scene = useThree((s) => s.scene)
   const [ocean, setOcean] = useState<Ocean | null>(null)
   const [lakes, setLakes] = useState<LakeWater | null>(null)
   const grade = useMemo(() => new GradeEffect(), [])
   const precipitation = useMemo(() => new PrecipitationEffect(), [])
-  const getCloudOverlay = useCallback(() => cloudsRef.current?.atmosphereOverlay?.map ?? null, [])
+  const getCloudOverlay = useCallback(() => {
+    if (customClouds && useApp.getState().settings.clouds) return customClouds.overlay.map
+    return cloudsRef.current?.atmosphereOverlay?.map ?? null
+  }, [customClouds])
   const waterMask = useMemo(() => new WaterMask(), [])
   useEffect(() => {
     const abort = new AbortController()
@@ -600,7 +640,8 @@ function SceneContents() {
     if (!effect) return
     stabilizeAerialPerspective(effect)
     waterMask.shadeAerialPerspective(effect)
-  }, [waterMask])
+    if (customClouds) bindCloudGroundLighting(effect, customClouds)
+  }, [waterMask, customClouds])
   const bindClouds = useCallback((effect: CloudsEffect | null) => {
     if (effect) stabilizeClouds(effect)
     cloudsRef.current = effect
@@ -611,6 +652,8 @@ function SceneContents() {
   useFrame(() => {
     if (sim.render.valid) waterMask.update(sim.latest[S.LAT], sim.latest[S.LON])
     if (aircraft) waterMask.protectAircraft(aircraft.position, Math.max(aircraft.model.span, aircraft.model.length))
+    activeCustomClouds?.setQuality(quality)
+    if (customClouds && !activeCustomClouds) customClouds.groundShadow.cloudGroundStrength.value = 0
     const effect = cloudsRef.current
     if (!effect) return
     // R3F applies the library's resolution default before its quality setter,
@@ -695,10 +738,11 @@ function SceneContents() {
       <SkyEnvironment atmosphere={atmosphere} />
       <LandingGuide world={world} overlay={guide} />
       {world && aircraft ? (
-        <FlightLoop world={world} aircraft={aircraft} atmosphere={atmosphere} sunLight={sunLight} skyLight={skyLight} ocean={ocean} lakes={lakes} celestial={celestial} clouds={cloudsRef} precipitation={precipitation} night={night} nightFill={nightFill} moonLight={moonLight} sunThrough={sunThrough} />
+        <FlightLoop world={world} aircraft={aircraft} atmosphere={atmosphere} sunLight={sunLight} skyLight={skyLight} ocean={ocean} lakes={lakes} celestial={celestial} clouds={cloudsRef} customClouds={activeCustomClouds} precipitation={precipitation} night={night} nightFill={nightFill} moonLight={moonLight} sunThrough={sunThrough} />
       ) : null}
       <EffectComposer multisampling={0} enableNormalPass={provider !== 'open'}>
-        {clouds ? (
+        {activeCustomClouds && <CustomCloudOverlay pass={activeCustomClouds} />}
+        {clouds && !customClouds ? (
           <Clouds
             ref={bindClouds}
             qualityPreset={CLOUD_QUALITY[quality]}

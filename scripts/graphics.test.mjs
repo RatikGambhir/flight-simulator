@@ -11,6 +11,23 @@ import { buildLakeGeometry, distanceToLake, lakeGeoid } from '../src/scene/lakeG
 import { ecefToGeodetic } from '../src/world/frame.ts'
 import { MAX_LAMPS, NightEffect } from '../src/scene/NightEffect.ts'
 import { CockpitLighting } from '../src/aircraft/cockpitLighting.ts'
+import { CUMULUS, cloudProfileForWeather } from '../src/weather/cloudProfiles.ts'
+import { parseConditions } from '../src/weather/liveWeather.ts'
+
+test('live weather chooses cloud profiles for dry, layered and convective conditions', () => {
+  const profile = (type, cover = 100) => cloudProfileForWeather(parseConditions({
+    weatherCondition: { type }, cloudCover: cover,
+  }, 0, 0, 0))
+  assert.equal(profile('PARTLY_CLOUDY', 45), CUMULUS)
+  assert.equal(profile('CLEAR_THEN_RAIN', 10), CUMULUS)
+  assert.ok(profile('MOSTLY_CLOUDY', 75).sheet > CUMULUS.sheet)
+  assert.ok(profile('CLOUDY').top < profile('MOSTLY_CLOUDY', 75).top)
+  assert.deepEqual(profile('LIGHT_RAIN'), profile('CLOUDY'))
+  assert.ok(profile('FOG').base < 0)
+  assert.ok(profile('RAIN').sheet > profile('RAIN_SHOWERS').sheet)
+  assert.ok(profile('HEAVY_SNOW').top > profile('CLOUDY').top)
+  assert.ok(profile('THUNDERSHOWER').top > profile('HEAVY_RAIN_SHOWERS').top)
+})
 
 test('night cockpit lighting dims shared materials once and restores original daytime values', () => {
   const root = new Group(), geometry = new BoxGeometry(), texture = new Texture()
