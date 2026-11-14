@@ -1,9 +1,9 @@
+
 name: Build macOS app
 
 on:
   push:
     branches: [main]
-    # Website-only changes (site/) don't produce a new simulator release.
     paths:
       - 'app/**'
       - '.github/workflows/build-macos.yml'
@@ -19,6 +19,7 @@ defaults:
 jobs:
   build:
     runs-on: macos-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -47,8 +48,36 @@ jobs:
       - name: Run simulation tests
         run: cargo test -p sim-core
 
-      - name: Build universal app (Apple Silicon + Intel)
-        run: npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
+      # Convert the GitHub secret into a .p8 file
+      # that Tauri can use for Apple notarization.
+      - name: Prepare Apple notarization key
+        env:
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s\n' "$APPLE_API_PRIVATE_KEY" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      # Tauri signs and notarizes the app automatically.
+      - name: Build signed and notarized universal app
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          npm run tauri build -- \
+            --target universal-apple-darwin \
+            --bundles app,dmg
+
+      - name: Verify Apple signature and notarization
+        run: |
+          APP="target/universal-apple-darwin/release/bundle/macos/GeoFlight.app"
+
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          xcrun stapler validate "$APP"
+          spctl --assess --type execute --verbose=4 "$APP"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -63,5 +92,8 @@ jobs:
           name: GeoFlight build ${{ github.run_number }}
           body: |
             Universal macOS build (Apple Silicon + Intel).
-            Download the .dmg below, drag GeoFlight to Applications, then right-click it and choose Open the first time (the app is not notarized).
+
+            Signed and notarized by Apple.
+
+            Download the DMG and drag GeoFlight to Applications.
           files: app/target/universal-apple-darwin/release/bundle/dmg/*.dmg
