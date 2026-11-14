@@ -1,5 +1,5 @@
 import type { CloudsEffect } from '@takram/three-clouds'
-import { Quaternion, Uniform, Vector3, type Camera, type RawShaderMaterial, type WebGLRenderer, type WebGLRenderTarget } from 'three'
+import { Quaternion, Uniform, Vector3, type Camera, type RawShaderMaterial } from 'three'
 import type { Effect } from 'postprocessing'
 
 // Compatibility fixes for @takram/three-clouds 0.7.6. Keep these at the
@@ -9,247 +9,11 @@ function replace(source: string, from: string, to: string) {
   return source.replaceAll(from, to)
 }
 
-// Visit four output pixels in turn. The phase in the march and in the resolve
-// must describe the same ray, including at odd framebuffer sizes.
-const QUARTER_RESOLVE = /* glsl */ `
-uniform highp sampler2D sceneDepthBuffer;
-uniform float nearHistoryDepth;
-
-void temporalUpscale(
-  const bool currentFrame,
-  out vec4 outputColor,
-  out float outputShadowLength
-) {
-  vec2 lowSize = vec2(textureSize(colorBuffer, 0));
-  vec2 jitter = jitterOffset * texelSize;
-  vec2 cell = floor((vUv - jitter) * lowSize - 0.5);
-  ivec2 last = ivec2(lowSize) - 1;
-  float sceneDepth = texture(sceneDepthBuffer, vUv).r;
-  vec4 current = vec4(0.0);
-  vec4 square = vec4(0.0);
-  vec2 velocity = vec2(0.0);
-  float total = 0.0;
-  #ifdef SHADOW_LENGTH
-  float shaft = 0.0;
-  float shaftSquare = 0.0;
-  #endif
-  for (int i = 0; i < 4; ++i) {
-    ivec2 tap = clamp(ivec2(cell) + ivec2(i & 1, i >> 1), ivec2(0), last);
-    vec2 uv = (vec2(tap) + 0.5) / lowSize + jitter;
-    float depth = texture(sceneDepthBuffer, uv).r;
-    vec2 tent = max(vec2(0.0), 1.0 - abs((vUv - uv) * lowSize));
-    float weight = tent.x * tent.y * exp(-abs(sceneDepth - depth) * 300.0) + 1e-5;
-    vec4 sampleColor = texelFetch(colorBuffer, tap, 0);
-    current += weight * sampleColor;
-    square += weight * sampleColor * sampleColor;
-    velocity += weight * texelFetch(depthVelocityBuffer, tap, 0).gb;
-    #ifdef SHADOW_LENGTH
-    float sampleShaft = texelFetch(shadowLengthBuffer, tap, 0).r;
-    shaft += weight * sampleShaft;
-    shaftSquare += weight * sampleShaft * sampleShaft;
-    #endif
-    total += weight;
-  }
-  current /= total;
-  velocity /= total;
-  #ifdef SHADOW_LENGTH
-  shaft /= total;
-  #endif
-  vec2 previousUv = vUv - velocity;
-  bool rejected = resetHistory || sceneDepth < nearHistoryDepth ||
-    any(isnan(previousUv)) || any(isinf(previousUv)) ||
-    any(lessThan(previousUv, vec2(0.0))) || any(greaterThan(previousUv, vec2(1.0)));
-  if (rejected) {
-    outputColor = current;
-    #ifdef SHADOW_LENGTH
-    outputShadowLength = shaft;
-    #endif
-    return;
-  }
-
-  // Give each channel a minimum spread. At a marched texel the spatial
-  // filter has nearly zero variance, so hard clipping would expose the grid.
-  float blend = currentFrame ? 0.55 : mix(0.16, 0.38, smoothstep(0.5, 3.0, length(velocity / texelSize)));
-  vec4 historyColor = texture(colorHistoryBuffer, previousUv);
-  vec4 spread = 2.0 * sqrt(max(vec4(0.0), square / total - current * current)) + vec4(0.001, 0.001, 0.001, 0.05);
-  if (any(isnan(historyColor)) || any(isinf(historyColor))) historyColor = current;
-  outputColor = mix(clamp(historyColor, current - spread, current + spread), current, blend);
-  #ifdef SHADOW_LENGTH
-  float historyShaft = texture(shadowLengthHistoryBuffer, previousUv).r;
-  float shaftSpread = 2.0 * sqrt(max(0.0, shaftSquare / total - shaft * shaft)) + 0.05;
-  if (isnan(historyShaft) || isinf(historyShaft)) historyShaft = shaft;
-  outputShadowLength = mix(clamp(historyShaft, shaft - shaftSpread, shaft + shaftSpread), shaft, blend);
-  #endif
-}
-`
-
-function interleaveClouds(effect: CloudsEffect) {
-  const pass = effect.cloudsPass
-  const march = pass.currentMaterial
-  const resolve = pass.resolveMaterial
-  const targets = pass as unknown as {
-    width: number
-    height: number
-    currentRenderTarget: WebGLRenderTarget
-    resolveRenderTarget: WebGLRenderTarget
-    historyRenderTarget: WebGLRenderTarget
-  }
-  const setSize = pass.setSize
-  pass.setSize = function (width, height) {
-    if (!pass.temporalUpscale) {
-      setSize.call(this, width, height)
-      return
-    }
-    targets.width = width
-    targets.height = height
-    const evenWidth = Math.ceil(width / 2) * 2
-    const evenHeight = Math.ceil(height / 2) * 2
-    targets.currentRenderTarget.setSize(evenWidth / 2, evenHeight / 2)
-    targets.resolveRenderTarget.setSize(evenWidth, evenHeight)
-    targets.historyRenderTarget.setSize(evenWidth, evenHeight)
-    march.setSize(evenWidth, evenHeight)
-    resolve.setSize(evenWidth, evenHeight)
-  }
-
-  const copyCamera = march.copyCameraSettings
-  march.copyCameraSettings = function (camera) {
-    copyCamera.call(this, camera)
-    if (!march.temporalUpscale) return
-    const { frame, inverseProjectionMatrix, temporalJitter, reprojectionMatrix, viewReprojectionMatrix,
-      inverseViewMatrix, resolution, mipLevelScale } = march.uniforms
-    const phase = frame.value % 4
-    const x = jitterForPhase(phase, 0) / resolution.value.x
-    const y = jitterForPhase(phase, 1) / resolution.value.y
-    // The library applies its 4x4 jitter first. Replace it while preserving
-    // the previous projection, including changes of FOV and near plane.
-    const previous = march as unknown as { previousProjectionMatrix?: Camera['projectionMatrix']; previousViewMatrix?: Camera['matrixWorldInverse'] }
-    const previousProjection = previous.previousProjectionMatrix ?? camera.projectionMatrix
-    const previousView = previous.previousViewMatrix ?? camera.matrixWorldInverse
-    temporalJitter.value.set(x, y)
-    inverseProjectionMatrix.value.copy(camera.projectionMatrix)
-    inverseProjectionMatrix.value.elements[8] += 2 * x
-    inverseProjectionMatrix.value.elements[9] += 2 * y
-    inverseProjectionMatrix.value.invert()
-    reprojectionMatrix.value.copy(previousProjection)
-    reprojectionMatrix.value.elements[8] += 2 * x
-    reprojectionMatrix.value.elements[9] += 2 * y
-    reprojectionMatrix.value.multiply(previousView)
-    viewReprojectionMatrix.value.copy(reprojectionMatrix.value).multiply(inverseViewMatrix.value)
-    // Estimate the cloud LOD at the density of the finished image.
-    mipLevelScale.value = 0.5
-  }
-  const beforeResolve = resolve.onBeforeRender
-  resolve.onBeforeRender = function (...args) {
-    beforeResolve.apply(this, args)
-    if (pass.temporalUpscale) {
-      const phase = resolve.uniforms.frame.value % 4
-      resolve.uniforms.jitterOffset.value.set(jitterForPhase(phase, 0), jitterForPhase(phase, 1))
-    }
-  }
-  let source = resolve.fragmentShader
-  const start = source.indexOf('void temporalUpscale(')
-  const end = source.indexOf('void temporalAntialiasing(')
-  if (start < 0 || end < start) throw new Error('Cloud shader changed: missing temporalUpscale')
-  source = source.slice(0, start) + QUARTER_RESOLVE + source.slice(end)
-  source = replace(source, `ivec2 lowResCoord = coord / 4;
-  int bayerValue = bayerIndices[coord.x % 4][coord.y % 4];
-  bool currentFrame = bayerValue == frame % 16;`,
-    'bool currentFrame = ivec2(jitterOffset + 0.5) == coord % 2;')
-  resolve.fragmentShader = replace(source, 'temporalUpscale(coord, lowResCoord, currentFrame, outputColor, outputShadowLength);',
-    'temporalUpscale(currentFrame, outputColor, outputShadowLength);')
-  resolve.uniforms.sceneDepthBuffer = march.uniforms.depthBuffer
-  resolve.uniforms.nearHistoryDepth = new Uniform(0)
-  resolve.needsUpdate = true
-}
-
-function jitterForPhase(phase: number, axis: 0 | 1) {
-  // Move diagonally on the first two phases, then visit the opposite pair.
-  const y = phase & 1
-  return (axis === 0 ? y ^ (phase >> 1) : y) - 0.5
-}
-
-/** Keep a fitted shadow map and its matrices together for two flight frames. */
-function reuseCloudShadows(effect: CloudsEffect) {
-  const maps = effect.shadowMaps
-  const pass = effect.shadowPass
-  const fit = maps.update
-  const draw = pass.update
-  // The library looks up the GL texture before binding the array target.
-  // Allocate it on the first draw and after a shadow-map resize.
-  for (const stage of [pass.currentPass, pass.resolvePass]) {
-    const render = stage.render
-    stage.render = function (renderer, input, output, ...args) {
-      renderer.setRenderTarget(output)
-      render.call(this, renderer, input, output, ...args)
-    }
-  }
-  let reuse = false
-  let canReuse = false
-  let lastWidth = 0
-  let lastHeight = 0
-  let lastCascades = 0
-  let lastCoverage = -1
-  const lastSun = new Vector3()
-  maps.update = function (...args) {
-    // Camera cuts and origin changes are signalled by the history controller.
-    // Reuse only on a short frame so shadows don't linger through a long hitch.
-    const reset = pass.resolveMaterial.uniforms.resetHistory.value
-    reuse = effect.temporalUpscale && canReuse && !reset &&
-      lastWidth === maps.mapSize.x && lastHeight === maps.mapSize.y && lastCascades === maps.cascadeCount &&
-      Math.abs(lastCoverage - effect.coverage) < 0.002 &&
-      lastSun.distanceToSquared(effect.sunDirection) < 1e-8
-    if (!reuse) fit.apply(this, args)
-  }
-  pass.update = function (renderer: WebGLRenderer, frame: number, deltaTime: number) {
-    if (!reuse) {
-      draw.call(this, renderer, frame, deltaTime)
-      lastWidth = maps.mapSize.x
-      lastHeight = maps.mapSize.y
-      lastCascades = maps.cascadeCount
-      lastCoverage = effect.coverage
-      lastSun.copy(effect.sunDirection)
-    }
-    canReuse = !reuse && deltaTime > 0 && deltaTime < 0.06
-  }
-}
-
 function stabilizeDensity(material: RawShaderMaterial) {
   let source = material.fragmentShader
   source = replace(source, 'sqrt(1.5 + m2.x - m2.y - 0.5 * sqrt(-24.0 * m2.x + q2))',
     'sqrt(max(0.0, 1.5 + m2.x - m2.y - 0.5 * sqrt(max(0.0, -24.0 * m2.x + q2))))')
   source = replace(source, 'media.weight = density / densitySum;', 'media.weight = density / max(densitySum, 1e-7);')
-  source = replace(source, '  vec4 density = weather.density;', /* glsl */ `
-  vec4 density = weather.density;
-  if (!any(greaterThan(density, vec4(0.0)))) {
-    MediaSample empty;
-    empty.density = 0.0;
-    empty.weight = vec4(0.0);
-    empty.scattering = 0.0;
-    empty.extinction = 0.0;
-    return empty;
-  }`)
-  // Zero-weight turbulence and the default unit weather exponents cannot
-  // affect the sample. Keep the general paths for custom cloud layers.
-  source = replace(source, `  vec4 localWeather = pow(
-    textureLod(
-      localWeatherTexture,
-      uv * localWeatherRepeat + localWeatherOffset,
-      mipLevel
-    ).LOCAL_WEATHER_CHANNELS,
-    weatherExponents
-  );`, `  vec4 localWeather = textureLod(
-    localWeatherTexture, uv * localWeatherRepeat + localWeatherOffset, mipLevel
-  ).LOCAL_WEATHER_CHANNELS;
-  if (any(notEqual(weatherExponents, vec4(1.0)))) localWeather = pow(localWeather, weatherExponents);`)
-  source = replace(source, `  turbulence =
-    turbulenceDisplacement *
-    (texture(turbulenceTexture, turbulenceUv).rgb * 2.0 - 1.0) *
-    dot(density, remapClamped(weather.heightFraction, vec4(0.3), vec4(0.0)));`, `
-  float turbulenceWeight = dot(density, remapClamped(weather.heightFraction, vec4(0.3), vec4(0.0)));
-  if (turbulenceWeight > 0.0) {
-    turbulence = turbulenceDisplacement *
-      (texture(turbulenceTexture, turbulenceUv).rgb * 2.0 - 1.0) * turbulenceWeight;
-  }`)
   material.fragmentShader = source
   material.needsUpdate = true
 }
@@ -296,11 +60,6 @@ export function stabilizeClouds(effect: CloudsEffect) {
   }
 
   let source = clouds.fragmentShader
-  // A 2×2 march spans twice the angular footprint between rays. Scale the
-  // derivatives before the logarithm so texture LOD matches the original grid.
-  source = replace(source, 'vec2 coord = uv * resolution;', 'vec2 coord = uv * resolution * mipLevelScale;')
-  source = replace(source, 'getMipLevel(globeUv * localWeatherRepeat) * mipLevelScale',
-    'getMipLevel(globeUv * localWeatherRepeat)')
   source = replace(source, 'uniform mat4 viewMatrix;', 'uniform mat4 viewMatrix;\nuniform mat4 inverseViewMatrix;')
   source = `uniform highp float nightLighting;\nuniform highp float moonPhase;\nuniform highp vec3 nightMoonDirection;\n${source}`
   source = replace(source, 'float getViewZ(', /* glsl */ `
@@ -309,32 +68,6 @@ float solarVisibility() {
 }
 
 float getViewZ(`)
-  // The phase function depends on the view ray, so evaluate it once for all
-  // occupied samples on that ray. Each sample still integrates its own depth.
-  const phaseTerms = Array.from({ length: 12 }, (_, i) => /* glsl */ `
-  #if ${i} < MULTI_SCATTERING_OCTAVES
-  rayScatteringPhase[${i}] = phaseFunction(cosTheta, ${(2 ** -i).toFixed(11)});
-  #endif`).join('')
-  const scatteringStart = source.indexOf('float approximateMultipleScattering(')
-  const scatteringEnd = source.indexOf('// TODO: Construct spherical harmonics', scatteringStart)
-  if (scatteringStart < 0 || scatteringEnd < 0) throw new Error('Cloud shader changed: missing multiple scattering')
-  const scattering = source.slice(scatteringStart, scatteringEnd)
-  let octave = 0
-  const phase = 'phaseFunction(cosTheta, coeffs.z)'
-  if (scattering.split(phase).length !== 13) throw new Error('Cloud shader changed: multiple-scattering octaves')
-  source = source.slice(0, scatteringStart) + /* glsl */ `
-float rayScatteringPhase[MULTI_SCATTERING_OCTAVES];
-
-void prepareRayScattering(const float cosTheta) {${phaseTerms}
-}
-
-` + scattering.replace('approximateMultipleScattering(const float opticalDepth, const float cosTheta)',
-    'rayMultipleScattering(const float opticalDepth)')
-    .replaceAll(phase, () => `rayScatteringPhase[${octave++}]`) + source.slice(scatteringStart)
-  source = replace(source, 'sunIrradiance * approximateMultipleScattering(opticalDepth, cosTheta)',
-    'sunIrradiance * rayMultipleScattering(opticalDepth)')
-  source = replace(source, '    vec3 rayOrigin = rayNearFar.x * rayDirection + cameraPosition;',
-    '    prepareRayScattering(cosTheta);\n    vec3 rayOrigin = rayNearFar.x * rayDirection + cameraPosition;')
   source = replace(source, 'float sunRayDistance = 0.0;\n      float opticalDepth = marchOpticalDepth(\n        position,\n        sunDirection,', /* glsl */ `
       // Reuse the lighting ray for the dominant sky illumination after twilight.
       float moonElevation = dot(nightMoonDirection, surfaceNormal);
@@ -409,19 +142,6 @@ void prepareRayScattering(const float cosTheta) {${phaseTerms}
     'if (solarVisibility() > 0.0 && all(greaterThanEqual(shadowRayNearFar, vec2(0.0)))) {')
   source = replace(source, 'outputColor = color;', /* glsl */ `
   outputColor = any(isnan(color)) || any(isinf(color)) ? vec4(0.0) : color;`)
-  source = replace(source, 'float stbn = getSTBN();', /* glsl */ `float stbn;
-  #ifdef TEMPORAL_UPSCALE
-  vec3 noiseSize = vec3(textureSize(stbnTexture, 0));
-  vec2 pixel = gl_FragCoord.xy * 2.0 + temporalJitter * resolution;
-  // Decorrelate the repeating gradient in the bundled jitter volume from
-  // the sample grid. Keep the volume's temporal slice for the existing TAA.
-  uint hash = uint(pixel.x) * 1597334677u ^ uint(pixel.y) * 3812015801u;
-  hash = (hash ^ (hash >> 16u)) * 2246822519u;
-  vec2 offset = vec2(float(hash & 127u), float((hash >> 8u) & 127u));
-  stbn = texture(stbnTexture, vec3(pixel + offset, float(frame % int(noiseSize.z))) / noiseSize).r;
-  #else
-  stbn = getSTBN();
-  #endif`)
   clouds.fragmentShader = source
   clouds.uniforms.nightLighting = new Uniform(0)
   clouds.uniforms.moonPhase = new Uniform(0)
@@ -430,8 +150,6 @@ void prepareRayScattering(const float cosTheta) {${phaseTerms}
     'weightedDistanceSum / transmittanceSum', 'weightedDistanceSum / max(transmittanceSum, 1e-7)')
   stabilizeResolve(effect.cloudsPass.resolveMaterial, false)
   stabilizeResolve(effect.shadowPass.resolveMaterial, true)
-  interleaveClouds(effect)
-  reuseCloudShadows(effect)
   effect.cloudsPass.resolveMaterial.uniforms.temporalAlpha.value = 0.2
   clouds.userData.geoflightStableClouds = true
 }
@@ -469,11 +187,7 @@ export class CloudHistory {
       this.sunDirection.distanceToSquared(effect.sunDirection) > 0.0025 ||
       this.position.distanceToSquared(camera.position) > 100 * 100 ||
       Math.abs(this.rotation.dot(camera.quaternion)) < 0.9
-    const resolve = effect.cloudsPass.resolveMaterial.uniforms
-    const far = (camera as Camera & { far?: number }).far ?? 2e7
-    // Foreground aircraft and nearby geometry change too quickly for cloud history.
-    resolve.nearHistoryDepth.value = Math.log2(401) / Math.log2(1 + far)
-    resolve.resetHistory.value = reset
+    effect.cloudsPass.resolveMaterial.uniforms.resetHistory.value = reset
     effect.shadowPass.resolveMaterial.uniforms.resetHistory.value = reset
     this.effect = effect
     this.origin = origin

@@ -184,32 +184,6 @@ async function renderChecks() {
   // Exercise all shader combinations on the same WebGL context as the desktop app.
   render(0.01, 0, true)
   check(brightness(pixel(0.5, 0.56)) > 20, 'Sunset with clouds and cloud shadows renders a visible sky')
-
-  // March a uniform deck with both render paths at an odd target size. Its
-  // silhouette and color should agree when looking away from depth boundaries.
-  camera.position.y = 100
-  camera.rotation.x = 0.35
-  camera.updateMatrixWorld()
-  clouds.localWeatherTexture = texture(new Uint8Array([230, 230, 230, 255]))
-  clouds.clouds.hazeDensityScale = 3e-5
-  clouds.coverage = 0.6
-  clouds.resolutionScale = 0.51
-  render(0.65, 0, true)
-  const points = [[0.2, 0.65], [0.4, 0.7], [0.6, 0.75], [0.8, 0.8]]
-  const full = points.map(([x, y]) => pixel(x, y))
-  clouds.temporalUpscale = true
-  render(0.65, 0, true)
-  const interleaved = points.map(([x, y]) => pixel(x, y))
-  check(full.every((value, i) => delta(value, interleaved[i]) < 12),
-    'Four-phase cloud reconstruction retains daylight cloud shading at odd render sizes')
-
-  camera.near = 0.03
-  camera.fov = 66
-  camera.rotateY(0.30)
-  camera.updateProjectionMatrix()
-  camera.updateMatrixWorld()
-  render(0.65, 0, true)
-  check(brightness(pixel(0.5, 0.68)) > 25, 'A cockpit cut produces valid cloud lighting')
 }
 
 renderChecks().then(() => {

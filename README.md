@@ -334,9 +334,9 @@ npm run test:graphics # Node 22.18+; clouds, aircraft geometry/hinges, lake surf
 npm run test:graphics:gpu # macOS with WebGL 2; checks rendered pixels for day, sunset and night
 ```
 
-Clouds refresh one of four samples per 2×2 block each frame. The resolve uses scene
-depth to reconstruct the cloud image around the aircraft and terrain. History is
-reset on camera cuts, relocation, world-origin changes, resolution and quality changes.
+Clouds use continuous reduced-resolution sampling with temporal antialiasing,
+rather than the library's 16-frame checkerboard reconstruction. History is reset
+on camera cuts, relocation, world-origin changes, resolution and quality changes.
 Atmosphere precomputation is owned per effect lifetime so development reloads
 cannot dispose the lighting textures still used by the sky and clouds.
 
