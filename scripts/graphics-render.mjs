@@ -1,5 +1,5 @@
 import {
-  Color, Data3DTexture, DataTexture, HalfFloatType, Mesh, MeshBasicMaterial,
+  BoxGeometry, Color, Data3DTexture, DataTexture, HalfFloatType, Mesh, MeshBasicMaterial,
   PerspectiveCamera, PlaneGeometry, RedFormat, Scene, Texture, Vector3, WebGLRenderer,
 } from 'three'
 import { EffectComposer, EffectPass, RenderPass, ToneMappingEffect, ToneMappingMode } from 'postprocessing'
@@ -14,6 +14,7 @@ import { VolumetricCloudPass } from '../src/scene/VolumetricCloudPass.ts'
 import { bindCloudGroundLighting } from '../src/scene/cloudGroundLighting.ts'
 import { WaterMask } from '../src/scene/WaterMask.ts'
 import { frame } from '../src/world/frame.ts'
+import { RunwayScenery } from '../src/world/RunwayScenery.ts'
 import { CUMULUS, cloudProfileForWeather } from '../src/weather/cloudProfiles.ts'
 
 const WIDTH = 256
@@ -284,6 +285,22 @@ async function renderChecks() {
   camera.quaternion.copy(original)
   check(meanDifference(rebased, cloudFrame()) === 0, 'Returning from a camera cut restores the same image without history')
 
+  // The same cloud pass is shared by cockpit, wing and exterior cameras.
+  // Cover both wider cockpit projection and views that graze the cloud deck.
+  const savedPosition = camera.position.clone()
+  for (const [pitch, yaw, fov] of [[-0.38, 0.5, 58], [0.02, 1.8, 66], [0.28, -0.7, 49]]) {
+    camera.position.y = 820
+    camera.rotation.set(pitch, yaw, 0.08, 'YXZ')
+    camera.fov = fov
+    camera.updateProjectionMatrix()
+    const view = cloudFrame()
+    check(meanDifference(view, cloudFrame(1 / 60)) === 0, `Cloud sampling stays quiet at pitch ${pitch} and FOV ${fov}°`)
+  }
+  camera.position.copy(savedPosition)
+  camera.quaternion.copy(original)
+  camera.fov = 58
+  camera.updateProjectionMatrix()
+
   const panel = new Mesh(new PlaneGeometry(40, 40), new MeshBasicMaterial({ color: 0x383838, fog: false }))
   panel.position.set(0, 0, -4).applyQuaternion(camera.quaternion).add(camera.position)
   panel.quaternion.copy(camera.quaternion)
@@ -333,6 +350,43 @@ async function renderChecks() {
   const towers = cloudFrame(180)
   coverage = 0
   check(meanDifference(towers, cloudFrame()) > 2, 'Thunderstorm towers extend above the ordinary cumulus deck')
+  // Simulate a photogrammetry tile containing an object in the strip and
+  // another outside it. Both must use the ordinary scenery material path.
+  frame.setOrigin(6378137, 0, 0)
+  const testEnd = (ident, lat) => ({ ident, lat, lon: 0, elevation_ft: 0, displaced_threshold_ft: 0 })
+  const airport = { ident: 'TEST', elevation_ft: 0 }
+  const testRunway = { width_ft: 150, surface: 'ASP', ends: [testEnd('36', 0), testEnd('18', 0.008)] }
+  const details = { airport, runways: [testRunway], geoid_m: 0 }
+  const runways = new RunwayScenery(async query => query.type === 'airport' ? details : [{ airport }])
+  await runways.update(0, 0, 0, airport.ident)
+  const scenery = new Scene()
+  const fragments = new BoxGeometry(8, 4, 8)
+  const red = new MeshBasicMaterial({ color: 'red' })
+  for (const x of [0, 42]) {
+    const fragment = new Mesh(fragments, red)
+    fragment.position.set(x, 1, -64)
+    scenery.add(fragment)
+  }
+  runways.prepareScenery(scenery)
+  scenery.add(runways.group)
+  camera.position.set(0, 37, 25)
+  camera.lookAt(20, 0, -70)
+  renderer.setRenderTarget(null)
+  renderer.render(scenery, camera)
+  const projected = (x) => {
+    const point = new Vector3(x, 2, -64).project(camera)
+    return pixel(point.x * 0.5 + 0.5, point.y * 0.5 + 0.5)
+  }
+  const inside = projected(0)
+  const outside = projected(42)
+  check(!errors.length && gl.getError() === gl.NO_ERROR, 'Runway material and scenery masking compile in WebKit')
+  check(brightness(inside) > 20 && inside[0] - inside[1] < 20 && outside[0] > 180 && outside[1] < 40,
+    `Runway pavement covers scan fragments inside the strip and preserves scenery outside (${inside} / ${outside})`)
+  check(runways.clears(new Vector3(0, 2, -64)) && !runways.clears(new Vector3(42, 2, -64)) &&
+    !runways.clears(new Vector3(0, 20, -64)), 'Ground probes use the same narrow runway clearance as the renderer')
+  runways.dispose()
+  fragments.dispose()
+  red.dispose()
   composer.dispose()
   cloudPass.dispose()
 }

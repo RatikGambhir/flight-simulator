@@ -230,6 +230,8 @@ export function FlightChrome() {
   const routeOpen = useApp((s) => s.routeOpen)
   const destination = useApp((s) => s.destination)
   const markerVisible = useApp((s) => s.destinationMarkerVisible)
+  const runwayAlignmentVisible = useApp((s) => s.runwayAlignmentVisible)
+  const hasDepartureRunway = useApp((s) => s.spawn.kind === 'runway')
   const hudVisible = useApp((s) => s.hudVisible)
   const pauseMenu = useApp((s) => s.pauseMenu)
   const crashed = useApp((s) => s.crashed)
@@ -247,6 +249,7 @@ export function FlightChrome() {
       {!pauseMenu && !crashed ? <div className="navigation-actions glass">
         <button className="btn ghost" onClick={() => useApp.getState().setRouteOpen(!routeOpen)}>Route map <kbd>M</kbd></button>
         <button className="btn ghost" onClick={() => useApp.getState().setSkipToOpen(true)}>Skip to <kbd>Q</kbd></button>
+        <button className="btn ghost" disabled={!destination && !hasDepartureRunway} aria-pressed={runwayAlignmentVisible} onClick={() => useApp.getState().toggleRunwayAlignment()}>Runway alignment <kbd>H</kbd></button>
         <button className="btn ghost" disabled={!destination} aria-pressed={markerVisible} onClick={() => useApp.getState().toggleDestinationMarker()}>Airport marker {markerVisible ? 'on' : 'off'} <kbd>⇧ ~</kbd></button>
       </div> : null}
       <LoadingIndicator />

@@ -1,6 +1,7 @@
 node_modules
 dist
 target
+/bench-results/
 public/sim/
 src-tauri/gen
 .env

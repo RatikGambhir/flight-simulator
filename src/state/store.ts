@@ -134,11 +134,13 @@ interface AppState {
   skipToOpen: boolean
   setSkipToOpen: (open: boolean) => void
   destinationMarkerVisible: boolean
+  runwayAlignmentVisible: boolean
   autopilotRunway: AutopilotRunway | null
   setAutopilotRunway: (runway: AutopilotRunway | null) => void
   setDestination: (destination: AirportDetail | null) => void
   setRouteOpen: (routeOpen: boolean) => void
   toggleDestinationMarker: () => void
+  toggleRunwayAlignment: () => void
   settings: Settings
   camera: CameraMode
   hudVisible: boolean
@@ -172,11 +174,13 @@ export const useApp = create<AppState>((set, get) => ({
   skipToOpen: false,
   setSkipToOpen: (skipToOpen) => set({ skipToOpen }),
   destinationMarkerVisible: false,
+  runwayAlignmentVisible: false,
   autopilotRunway: null,
   setAutopilotRunway: (autopilotRunway) => set({ autopilotRunway }),
   setDestination: (destination) => set({ destination }),
   setRouteOpen: (routeOpen) => set({ routeOpen }),
   toggleDestinationMarker: () => set((s) => ({ destinationMarkerVisible: !s.destinationMarkerVisible })),
+  toggleRunwayAlignment: () => set((s) => ({ runwayAlignmentVisible: !s.runwayAlignmentVisible })),
   spawn: { kind: 'runway', airport: 'KORD', airportName: "Chicago O'Hare International Airport", runway: '28R', mode: 'takeoff' },
   settings: loadSettings(),
   camera: 'chase',

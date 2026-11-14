@@ -14,7 +14,7 @@
 
 import { useFrame } from '@react-three/fiber'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { BoxGeometry, type BufferGeometry, Color, CylinderGeometry, DoubleSide, Group, Matrix4, Mesh, MeshBasicMaterial, PlaneGeometry, Vector3 } from 'three'
+import { BoxGeometry, BufferGeometry, Color, CylinderGeometry, DoubleSide, Float32BufferAttribute, Group, Matrix4, Mesh, MeshBasicMaterial, PlaneGeometry, Vector3 } from 'three'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { angleDelta, navigationTo } from '../navigation/route'
 import { landingRunway } from '../navigation/runwayGuide'
@@ -96,8 +96,9 @@ const _m = new Matrix4()
 export function LandingGuide({ world, overlay }: { world: WorldSystem | null; overlay: OverlayPass }) {
   const destination = useApp((s) => s.destination)
   const spawn = useApp((s) => s.spawn)
-  // A flight started on final approach has a runway to land on even without a destination.
-  const approachIdent = !destination && spawn.kind === 'runway' && spawn.mode !== 'takeoff' ? spawn.airport : null
+  const runwayAlignment = useApp((s) => s.runwayAlignmentVisible)
+  // On request, the departure runway can be used for lining up as well.
+  const approachIdent = !destination && spawn.kind === 'runway' && (spawn.mode !== 'takeoff' || runwayAlignment) ? spawn.airport : null
   const [approach, setApproach] = useState<AirportDetail | null>(null)
   useEffect(() => {
     setApproach(null)
@@ -186,13 +187,40 @@ export function LandingGuide({ world, overlay }: { world: WorldSystem | null; ov
     const beam = new Mesh(new CylinderGeometry(1, 1, 1, 16, 1, true).translate(0, 0.5, 0), material(0.6))
     beam.position.z = aimZ
 
-    root.add(left, right, threshold, zone, beam, ...gates)
+    const markers = new Group()
+    const posts: Mesh[] = []
+    const postGeometry = new CylinderGeometry(1, 1, 1, 12, 1, true).translate(0, 0.5, 0)
+    const postMaterial = material(0.62)
+    const arrows: BufferGeometry[] = []
+    // Spaced along the physical strip so its orientation can be read from the side.
+    for (const fraction of [0.12, 0.34, 0.56, 0.78, 0.94]) {
+      const z = -fraction * length
+      const post = new Mesh(postGeometry, postMaterial)
+      post.position.z = z
+      posts.push(post)
+      markers.add(post)
+    }
+    // Chevrons point from the landing threshold down the runway, in local -Z.
+    const arrowWidth = width * 0.46
+    const arrowLength = Math.min(135, length * 0.13)
+    for (const fraction of [0.18, 0.42, 0.66, 0.86]) {
+      const z = -fraction * length
+      const g = new BufferGeometry().setAttribute('position', new Float32BufferAttribute([
+        -arrowWidth, 0.5, z, 0, 0.5, z - arrowLength, 0, 0.5, z - arrowLength * 0.60,
+        arrowWidth, 0.5, z, 0, 0.5, z - arrowLength * 0.60, 0, 0.5, z - arrowLength,
+      ], 3))
+      arrows.push(g)
+    }
+    markers.add(new Mesh(mergeGeometries(arrows), material(0.86)))
+    arrows.forEach((geometry) => geometry.dispose())
+
+    root.add(left, right, threshold, zone, beam, markers, ...gates)
     // Unlit guide: drawn by the overlay pass after the post-process sun, sky and night lighting.
     root.traverse((o) => {
       o.frustumCulled = false
       o.renderOrder = 5
     })
-    return { root, left, right, zone, gates, beam, length }
+    return { root, left, right, zone, gates, beam, markers, posts, postMaterial }
   }, [target, overlay])
 
   useEffect(() => {
@@ -202,12 +230,16 @@ export function LandingGuide({ world, overlay }: { world: WorldSystem | null; ov
     overlay.overlay.add(parts.root)
     return () => {
       overlay.overlay.remove(parts.root)
+      const geometries = new Set<BufferGeometry>()
+      const materials = new Set<MeshBasicMaterial>()
       parts.root.traverse((o) => {
         const mesh = o as Mesh
         if (!mesh.isMesh) return
-        mesh.geometry.dispose()
-        ;(mesh.material as MeshBasicMaterial).dispose()
+        geometries.add(mesh.geometry)
+        materials.add(mesh.material as MeshBasicMaterial)
       })
+      for (const geometry of geometries) geometry.dispose()
+      for (const material of materials) material.dispose()
     }
   }, [parts, overlay])
 
@@ -224,7 +256,8 @@ export function LandingGuide({ world, overlay }: { world: WorldSystem | null; ov
     const flags = s[S.FLAGS] | 0
     // Rolled out and slowed down: the job is done.
     const landed = (flags & Flags.ON_GROUND) !== 0 && s[S.GS_KT] < 40
-    const show = sim.render.valid && app.phase === 'flying' && !app.crashed && range < SHOW_WITHIN_M && !landed
+    const show = sim.render.valid && app.phase === 'flying' && !app.crashed && range < SHOW_WITHIN_M &&
+      (!landed || app.runwayAlignmentVisible)
     parts.root.visible = show
     if (!show) return
 
@@ -268,10 +301,20 @@ export function LandingGuide({ world, overlay }: { world: WorldSystem | null; ov
     const edge = Math.min(40, Math.max(1.5, eye * 0.0026))
     parts.left.scale.x = parts.right.scale.x = edge
     const beamFade = Math.min(1, Math.max(0, (eye - BEAM_FADE_NEAR_M) / (BEAM_FADE_FAR_M - BEAM_FADE_NEAR_M)))
-    parts.beam.visible = beamFade > 0.01
+    parts.beam.visible = !app.runwayAlignmentVisible && beamFade > 0.01
     const radius = Math.max(6, eye * 0.004)
     parts.beam.scale.set(radius, Math.max(400, eye * 0.05), radius)
     ;(parts.beam.material as MeshBasicMaterial).opacity = 0.6 * beamFade
+    parts.markers.visible = app.runwayAlignmentVisible
+    if (parts.markers.visible) {
+      const postRadius = Math.min(28, Math.max(2.5, eye * 0.0025))
+      const postHeight = Math.min(420, Math.max(30, eye * 0.024))
+      parts.postMaterial.opacity = 0.45 + 0.23 * beamFade
+      for (const [i, post] of parts.posts.entries()) {
+        // The first post is taller so the threshold is identifiable at long range.
+        post.scale.set(postRadius, postHeight * (i === 0 ? 1.45 : 1), postRadius)
+      }
+    }
     // Gates appear as the approach begins.
     const approach = 0.8 * Math.min(1, Math.max(0, (22_000 - eye) / 6000))
     for (const gate of parts.gates) {

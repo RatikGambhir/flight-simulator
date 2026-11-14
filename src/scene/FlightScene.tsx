@@ -514,6 +514,8 @@ function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, ocean, la
     const detail = Math.min(4, 1 + sweep * 2.5)
     world.detailScale += (detail - world.detailScale) * Math.min(1, dt * 0.5)
     world.setFlightPath(aircraft.position, _vel, _u, pose.heightAboveGround, app.phase === 'flying' && !awaiting)
+    const airport = app.spawn.kind === 'runway' ? app.spawn.airport : null
+    world.updateRunways(s[S.LAT], s[S.LON], pose.heightAboveGround, airport)
     world.update()
     worldStatus.tick(world)
 

@@ -66,7 +66,8 @@ export const BINDINGS: { group: string; items: Binding[] }[] = [
       { keys: 'Mouse drag', action: 'Look around / orbit' },
       { keys: 'Scroll', action: 'Zoom' },
       { keys: 'Double-click', action: 'Reset view' },
-      { keys: 'H', action: 'Hide / show HUD' },
+      { keys: 'H', action: 'Show / hide runway alignment markers' },
+      { keys: '⇧H', action: 'Hide / show HUD' },
       { keys: 'M', action: 'Destination & route map' },
       { keys: 'Q', action: 'Skip to a distance from your destination' },
       { keys: 'Shift + ~', action: 'Show / hide destination airport in the world' },
@@ -225,7 +226,9 @@ class Controls {
         app.setCamera(app.camera === 'cockpit' ? 'chase' : 'cockpit')
         break
       case 'KeyH':
-        app.toggleHud()
+        if (e.shiftKey) app.toggleHud()
+        else if (app.destination || app.spawn.kind === 'runway') app.toggleRunwayAlignment()
+        else app.toast('Choose a destination first — press M to open the route map.')
         break
       case 'KeyP':
         sim.command({ type: 'toggle_pause' })

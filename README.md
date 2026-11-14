@@ -95,7 +95,7 @@ else (airports, cities, landmarks) is searched offline from bundled data.
 | `Z` | Autopilot on/off at any moment. With a destination it flies the whole flight (see below); without one it holds heading, altitude and speed. `⇧←/→` heading ±5°, `⇧↑/↓` altitude ±500 ft, `⌥R/⌥F` speed ±5 kt (cruise level/speed when navigating) |
 | `C`, `V`, `1`–`6` | Cycle cameras, cockpit↔exterior, Exterior / Cockpit / Wing / Free / Cinematic / Flyby |
 | Mouse drag / scroll / double‑click | Look around or orbit / zoom / reset view |
-| `H`, `P`, `Esc`, `?` | HUD, pause, menu, controls help |
+| `H`, `Shift+H`, `P`, `Esc`, `?` | Runway alignment markers, HUD, pause, menu, controls help |
 | `M` | Destination selection and live route map |
 | `Q` | Skip to a chosen number of miles from the destination |
 | `Shift` + `~` (the backquote key) | Toggle the destination airport beacon |

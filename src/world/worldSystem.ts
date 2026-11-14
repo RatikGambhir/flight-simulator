@@ -3,10 +3,12 @@
 
 import { BufferGeometry, Mesh, Raycaster, Sphere, Vector3, type Intersection, type Object3D, type PerspectiveCamera, type Scene, type WebGLRenderer } from 'three'
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh'
+import { sim } from '../sim/simClient'
 import type { Settings } from '../state/store'
 import { createLayers, type StaticAttribution, type TileLayer } from './providers'
 import { ecefToGeodetic, frame, geodeticToEcef } from './frame'
 import { FlightPrefetch } from './flightPrefetch'
+import { RunwayScenery } from './RunwayScenery'
 
 // BVH-accelerated raycasts; trees are built lazily only for tiles under the aircraft.
 BufferGeometry.prototype.computeBoundsTree = computeBoundsTree
@@ -31,6 +33,7 @@ export class WorldSystem {
   private readonly hits: Intersection[] = []
   private readonly candidates: Mesh[] = []
   private readonly prefetch = new FlightPrefetch()
+  private readonly runways = new RunwayScenery((query) => sim.query(query))
   private prefetchActive = false
   private readonly prefetchResolution: number
   failed = false
@@ -49,12 +52,14 @@ export class WorldSystem {
     this.layers = layers
     this.staticAttributions = attributions
     ;(this.raycaster as Raycaster & { firstHitOnly?: boolean }).firstHitOnly = true
+    scene.add(this.runways.group)
     for (const l of layers) {
       // The streaming view can activate tiles outside the visible camera.
       // Let Three cull those meshes before submitting them to the GPU.
       l.tiles.autoDisableRendererCulling = false
       l.tiles.setCamera(camera)
       l.tiles.setResolutionFromRenderer(camera, renderer)
+      l.tiles.addEventListener('load-model', ({ scene }) => this.runways.prepareScenery(scene))
       l.tiles.addEventListener('load-error', (e: { error: Error; url: string | URL }) => {
         const msg = String(e.error?.message ?? e.error)
         // Root tileset failures (bad key, API not enabled) are fatal for the layer.
@@ -83,6 +88,7 @@ export class WorldSystem {
    * the renderer keeps newly loaded tiles current on its own.
    */
   syncTransforms() {
+    this.runways.sync()
     if (frame.version === this.syncedVersion && this.geoidOffset === this.syncedGeoid) return
     this.syncedVersion = frame.version
     this.syncedGeoid = this.geoidOffset
@@ -132,6 +138,10 @@ export class WorldSystem {
     }
   }
 
+  updateRunways(lat: number, lon: number, agl: number, airport: string | null) {
+    this.runways.update(lat, lon, agl, airport)
+  }
+
   /** 0..1 progress of currently requested tiles. */
   get loadProgress() {
     let p = 1
@@ -179,8 +189,21 @@ export class WorldSystem {
       }
       // TilesGroup.raycast defers to TilesRenderer.raycast, which also handles
       // plugin-generated (GPU-displaced) terrain.
+      ;(this.raycaster as Raycaster & { firstHitOnly: boolean }).firstHitOnly = true
+      const end = this.hits.length
       l.tiles.group.raycast(this.raycaster, this.hits)
+      if (this.hits.length > end && this.runways.clears(this.hits[end].point)) {
+        // A removed scan fragment can be the first hit in this layer.
+        // Retry only in that case to find solid terrain or a tall obstruction.
+        this.hits.length = end
+        ;(this.raycaster as Raycaster & { firstHitOnly: boolean }).firstHitOnly = false
+        l.tiles.group.raycast(this.raycaster, this.hits)
+        for (let i = this.hits.length - 1; i >= end; --i) {
+          if (this.runways.clears(this.hits[i].point)) this.hits.splice(i, 1)
+        }
+      }
     }
+    this.raycaster.intersectObjects(this.runways.group.children, false, this.hits)
     if (this.hits.length === 0) return null
     let best = this.hits[0]
     for (const h of this.hits) if (h.distance < best.distance) best = h
@@ -234,6 +257,8 @@ export class WorldSystem {
   }
 
   dispose() {
+    this.scene.remove(this.runways.group)
+    this.runways.dispose()
     for (const l of this.layers) {
       this.scene.remove(l.tiles.group)
       l.tiles.dispose()

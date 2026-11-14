@@ -145,14 +145,16 @@ void main() {
   shadowColor = vec4(exp(-opticalDepth * ds * extinction * smoothstep(0.0, 0.10, coverage)), 0.0, 0.0, 1.0);
 }
 #else
-void march(vec3 ray, float start, float end, float phase, float jitter, inout vec4 sum) {
+void march(vec3 ray, float start, float end, float phase, float sampleOffset, inout vec4 sum) {
   float span = end - start;
   if (span <= 0.0) return;
   // Spend more of the budget near the start of long, grazing rays. Uniformly
   // dividing those rays used kilometre-wide steps through nearby cloud edges.
   float budget = min(float(stepBudget) * (1.0 + 0.45 * smoothstep(10000.0, 40000.0, span)),
     max(1.0, span / (32.0 + start * 0.007)));
-  float bias = 0.80 * smoothstep(8000.0, 65000.0, span);
+  // Long paths that enter close to the eye need fine steps at the front.
+  // For an already distant deck the same bias starves its middle and back.
+  float bias = 0.86 * smoothstep(8000.0, 58000.0, span) * (1.0 - smoothstep(14000.0, 55000.0, start));
   float attenuation = extinction * smoothstep(0.0, 0.10, coverage);
   float t = start;
   for (int i = 0; i < 116; ++i) {
@@ -160,15 +162,43 @@ void march(vec3 ray, float start, float end, float phase, float jitter, inout ve
     float u = min(1.0, float(i + 1) / budget);
     float next = start + span * mix(u, u * u * u, bias);
     float ds = next - t;
-    float d = t + ds * jitter;
-    t += ds;
+    // A small, continuous shift indexed by the Earth-fixed ray direction
+    // breaks up coherent bands without reintroducing per-pixel noise.
+    float d = t + ds * (0.5 + sampleOffset);
+    if (d >= maxDistance * 0.76) break;
+    t = next;
     vec3 p = ray * d;
     float h = heightAt(p);
     float detailWeight = 1.0 - smoothstep(16000.0, 53000.0, d);
     // Match the volume's level of detail to the integration step. Derivatives
     // of texture coordinates inside the divergent march are undefined.
-    float lod = clamp(log2(max(1.0, ds * 80.0 / SHAPE_PERIOD)), 0.0, 3.1);
-    float density = densityAt(p, h, detailWeight, lod);
+    float lod = clamp(log2(max(1.0, ds * 132.0 / SHAPE_PERIOD)), 0.0, 3.2);
+    float density;
+    if (ds < 120.0) {
+      density = densityAt(p, h, detailWeight, lod);
+    } else if (ds < 340.0) {
+      // Average quadrature samples over long steps before applying
+      // extinction. This removes the screen-space speckles of one jittered
+      // sample without blurring the composite across the aircraft silhouette.
+      vec3 offset = ray * (ds * 0.288675);
+      vec3 nearSample = p - offset;
+      vec3 farSample = p + offset;
+      float nearDensity = densityAt(nearSample, heightAt(nearSample), detailWeight, lod);
+      float farDensity = densityAt(farSample, heightAt(farSample), detailWeight, lod);
+      density = 0.5 * (nearDensity + farDensity);
+      // Light the sampled cloud, even when the step midpoint is in clear air.
+      p += offset * ((farDensity - nearDensity) / max(0.001, nearDensity + farDensity));
+      h = heightAt(p);
+    } else {
+      vec3 offset = ray * (ds * 0.387298);
+      vec3 nearSample = p - offset;
+      vec3 farSample = p + offset;
+      float nearDensity = (5.0 / 18.0) * densityAt(nearSample, heightAt(nearSample), detailWeight, lod);
+      float farDensity = (5.0 / 18.0) * densityAt(farSample, heightAt(farSample), detailWeight, lod);
+      density = (4.0 / 9.0) * densityAt(p, h, detailWeight, lod) + nearDensity + farDensity;
+      p += offset * ((farDensity - nearDensity) / max(0.001, density));
+      h = heightAt(p);
+    }
     if (density < 0.001) continue;
     vec3 lightProbe = p + lightDirection * 95.0;
     float shadow = 240.0 * densityAt(lightProbe, heightAt(lightProbe), detailWeight, lod);
@@ -179,12 +209,14 @@ void march(vec3 ray, float start, float end, float phase, float jitter, inout ve
     // Strong contrast in the first scattering order, with a softer contribution
     // from light that bounced through the cloud before reaching this point.
     float illumination = 0.82 * exp(-shadow * 0.012) + 0.18 * exp(-shadow * 0.0035);
-    float ambient = mix(0.23, 0.82, smoothstep(cloudProfile.x, mix(cloudProfile.x, cloudProfile.y, 0.86), h));
-    ambient *= mix(0.62, 1.0, exp(-shadow * 0.0026));
+    float ambient = mix(0.19, 0.78, smoothstep(cloudProfile.x, mix(cloudProfile.x, cloudProfile.y, 0.86), h));
+    ambient *= mix(0.59, 1.0, exp(-shadow * 0.0026));
     vec3 radiance = skyLight * ambient + directLight * phase * illumination;
     float haze = 1.0 - exp(-(0.000007 + hazeDensity * 0.22) * d);
     radiance = mix(radiance, hazeColor, haze);
-    float distant = 1.0 - smoothstep(24000.0, maxDistance, d);
+    // Fade unresolved distant volumes into the atmosphere before the small
+    // structures collapse into visible, evenly spaced horizontal layers.
+    float distant = 1.0 - smoothstep(14000.0, maxDistance * 0.76, d);
     float alpha = 1.0 - exp(-ds * density * attenuation * distant * distant);
     sum += (1.0 - sum.a) * alpha * vec4(radiance, 1.0);
   }
@@ -238,16 +270,13 @@ void main() {
   float end = min(limit, outer.y);
   float forward = max(0.0, dot(ray, lightDirection));
   float phase = 0.73 + 0.27 * forward + 1.1 * pow(forward, 12.0);
-  uvec2 pixel = uvec2(gl_FragCoord.xy);
-  uint hash = pixel.x * 1973u + pixel.y * 9277u + 8917u;
-  hash = (hash ^ (hash >> 16u)) * 73244475u;
-  hash = (hash ^ (hash >> 16u)) * 73244475u;
-  float jitter = 0.25 + 0.5 * float((hash ^ (hash >> 16u)) & 65535u) / 65535.0;
+  float sampleOffset = 0.09 * sin(dot(ray, vec3(190.0, 118.0, -160.0)))
+    * sin(dot(ray, vec3(-112.0, 175.0, 148.0)));
   if (inner.x < inner.y) {
-    march(ray, start, min(end, inner.x), phase, jitter, cloudColor);
-    march(ray, max(start, inner.y), end, phase, jitter, cloudColor);
+    march(ray, start, min(end, inner.x), phase, sampleOffset, cloudColor);
+    march(ray, max(start, inner.y), end, phase, sampleOffset, cloudColor);
   } else {
-    march(ray, start, end, phase, jitter, cloudColor);
+    march(ray, start, end, phase, sampleOffset, cloudColor);
   }
   // Above the mist, the cloud deck is usually in front of it.
   float mistInFront = 1.0 - smoothstep(325.0, 425.0, eyeAltitude);
