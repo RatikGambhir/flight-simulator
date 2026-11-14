@@ -9,6 +9,10 @@ on:
       - '.github/workflows/build-macos.yml'
   workflow_dispatch:
 
+concurrency:
+  group: build-macos-release
+  queue: max
+
 permissions:
   contents: write
 
@@ -21,13 +25,19 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: app/package-lock.json
+
+      - name: Get app version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -80,16 +90,34 @@ jobs:
           spctl --assess --type execute --verbose=4 "$APP"
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: GeoFlight-macOS
           path: app/target/universal-apple-darwin/release/bundle/dmg/*.dmg
 
+      - name: Check whether the version tag exists
+        id: release-tag
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG"; then
+            echo "Tag $RELEASE_TAG already exists. Skipping release."
+          else
+            status=$?
+            if [ "$status" -ne 2 ]; then
+              exit "$status"
+            fi
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        if: steps.release-tag.outputs.publish == 'true'
+        uses: softprops/action-gh-release@v3
         with:
-          tag_name: build-${{ github.run_number }}
-          name: GeoFlight build ${{ github.run_number }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: GeoFlight ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
           body: |
             Universal macOS build (Apple Silicon + Intel).
 
