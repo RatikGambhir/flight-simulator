@@ -2,6 +2,8 @@
 export const REPO_URL = 'https://github.com/RatikGambhir/flight-simulator'
 /** CI publishes a universal macOS .dmg to GitHub Releases on every simulator change. */
 export const DOWNLOAD_URL = `${REPO_URL}/releases/latest`
+/** Read at runtime so download buttons always point at the newest .dmg (see useDownloadUrl). */
+export const LATEST_RELEASE_API_URL = 'https://api.github.com/repos/RatikGambhir/flight-simulator/releases/latest'
 export const RELEASES_URL = `${REPO_URL}/releases`
 export const SOURCE_README_URL = `${REPO_URL}/tree/main/app#readme`
 

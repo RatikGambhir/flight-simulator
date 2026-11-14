@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Picture } from '@/components/Picture'
 import { EASE_OUT } from '@/lib/motion'
 import { PHOTOS } from '@/content/images'
-import { DOWNLOAD_URL } from '@/lib/site'
+import { useDownloadUrl } from '@/lib/latest-release'
 
 const HEADLINE = ['The world', 'is yours', 'to explore.']
 
@@ -23,6 +23,7 @@ const intro = (delay: number) => ({
 })
 
 export function Hero() {
+  const downloadUrl = useDownloadUrl()
   const ref = useRef<HTMLElement>(null)
   const still = useReducedMotion()
   const { scrollYProgress } = useScroll({ target: ref, offset: ['start start', 'end start'] })
@@ -78,7 +79,7 @@ export function Hero() {
 
         <motion.div {...intro(0.82)} className="mt-8 flex flex-col gap-3 sm:flex-row">
           <Button asChild size="xl" className="shadow-[0_8px_30px_-8px_oklch(0.83_0.12_72/0.5)]">
-            <a href={DOWNLOAD_URL} target="_blank" rel="noreferrer">
+            <a href={downloadUrl} target="_blank" rel="noreferrer">
               <ArrowDownToLine data-icon="inline-start" aria-hidden />
               Download Simulator
             </a>

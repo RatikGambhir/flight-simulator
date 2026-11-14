@@ -4,7 +4,8 @@ import { ArrowDownToLine, Menu } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
-import { DOWNLOAD_URL, NAV_LINKS } from '@/lib/site'
+import { NAV_LINKS } from '@/lib/site'
+import { useDownloadUrl } from '@/lib/latest-release'
 import { EASE_OUT } from '@/lib/motion'
 
 export function Wordmark({ className }: { className?: string }) {
@@ -17,6 +18,7 @@ export function Wordmark({ className }: { className?: string }) {
 }
 
 export function SiteNav() {
+  const downloadUrl = useDownloadUrl()
   const { scrollY } = useScroll()
   const [scrolled, setScrolled] = useState(false)
   const [open, setOpen] = useState(false)
@@ -61,7 +63,7 @@ export function SiteNav() {
 
         <div className="flex items-center gap-2">
           <Button asChild size="lg" className="hidden rounded-full px-4 sm:inline-flex">
-            <a href={DOWNLOAD_URL} target="_blank" rel="noreferrer">
+            <a href={downloadUrl} target="_blank" rel="noreferrer">
               <ArrowDownToLine data-icon="inline-start" aria-hidden />
               Download
             </a>
@@ -94,7 +96,7 @@ export function SiteNav() {
               </ul>
               <div className="mt-auto p-4">
                 <Button asChild size="xl" className="w-full">
-                  <a href={DOWNLOAD_URL} target="_blank" rel="noreferrer">
+                  <a href={downloadUrl} target="_blank" rel="noreferrer">
                     <ArrowDownToLine data-icon="inline-start" aria-hidden />
                     Download for macOS
                   </a>

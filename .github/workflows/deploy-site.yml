@@ -1,0 +1,54 @@
+name: Deploy site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/deploy-site.yml'
+
+# A newer push supersedes an older one; only the latest commit needs to go live.
+concurrency:
+  group: deploy-site
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: site
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      # Project token for the geoflight-site Railway project (Project Settings → Tokens).
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_SERVICE_ID: 6f3f3458-4d19-4eea-b018-b37592b0afc0
+    steps:
+      - uses: actions/checkout@v5
+
+      # Uploads site/ to Railway, which builds it with Railpack (detects the Vite
+      # app and serves dist/ as a static site). --ci waits and fails the job if the
+      # Railway build or deploy fails.
+      - name: Deploy to Railway
+        working-directory: .
+        run: npx --yes @railway/cli@5.74.0 up site --path-as-root --ci --service "$RAILWAY_SERVICE_ID"

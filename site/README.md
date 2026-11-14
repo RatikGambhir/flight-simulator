@@ -36,6 +36,7 @@ pixel dimensions) plus a 1600 px JPEG, and register it in `src/content/images.ts
 
 ## Links
 
-Download buttons point at the latest GitHub release (`src/lib/site.ts`), which the simulator's CI
-publishes as a universal macOS `.dmg`. Platform availability is listed in the same file; only add a
-platform there once a real build exists.
+Download buttons resolve the newest `.dmg` from the GitHub Releases API at page load
+(`src/lib/latest-release.ts`), falling back to the latest-release page. The simulator's CI
+(`.github/workflows/build-macos.yml`) publishes each release as a universal macOS `.dmg`. Platform
+availability is listed in `src/lib/site.ts`; only add a platform there once a real build exists.

@@ -5,10 +5,12 @@ import { Button } from '@/components/ui/button'
 import { Picture } from '@/components/Picture'
 import { Reveal } from '@/components/Reveal'
 import { PHOTOS } from '@/content/images'
-import { DOWNLOAD_URL, PLATFORMS, REPO_URL } from '@/lib/site'
+import { PLATFORMS, REPO_URL } from '@/lib/site'
+import { useDownloadUrl } from '@/lib/latest-release'
 import { cn } from '@/lib/utils'
 
 export function FinalCta() {
+  const downloadUrl = useDownloadUrl()
   const ref = useRef<HTMLElement>(null)
   const still = useReducedMotion()
   const { scrollYProgress } = useScroll({ target: ref, offset: ['start end', 'end end'] })
@@ -39,7 +41,7 @@ export function FinalCta() {
 
         <Reveal delay={0.18} className="mt-9 flex w-full flex-col items-center justify-center gap-3 sm:w-auto sm:flex-row">
           <Button asChild size="xl" className="w-full sm:w-auto">
-            <a href={DOWNLOAD_URL} target="_blank" rel="noreferrer">
+            <a href={downloadUrl} target="_blank" rel="noreferrer">
               <ArrowDownToLine data-icon="inline-start" aria-hidden />
               Download for macOS
             </a>
