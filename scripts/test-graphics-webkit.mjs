@@ -12,6 +12,7 @@ try {
     configFile: false,
     publicDir: false,
     logLevel: 'error',
+    define: { 'import.meta.url': 'document.baseURI' },
     build: {
       outDir: output,
       rollupOptions: {

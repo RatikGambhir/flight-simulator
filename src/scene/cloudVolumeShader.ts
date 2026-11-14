@@ -31,14 +31,17 @@ uniform vec3 weatherPhase;
 uniform vec3 spacingPhase;
 uniform vec3 shapePhase;
 uniform vec3 detailPhase;
+uniform vec3 cirrusPhase;
 uniform vec3 lightDirection;
 uniform vec3 directLight;
 uniform vec3 skyLight;
 uniform vec3 hazeColor;
 uniform float coverage;
 uniform vec4 cloudProfile; // base, top, stratiform fraction, convective fraction
+uniform vec3 middleCloud; // base, top, coverage
+uniform vec3 highCloud;
 uniform float hazeDensity;
-uniform float fogExtinction;
+uniform float groundHeight;
 uniform float cameraFar;
 uniform bool logarithmicDepth;
 uniform int stepBudget;
@@ -145,6 +148,56 @@ void main() {
   shadowColor = vec4(exp(-opticalDepth * ds * extinction * smoothstep(0.0, 0.10, coverage)), 0.0, 0.0, 1.0);
 }
 #else
+// Each spherical deck can be crossed on the near side, the far side, or both.
+// Return the two intervals in ray order, clipped to the scene depth.
+vec4 deckIntervals(vec2 deck, float a, float b, float limit) {
+  if (deck.y <= deck.x) return vec4(0.0);
+  vec2 outer = shell(deck.y, a, b);
+  vec2 inner = shell(deck.x, a, b);
+  float start = max(0.0, outer.x);
+  float end = min(limit, outer.y);
+  if (inner.x >= inner.y) return vec4(start, end, 0.0, 0.0);
+  return vec4(start, min(end, inner.x), max(start, inner.y), end);
+}
+
+// The thinner upper decks share the existing noise texture and overlay. Sample
+// them with a short march so they don't need another full-resolution pass.
+void marchUpper(vec3 ray, vec2 interval, vec3 deck, bool cirrus, float phase, inout vec4 sum) {
+  float span = interval.y - interval.x;
+  if (span <= 0.0 || sum.a > 0.992) return;
+  int samples = int(clamp(ceil(span / (cirrus ? 1100.0 : 620.0)), 3.0, 12.0));
+  float ds = span / float(samples);
+  for (int i = 0; i < 12; ++i) {
+    if (i >= samples || sum.a > 0.992) break;
+    float d = interval.x + (float(i) + 0.5) * ds;
+    vec3 p = ray * d;
+    float height = heightAt(p);
+    float h = clamp((height - deck.x) / (deck.y - deck.x), 0.0, 1.0);
+    vec3 radial = normalize(eyeScaled + ellipsoidScale(p));
+    vec3 horizontal = p - radial * height;
+    vec3 offset = horizontal / SPACING_PERIOD;
+    float density;
+    if (cirrus) {
+      // Elongate the wisps along a fixed Earth-relative direction.
+      vec3 axis = normalize(vec3(0.81, 0.47, 0.34));
+      vec3 across = offset - 0.86 * dot(offset, axis) * axis;
+      float veil = textureLod(noiseField, weatherPhase + horizontal / WEATHER_PERIOD + vec3(0.13, 0.71, 0.45), 0.0).r;
+      float fibres = textureLod(noiseField, cirrusPhase + across + vec3(0.18, 0.34, 0.25 * h), 0.8).b;
+      density = smoothstep(0.0, 0.24, 0.62 * veil + 0.56 * fibres - mix(0.88, 0.55, deck.z));
+    } else {
+      float banks = textureLod(noiseField, spacingPhase + offset + vec3(0.61, 0.28, 0.83), 0.0).r;
+      float billows = textureLod(noiseField, shapePhase + (horizontal + radial * (height - deck.x)) / SHAPE_PERIOD, 0.8).g;
+      density = smoothstep(0.0, 0.23, 0.58 * banks + 0.62 * billows - mix(0.85, 0.49, deck.z));
+    }
+    float edge = smoothstep(0.0, 0.19, h) * (1.0 - smoothstep(0.62, 1.0, h));
+    float distanceFade = 1.0 - smoothstep(45000.0, maxDistance, d);
+    float alpha = 1.0 - exp(-ds * density * edge * deck.z * distanceFade * (cirrus ? 0.00025 : 0.0017));
+    vec3 light = skyLight * mix(0.62, 0.95, h) + directLight * (cirrus ? 0.64 : 0.45) * phase;
+    light = mix(light, hazeColor, 1.0 - exp(-(0.000007 + hazeDensity * 0.22) * d));
+    sum += (1.0 - sum.a) * alpha * vec4(light, 1.0);
+  }
+}
+
 void march(vec3 ray, float start, float end, float phase, float sampleOffset, inout vec4 sum) {
   float span = end - start;
   if (span <= 0.0) return;
@@ -232,7 +285,7 @@ void main() {
   float a = dot(scaled, scaled);
   float b = dot(scaled, eyeScaled);
   float limit = maxDistance;
-  float ground = shell(0.0, a, b).x;
+  float ground = shell(min(0.0, groundHeight), a, b).x;
   if (ground >= 0.0) limit = min(limit, ground);
   float depth = texture(sceneDepth, screenUv).r;
   if (depth < 1.0) {
@@ -242,45 +295,19 @@ void main() {
       : -hit.z / hit.w;
     limit = min(limit, z / -viewRay.z);
   }
-  // A fog report also adds ground-hugging mist. Integrate a shallow layer
-  // against the real scene depth so visibility falls with distance.
-  vec4 fog = vec4(0.0);
-  if (fogExtinction > 1e-6) {
-    vec2 mist = shell(380.0, a, b);
-    float start = max(0.0, mist.x);
-    float end = min(limit, mist.y);
-    if (end > start) {
-      float span = end - start;
-      float depth = 0.0;
-      for (int i = 0; i < 6; ++i) {
-        float height = heightAt(ray * (start + (float(i) + 0.5) * span / 6.0));
-        depth += 1.0 - smoothstep(35.0, 380.0, height);
-      }
-      float fogAlpha = 1.0 - exp(-fogExtinction * smoothstep(0.0, 0.24, coverage) * span * depth / 6.0);
-      fog = fogAlpha * vec4(hazeColor * 0.85, 1.0);
-    }
-  }
-  vec2 outer = shell(cloudProfile.y, a, b);
-  if (outer.y <= 0.0 || outer.y <= outer.x || outer.x >= maxDistance) {
-    cloudColor = fog;
-    return;
-  }
-  vec2 inner = shell(cloudProfile.x, a, b);
-  float start = max(0.0, outer.x);
-  float end = min(limit, outer.y);
   float forward = max(0.0, dot(ray, lightDirection));
   float phase = 0.73 + 0.27 * forward + 1.1 * pow(forward, 12.0);
   float sampleOffset = 0.09 * sin(dot(ray, vec3(190.0, 118.0, -160.0)))
     * sin(dot(ray, vec3(-112.0, 175.0, 148.0)));
-  if (inner.x < inner.y) {
-    march(ray, start, min(end, inner.x), phase, sampleOffset, cloudColor);
-    march(ray, max(start, inner.y), end, phase, sampleOffset, cloudColor);
-  } else {
-    march(ray, start, end, phase, sampleOffset, cloudColor);
-  }
-  // Above the mist, the cloud deck is usually in front of it.
-  float mistInFront = 1.0 - smoothstep(325.0, 425.0, eyeAltitude);
-  cloudColor = mix(cloudColor + fog * (1.0 - cloudColor.a), fog + cloudColor * (1.0 - fog.a), mistInFront);
+  vec4 high = highCloud.z > 0.001 ? deckIntervals(highCloud.xy, a, b, limit) : vec4(0.0);
+  vec4 middle = middleCloud.z > 0.001 ? deckIntervals(middleCloud.xy, a, b, limit) : vec4(0.0);
+  vec4 low = deckIntervals(cloudProfile.xy, a, b, limit);
+  marchUpper(ray, high.xy, highCloud, true, phase, cloudColor);
+  marchUpper(ray, middle.xy, middleCloud, false, phase, cloudColor);
+  march(ray, low.x, low.y, phase, sampleOffset, cloudColor);
+  march(ray, low.z, low.w, phase, sampleOffset, cloudColor);
+  marchUpper(ray, middle.zw, middleCloud, false, phase, cloudColor);
+  marchUpper(ray, high.zw, highCloud, true, phase, cloudColor);
 }
 #endif
 `

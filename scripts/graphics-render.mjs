@@ -15,7 +15,10 @@ import { bindCloudGroundLighting } from '../src/scene/cloudGroundLighting.ts'
 import { WaterMask } from '../src/scene/WaterMask.ts'
 import { frame } from '../src/world/frame.ts'
 import { RunwayScenery } from '../src/world/RunwayScenery.ts'
+import { createLayers } from '../src/world/providers.ts'
 import { CUMULUS, cloudProfileForWeather } from '../src/weather/cloudProfiles.ts'
+import { CLEAR_HAZE, parseConditions, visualTargets } from '../src/weather/liveWeather.ts'
+import { OverlayPass } from '../src/scene/OverlayPass.ts'
 
 const WIDTH = 256
 const HEIGHT = 160
@@ -48,6 +51,17 @@ async function renderChecks() {
     link(program)
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) errors.push(gl.getProgramInfoLog(program))
   }
+
+  // Quality changes replace the tiles renderer. Exercise the same teardown and
+  // decoder reuse without contacting Google or requiring a user key.
+  const google = { provider: 'google', googleApiKey: '', quality: 'high' }
+  const first = createLayers(google, renderer).layers[0].tiles
+  const replacement = createLayers({ ...google, quality: 'ultra' }, renderer).layers[0].tiles
+  first.dispose()
+  replacement.dispose()
+  check(first.lruCache.maxBytesSize === 320e6 && replacement.lruCache.maxBytesSize === 480e6 &&
+    first.downloadQueue.maxJobsPerOrigin === 10 && first.parseQueue.maxJobs === 2,
+  'Google scenery can be replaced and disposed with bounded tile loading')
 
   const atmosphere = await new PrecomputedTexturesGenerator(renderer).update()
   frame.setOrigin(6378137, 0, 0)
@@ -230,6 +244,10 @@ async function renderChecks() {
   const wind = new Vector3(0, 20, 0)
   let coverage = 0.63
   let profile = CUMULUS
+  let groundHeight = 0
+  let haze = CLEAR_HAZE
+  let upperClouds = false
+  let latitude = 45
   sky.sunDirection.copy(day)
   aerial.sunDirection.copy(day)
   camera.position.set(0, 250, 0)
@@ -237,7 +255,10 @@ async function renderChecks() {
   night.setFrame(camera, 0, 0, up, [], 250)
 
   function cloudFrame(seconds = 0, velocity = calm, shadows = false) {
-    volume.setWeather(seconds, { coverage, haze: 3e-5, sun: day, moon: calm, moonPhase: 0, wind: velocity, shadows, profile })
+    volume.setWeather(seconds, {
+      coverage, haze, sun: day, moon: calm, moonPhase: 0, wind: velocity, shadows,
+      profile, groundHeight, upperClouds, latitude,
+    })
     composer.render(1 / 60)
     if (errors.length) throw new Error(errors.filter(Boolean).join('\n') || 'Custom cloud shader failed to link')
     const error = gl.getError()
@@ -327,37 +348,87 @@ async function renderChecks() {
     'Custom clouds cast ground shadows while ambient lighting remains visible')
   check(meanDifference(lit, cloudFrame()) === 0, 'Turning shadows off restores unshadowed terrain immediately')
 
-  terrain.visible = false
   aerial.overlay = volume.overlay
-  camera.position.set(0, 2300, 0)
-  camera.lookAt(0, 3100, -1500)
-  coverage = 0.68
-  profile = cloudProfileForWeather({ type: 'FOG', precip: 'none', thunder: false, cloudCover: 0.95 })
-  const beforeWeather = cloudFrame()
-  check(meanDifference(beforeWeather, cloudFrame(1 / 60)) < 0.7,
-    'A new weather report starts changing the cloud shape gradually')
-  const fogBelow = cloudFrame(180)
+  groundHeight = 1800
+  terrain.position.y = groundHeight
+  camera.position.set(0, groundHeight + 915, 0)
+  camera.lookAt(0, groundHeight, -1000)
   coverage = 0
-  check(meanDifference(fogBelow, cloudFrame()) === 0, 'Low stratus from a fog report stays below an aircraft climbing away from it')
-  camera.position.set(0, 140, 0)
-  camera.lookAt(0, 180, -1500)
-  const clearAtGround = cloudFrame()
-  coverage = 0.68
-  check(meanDifference(clearAtGround, cloudFrame()) > 2, 'A fog report fills the low atmosphere with a visible cloud layer')
+  const clearApproach = cloudFrame(180)
+  coverage = 0.72
+  check(meanDifference(clearApproach, cloudFrame()) === 0,
+    'Ordinary clouds stay above a descending approach at 3,000 ft above a high-elevation airport')
+  const fogReport = parseConditions({
+    weatherCondition: { type: 'FOG' }, cloudCover: 100, visibility: { distance: 0.5 },
+  }, 0, 0, 0)
+  camera.position.set(0, groundHeight + 140, 0)
+  camera.lookAt(0, groundHeight, -1500)
+  coverage = 0
+  const clearAtGround = cloudFrame(180)
+  ;({ coverage, haze } = visualTargets(fogReport))
+  profile = cloudProfileForWeather(fogReport)
+  check(meanDifference(clearAtGround, cloudFrame(180)) === 0, 'A live fog report leaves the view clear near the ground')
+
+  terrain.visible = false
+  groundHeight = 0
   camera.position.set(0, 4000, 0)
   camera.lookAt(0, 5000, -1500)
+  profile = CUMULUS
+  coverage = 0.68
+  const beforeWeather = cloudFrame(180)
   profile = cloudProfileForWeather({ type: 'THUNDERSTORM', precip: 'rain', thunder: true, cloudCover: 0.95 })
+  check(meanDifference(beforeWeather, cloudFrame(1 / 60)) < 0.7,
+    'A new weather report starts changing the cloud shape gradually')
   const towers = cloudFrame(180)
   coverage = 0
   check(meanDifference(towers, cloudFrame()) > 2, 'Thunderstorm towers extend above the ordinary cumulus deck')
+
+  // Separate the decks by looking up from between them, then repeat in the tropics.
+  profile = CUMULUS
+  upperClouds = true
+  coverage = 0.72
+  camera.position.set(0, 5000, 0)
+  camera.lookAt(0, 9800, -4500)
+  const highClouds = cloudFrame(180)
+  upperClouds = false
+  check(meanDifference(highClouds, cloudFrame(180)) > 0.4, 'Temperate cirrus is visible from above the middle cloud deck')
+  camera.position.set(0, 5000, 0)
+  camera.lookAt(0, 3100, -2400)
+  upperClouds = true
+  const middleClouds = cloudFrame(180)
+  upperClouds = false
+  check(meanDifference(middleClouds, cloudFrame(180)) > 1, 'Middle clouds render between the low deck and cirrus')
+  camera.position.set(0, 10_500, 0)
+  camera.lookAt(0, 15_500, -4500)
+  upperClouds = true
+  const aboveTemperateClouds = cloudFrame(180)
+  latitude = 10
+  const tropicalClouds = cloudFrame(180)
+  check(meanDifference(aboveTemperateClouds, tropicalClouds) > 0.4, 'Tropical cirrus renders above the temperate high cloud deck')
+
+  const tropicalView = frame.ecefFromWorld.clone().multiply(camera.matrixWorld)
+  const moveOrigin = (x, y, z) => {
+    frame.setOrigin(x, y, z)
+    frame.worldFromEcef.clone().multiply(tropicalView).decompose(camera.position, camera.quaternion, camera.scale)
+    sky.worldToECEFMatrix.copy(frame.ecefFromWorld)
+    aerial.worldToECEFMatrix.copy(frame.ecefFromWorld)
+  }
+  moveOrigin(6378137, 4100, -2700)
+  check(meanDifference(tropicalClouds, cloudFrame()) < 0.3, 'A floating-origin shift preserves high cloud formations')
+  moveOrigin(6378137, 0, 0)
+  coverage = 0
+  check(meanDifference(aboveTemperateClouds, cloudFrame(180)) === 0, 'A clear report leaves all three cloud levels empty')
   // Simulate a photogrammetry tile containing an object in the strip and
   // another outside it. Both must use the ordinary scenery material path.
   frame.setOrigin(6378137, 0, 0)
   const testEnd = (ident, lat) => ({ ident, lat, lon: 0, elevation_ft: 0, displaced_threshold_ft: 0 })
-  const airport = { ident: 'TEST', elevation_ft: 0 }
+  const airport = { ident: 'TEST', elevation_ft: 0, size: 'large' }
   const testRunway = { width_ft: 150, surface: 'ASP', ends: [testEnd('36', 0), testEnd('18', 0.008)] }
   const details = { airport, runways: [testRunway], geoid_m: 0 }
-  const runways = new RunwayScenery(async query => query.type === 'airport' ? details : [{ airport }])
+  let obscured = false
+  const opaque = texture(new Uint8Array([0, 0, 0, 255]))
+  const overlays = new OverlayPass(camera, () => obscured ? opaque : null)
+  const runways = new RunwayScenery(async query => query.type === 'airport' ? details : [{ airport }], overlays)
   await runways.update(0, 0, 0, airport.ident)
   const scenery = new Scene()
   const fragments = new BoxGeometry(8, 4, 8)
@@ -384,7 +455,32 @@ async function renderChecks() {
     `Runway pavement covers scan fragments inside the strip and preserves scenery outside (${inside} / ${outside})`)
   check(runways.clears(new Vector3(0, 2, -64)) && !runways.clears(new Vector3(42, 2, -64)) &&
     !runways.clears(new Vector3(0, 20, -64)), 'Ground probes use the same narrow runway clearance as the renderer')
+  const approach = new EffectComposer(renderer, { frameBufferType: HalfFloatType, multisampling: 0 })
+  approach.addPass(new RenderPass(scenery, camera))
+  approach.addPass(overlays)
+  approach.addPass(new EffectPass(camera, new ToneMappingEffect({ mode: ToneMappingMode.AGX })))
+  camera.position.set(0, 560, 10_000)
+  camera.lookAt(0, 0, 0)
+  camera.updateMatrixWorld()
+  const edge = new Vector3(testRunway.width_ft * 0.3048 / 2, 0.65, -2).project(camera)
+  function edgeBrightness() {
+    approach.render(1 / 60)
+    if (errors.length) throw new Error(errors.filter(Boolean).join('\n') || 'Runway light shader failed to link')
+    const x = edge.x * 0.5 + 0.5
+    const y = edge.y * 0.5 + 0.5
+    return Array.from({ length: 25 }, (_, i) => brightness(pixel(x + (i % 5 - 2) / WIDTH, y + (Math.floor(i / 5) - 2) / HEIGHT)))
+  }
+  const unlit = edgeBrightness()
+  runways.setNight(1)
+  const litEdge = edgeBrightness()
+  const lightGain = Math.max(...litEdge.map((value, i) => value - unlit[i]))
+  check(lightGain > 20, `Runway edge lights are visible on final at night (brightness gain ${lightGain.toFixed(1)})`)
+  obscured = true
+  check(edgeBrightness().every((value, i) => value === unlit[i]), 'An opaque cloud hides the runway edge lights')
+  check(!errors.length && gl.getError() === gl.NO_ERROR, 'Runway edge lights compile and composite without WebGL errors')
   runways.dispose()
+  approach.dispose()
+  opaque.dispose()
   fragments.dispose()
   red.dispose()
   composer.dispose()

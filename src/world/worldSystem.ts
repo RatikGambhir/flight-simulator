@@ -4,6 +4,7 @@
 import { BufferGeometry, Mesh, Raycaster, Sphere, Vector3, type Intersection, type Object3D, type PerspectiveCamera, type Scene, type WebGLRenderer } from 'three'
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh'
 import { sim } from '../sim/simClient'
+import type { OverlayPass } from '../scene/OverlayPass'
 import type { Settings } from '../state/store'
 import { createLayers, type StaticAttribution, type TileLayer } from './providers'
 import { ecefToGeodetic, frame, geodeticToEcef } from './frame'
@@ -33,7 +34,7 @@ export class WorldSystem {
   private readonly hits: Intersection[] = []
   private readonly candidates: Mesh[] = []
   private readonly prefetch = new FlightPrefetch()
-  private readonly runways = new RunwayScenery((query) => sim.query(query))
+  private readonly runways: RunwayScenery
   private prefetchActive = false
   private readonly prefetchResolution: number
   failed = false
@@ -46,7 +47,9 @@ export class WorldSystem {
     private renderer: WebGLRenderer,
     private camera: PerspectiveCamera,
     private scene: Scene,
+    overlay: OverlayPass,
   ) {
+    this.runways = new RunwayScenery((query) => sim.query(query), overlay)
     this.prefetchResolution = { low: 64, medium: 96, high: 128, ultra: 192 }[settings.quality]
     const { layers, attributions } = createLayers(settings, renderer)
     this.layers = layers
@@ -138,7 +141,8 @@ export class WorldSystem {
     }
   }
 
-  updateRunways(lat: number, lon: number, agl: number, airport: string | null) {
+  updateRunways(lat: number, lon: number, agl: number, airport: string | null, darkness: number) {
+    this.runways.setNight(darkness)
     this.runways.update(lat, lon, agl, airport)
   }
 

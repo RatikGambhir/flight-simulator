@@ -11,8 +11,8 @@ import { buildLakeGeometry, distanceToLake, lakeGeoid } from '../src/scene/lakeG
 import { ecefToGeodetic } from '../src/world/frame.ts'
 import { MAX_LAMPS, NightEffect } from '../src/scene/NightEffect.ts'
 import { CockpitLighting } from '../src/aircraft/cockpitLighting.ts'
-import { CUMULUS, cloudProfileForWeather } from '../src/weather/cloudProfiles.ts'
-import { parseConditions } from '../src/weather/liveWeather.ts'
+import { CUMULUS, cloudProfileForWeather, upperCloudHeights } from '../src/weather/cloudProfiles.ts'
+import { CLEAR_HAZE, parseConditions, visualTargets } from '../src/weather/liveWeather.ts'
 
 test('live weather chooses cloud profiles for dry, layered and convective conditions', () => {
   const profile = (type, cover = 100) => cloudProfileForWeather(parseConditions({
@@ -22,11 +22,44 @@ test('live weather chooses cloud profiles for dry, layered and convective condit
   assert.equal(profile('CLEAR_THEN_RAIN', 10), CUMULUS)
   assert.ok(profile('MOSTLY_CLOUDY', 75).sheet > CUMULUS.sheet)
   assert.ok(profile('CLOUDY').top < profile('MOSTLY_CLOUDY', 75).top)
-  assert.deepEqual(profile('LIGHT_RAIN'), profile('CLOUDY'))
-  assert.ok(profile('FOG').base < 0)
+  assert.ok(profile('LIGHT_RAIN').base < profile('CLOUDY').base)
   assert.ok(profile('RAIN').sheet > profile('RAIN_SHOWERS').sheet)
   assert.ok(profile('HEAVY_SNOW').top > profile('CLOUDY').top)
   assert.ok(profile('THUNDERSHOWER').top > profile('HEAVY_RAIN_SHOWERS').top)
+})
+
+test('clear weather renders no cloud deck and ordinary cloud bases leave room below', () => {
+  const report = (type, cloudCover) => parseConditions({ weatherCondition: { type }, cloudCover }, 0, 0, 0)
+  assert.equal(visualTargets(report('CLEAR')).coverage, 0)
+  assert.equal(visualTargets(report('TYPE_UNSPECIFIED', 0)).coverage, 0)
+  assert.equal(visualTargets(report('CLEAR_THEN_RAIN')).precip, 0)
+  assert.ok(visualTargets(report('PARTLY_CLOUDY', 45)).coverage > 0)
+  assert.ok(CUMULUS.base / 0.3048 > 4500)
+  assert.equal(CUMULUS.top, 2000)
+  assert.ok(cloudProfileForWeather(report('CLOUDY', 100)).base / 0.3048 > 2500)
+})
+
+test('fog and mist remain in the live report while the approach renders without them', () => {
+  for (const type of ['FOG', 'MIST']) {
+    const report = parseConditions({
+      weatherCondition: { type }, cloudCover: 100, visibility: { distance: 0.5 },
+    }, 0, 0, 0)
+    assert.equal(report.type, type)
+    assert.equal(report.visibilityKm, 0.5)
+    assert.equal(visualTargets(report).coverage, 0)
+    assert.equal(visualTargets(report).haze, CLEAR_HAZE)
+  }
+})
+
+test('middle and high cloud decks follow the altitude bands by latitude', () => {
+  const temperate = upperCloudHeights(45)
+  const tropical = upperCloudHeights(-15)
+  const polar = upperCloudHeights(72)
+  assert.ok(temperate.middleBase >= 2000 && temperate.middleTop <= 7000)
+  assert.ok(temperate.highBase >= 5000 && temperate.highTop <= 13000)
+  assert.ok(tropical.highBase > temperate.highBase)
+  assert.equal(tropical.highTop, 18000)
+  assert.ok(polar.highBase >= 3000 && polar.highTop <= 8000)
 })
 
 test('night cockpit lighting dims shared materials once and restores original daytime values', () => {

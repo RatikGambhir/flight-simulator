@@ -1,13 +1,15 @@
 import {
-  CanvasTexture, Color, Group, Matrix4, Mesh, MeshBasicMaterial, PlaneGeometry, SRGBColorSpace,
+  AdditiveBlending, BufferGeometry, CanvasTexture, Color, DataTexture, Float32BufferAttribute, Group,
+  LinearFilter, Matrix4, Mesh, MeshBasicMaterial, PlaneGeometry, Points, PointsMaterial, SRGBColorSpace,
   Uniform, Vector2, Vector3, type Material, type Object3D,
 } from 'three'
+import type { OverlayPass } from '../scene/OverlayPass'
 import type { Airport, AirportDetail, Runway, WorldQuery } from '../sim/protocol'
 import { frame } from './frame'
 import { RUNWAY_CLEARANCE, runwayClearsPoint, runwaySurface, type RunwaySurface } from './runwaySurface'
 
 const MAX_RUNWAYS = 24
-const ACTIVE_RANGE = 18_000
+const ACTIVE_RANGE = 24_000
 const FT = 0.3048
 const uniformsSource = /* glsl */ `
 uniform int runwayCount;
@@ -110,7 +112,25 @@ function numberTexture(runway: Runway) {
   return texture
 }
 
-function makeSurface(runway: Runway, surface: RunwaySurface) {
+function makeEdgeLightMaterial() {
+  const size = 32
+  const pixels = new Uint8Array(size * size * 4)
+  for (let y = 0; y < size; ++y) {
+    for (let x = 0; x < size; ++x) {
+      const r = Math.hypot(x + 0.5 - size / 2, y + 0.5 - size / 2) / (size / 2)
+      pixels[(y * size + x) * 4 + 1] = 255 * Math.exp(-5 * r * r) * Math.max(0, 1 - r)
+    }
+  }
+  const alphaMap = new DataTexture(pixels, size, size)
+  alphaMap.magFilter = alphaMap.minFilter = LinearFilter
+  alphaMap.needsUpdate = true
+  return new PointsMaterial({
+    color: new Color(0.48, 0.42, 0.34), size: 5, sizeAttenuation: false, alphaMap,
+    transparent: true, blending: AdditiveBlending, fog: false,
+  })
+}
+
+function makeSurface(runway: Runway, surface: RunwaySurface, edgeMaterial: PointsMaterial | null) {
   const type = runway.surface.toUpperCase()
   const sod = /GRASS|TURF|SOD/.test(type)
   const unpaved = sod || /DIRT|GRAV|SAND|CLAY|EARTH|LATERITE|ICE|SNOW|WATER/.test(type)
@@ -136,7 +156,22 @@ function makeSurface(runway: Runway, surface: RunwaySurface) {
   const mesh = new Mesh(runwayGeometry, material)
   mesh.matrixAutoUpdate = false
   mesh.name = `Runway ${runway.ends.map((end) => end.ident).join('/')}`
-  return { mesh, runway, surface, numbers }
+  let lights: Points | null = null
+  // The airport data has no fixture layout. Use evenly spaced lights on paved
+  // runways at larger airports so the width and direction read on approach.
+  if (edgeMaterial && !unpaved) {
+    const positions: number[] = []
+    const intervals = Math.max(1, Math.ceil(surface.length / 60))
+    for (let i = 0; i <= intervals; ++i) {
+      const y = (i / intervals - 0.5) * (1 - 4 / surface.length)
+      positions.push(-0.5, y, 0.65, 0.5, y, 0.65)
+    }
+    const geometry = new BufferGeometry().setAttribute('position', new Float32BufferAttribute(positions, 3))
+    lights = new Points(geometry, edgeMaterial)
+    lights.matrixAutoUpdate = false
+    lights.name = `${mesh.name} edge lights`
+  }
+  return { mesh, runway, surface, numbers, lights }
 }
 
 type Patch = ReturnType<typeof makeSurface>
@@ -144,6 +179,8 @@ type Patch = ReturnType<typeof makeSurface>
 /** Renders nearby database runways and masks conflicting scenery only over the strip. */
 export class RunwayScenery {
   readonly group = new Group()
+  private readonly lightGroup = new Group()
+  private readonly edgeMaterial = makeEdgeLightMaterial()
   private readonly materials = new WeakSet<Material>()
   private readonly cache = new Map<string, AirportDetail | null>()
   private readonly patches: Patch[] = []
@@ -164,7 +201,16 @@ export class RunwayScenery {
     runwayBounds: new Uniform(new Float32Array(4)),
   }
 
-  constructor(private readonly query: <T>(query: WorldQuery) => Promise<T>) {}
+  constructor(private readonly query: <T>(query: WorldQuery) => Promise<T>, private readonly overlay: OverlayPass) {
+    overlay.prepare(this.edgeMaterial)
+    overlay.overlay.add(this.lightGroup)
+    this.setNight(0)
+  }
+
+  setNight(darkness: number) {
+    this.lightGroup.visible = darkness > 0.01 && this.lightGroup.children.length > 0
+    this.edgeMaterial.opacity = darkness
+  }
 
   prepareScenery(scene: Object3D) {
     scene.traverse((object) => {
@@ -200,7 +246,7 @@ export class RunwayScenery {
     this.position.copy(frame.origin)
     this.lastQuery = performance.now()
     this.queryInFlight = true
-    const nearby = this.query<{ airport: Airport }[]>({ type: 'nearest_airports', lat, lon, radius_km: 24, limit: 12 })
+    const nearby = this.query<{ airport: Airport }[]>({ type: 'nearest_airports', lat, lon, radius_km: 28, limit: 12 })
     return nearby.then(async (rows) => {
       if (this.disposed) return
       const idents = [...new Set([...(airport ? [airport] : []), ...rows.map((r) => r.airport.ident)])]
@@ -220,18 +266,21 @@ export class RunwayScenery {
         const distance = _world.copy(surface.start).addScaledVector(surface.forward, along).distanceTo(frame.origin)
         const ident = detail.airport.ident
         const key = `${ident}:${runway.ends[0].ident}:${runway.ends[1].ident}`
-        return distance < ACTIVE_RANGE ? [{ runway, surface, distance, ident, key }] : []
+        const hasLights = detail.airport.size === 'large' || detail.airport.size === 'medium'
+        return distance < ACTIVE_RANGE ? [{ runway, surface, distance, ident, key, hasLights }] : []
       }) ?? [])
       surfaces.sort((a, b) => Number(b.ident === airport) - Number(a.ident === airport) || a.distance - b.distance)
       // Keep crossing runways in the same draw order as the aircraft moves.
       const selected = surfaces.slice(0, MAX_RUNWAYS).sort((a, b) => a.key.localeCompare(b.key))
       if (selected.length === this.patches.length && selected.every(({ runway }, i) => runway === this.patches[i].runway)) return
       this.clear()
-      for (const { runway, surface } of selected) {
-        const patch = makeSurface(runway, surface)
+      for (const { runway, surface, hasLights } of selected) {
+        const patch = makeSurface(runway, surface, hasLights ? this.edgeMaterial : null)
         this.patches.push(patch)
         this.group.add(patch.mesh)
+        if (patch.lights) this.lightGroup.add(patch.lights)
       }
+      this.setNight(this.edgeMaterial.opacity)
       this.lastOrigin = -1
       this.sync()
     }).catch(() => { this.position.set(0, 0, 0) }).finally(() => { this.queryInFlight = false })
@@ -243,7 +292,7 @@ export class RunwayScenery {
     this.uniforms.runwayCount.value = this.patches.length
     let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity
     const matrix = new Matrix4()
-    for (const [i, { mesh, surface }] of this.patches.entries()) {
+    for (const [i, { mesh, surface, lights }] of this.patches.entries()) {
       const { start, forward, right, up, length, width } = surface
       const a = frame.ecefToWorld(start.x, start.y, start.z, this.originWorld)
       const f = this.forward.copy(forward).applyQuaternion(frame.worldFromEcefRot)
@@ -264,6 +313,10 @@ export class RunwayScenery {
       _world.copy(a).addScaledVector(f, length * 0.5).addScaledVector(_point, 0.03 + i * 0.008)
       mesh.matrix.copy(matrix.makeBasis(r.multiplyScalar(width), f.multiplyScalar(length), _point)).setPosition(_world)
       mesh.matrixWorldNeedsUpdate = true
+      if (lights) {
+        lights.matrix.copy(mesh.matrix)
+        lights.matrixWorldNeedsUpdate = true
+      }
     }
     if (this.patches.length) this.uniforms.runwayBounds.value.set([
       (maxX + minX) * 0.5, (maxZ + minZ) * 0.5, (maxX - minX) * 0.5, (maxZ - minZ) * 0.5,
@@ -278,9 +331,11 @@ export class RunwayScenery {
 
   private clear() {
     this.group.clear()
-    for (const { mesh, numbers } of this.patches) {
+    this.lightGroup.clear()
+    for (const { mesh, numbers, lights } of this.patches) {
       mesh.material.dispose()
       numbers.dispose()
+      lights?.geometry.dispose()
     }
     this.patches.length = 0
   }
@@ -288,5 +343,8 @@ export class RunwayScenery {
   dispose() {
     this.disposed = true
     this.clear()
+    this.overlay.overlay.remove(this.lightGroup)
+    this.edgeMaterial.alphaMap?.dispose()
+    this.edgeMaterial.dispose()
   }
 }

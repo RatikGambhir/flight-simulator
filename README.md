@@ -241,7 +241,8 @@ over to full navigation.
 
 **Level of detail & memory:** 3d‑tiles‑renderer refines tiles by screen‑space error
 (the *Scenery detail* setting sets the error target), fades between levels, unloads tiles
-after a delay and keeps GPU memory under an LRU byte budget (350 MB–1.4 GB by quality).
+after a delay and uses a per-layer tile cache budget. Photogrammetry uses 160–480 MB
+by quality, with additional memory used for decoding and rendering.
 
 **Ground & elevation:** the renderer samples the real surface under the aircraft at 10 Hz
 and sends it to Rust, so you land on the actual runway / rooftop / mountain in the tiles.
@@ -386,8 +387,8 @@ You can drop the original `stbn.bin` in its place.
 * **Weather**: with *Live weather* on (Settings → Weather; needs the Weather API enabled on
   the Google Maps Platform key) cloud cover, haze, rain, snow, wind and turbulence follow
   the Google Weather API report at the aircraft. The renderer estimates the cloud
-  type and altitude from surface conditions. Fog forms a low layer, persistent
-  precipitation produces a thicker deck, and showers and thunderstorms form
+  type and altitude from surface conditions. Fog and mist appear in the weather
+  report only. Persistent precipitation produces a thicker deck, and showers and thunderstorms form
   taller clouds. Precipitation tapers within the layer. Thunderstorms add
   turbulence and have no lightning simulation.
 * **Night** (real time, or the Night preset) uses a subtle cool terrain fill, moon-aware

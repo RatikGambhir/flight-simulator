@@ -4,7 +4,7 @@ import {
   type PerspectiveCamera, type Texture, type WebGLRenderer,
 } from 'three'
 import type { Quality } from '../state/store'
-import { CUMULUS, type CloudProfile } from '../weather/cloudProfiles'
+import { CUMULUS, upperCloudHeights, type CloudProfile } from '../weather/cloudProfiles'
 import { WGS84_A, WGS84_F } from '../world/frame'
 import { DETAIL_PERIOD, SHAPE_PERIOD, SPACING_PERIOD, WEATHER_PERIOD, createCloudField } from './cloudField'
 import { cloudVolumeFragment, cloudVolumeVertex } from './cloudVolumeShader'
@@ -14,6 +14,7 @@ const STEPS: Record<Quality, number> = { low: 42, medium: 56, high: 72, ultra: 8
 const SHADOW_SIZE: Record<Quality, number> = { low: 128, medium: 192, high: 256, ultra: 384 }
 export const CLOUD_SHADOW_RANGE = 46000
 const POLAR_SCALE = 1 / (1 - WGS84_F)
+const CIRRUS_AXIS = new Vector3(0.81, 0.47, 0.34).normalize()
 
 interface CloudWeather {
   coverage: number
@@ -24,6 +25,13 @@ interface CloudWeather {
   moonPhase: number
   shadows?: boolean
   profile?: CloudProfile
+  upperClouds?: boolean
+  latitude?: number
+  geoid?: number
+  /** Ground elevation near the aircraft, in the same ellipsoid coordinates as the cloud shell. */
+  groundHeight?: number
+  /** Spawns and teleports can jump between widely different elevations. */
+  snap?: boolean
 }
 
 function phase(out: Vector3, position: Vector3, displacement: Vector3, period: number, extra?: Vector3) {
@@ -45,6 +53,10 @@ export class VolumetricCloudPass extends Pass {
   private readonly shadowMaterial: ShaderMaterial
   private readonly profile = new Uniform(new Vector4(CUMULUS.base, CUMULUS.top, CUMULUS.sheet, CUMULUS.convection))
   private readonly profileTarget = new Vector4()
+  private readonly middleCloud = new Uniform(new Vector3()) // base, top, coverage
+  private readonly highCloud = new Uniform(new Vector3())
+  private upperLatitude = 45
+  private upperHeights = upperCloudHeights(this.upperLatitude)
   private weatherInitialized = false
   readonly groundShadow = {
     cloudGroundMap: new Uniform(this.shadowTarget.texture),
@@ -76,13 +88,16 @@ export class VolumetricCloudPass extends Pass {
     spacingPhase: { value: new Vector3() },
     shapePhase: { value: new Vector3() },
     detailPhase: { value: new Vector3() },
+    cirrusPhase: { value: new Vector3() },
     lightDirection: { value: new Vector3(0, 1, 0) },
     directLight: { value: new Vector3() },
     skyLight: { value: new Vector3() },
     hazeColor: { value: new Vector3() },
     coverage: { value: 0 },
     cloudProfile: this.profile,
-    fogExtinction: { value: 0 },
+    middleCloud: this.middleCloud,
+    highCloud: this.highCloud,
+    groundHeight: { value: 0 },
     hazeDensity: { value: 0 },
     cameraFar: { value: 1 },
     logarithmicDepth: { value: false },
@@ -130,14 +145,33 @@ export class VolumetricCloudPass extends Pass {
     this.fullscreenMaterial = this.volumeMaterial
   }
 
-  setWeather(dt: number, { coverage, haze, wind, sun, moon, moonPhase, shadows = false, profile = CUMULUS }: CloudWeather) {
+  setWeather(dt: number, {
+    coverage, haze, wind, sun, moon, moonPhase, shadows = false, profile = CUMULUS,
+    upperClouds = true, latitude = 45, geoid = 0, groundHeight = 0, snap = false,
+  }: CloudWeather) {
     const u = this.uniforms
     u.coverage.value = coverage
     u.hazeDensity.value = haze
-    this.profileTarget.set(profile.base, profile.top, profile.sheet, profile.convection)
-    const blend = this.weatherInitialized ? 1 - Math.exp(-dt / 12) : 1
+    const blend = this.weatherInitialized && !snap ? 1 - Math.exp(-dt / 12) : 1
+    u.groundHeight.value += (groundHeight - u.groundHeight.value) * blend
+    this.profileTarget.set(profile.base + groundHeight, profile.top + groundHeight, profile.sheet, profile.convection)
     this.profile.value.lerp(this.profileTarget, blend)
-    u.fogExtinction.value += ((profile.fog ?? 0) - u.fogExtinction.value) * blend
+    if (Math.abs(latitude - this.upperLatitude) > 0.05) {
+      this.upperLatitude = latitude
+      this.upperHeights = upperCloudHeights(latitude)
+    }
+    const { middleBase, middleTop, highBase, highTop } = this.upperHeights
+    const dry = upperClouds && profile.convection === 0
+    const upperBlend = this.weatherInitialized && !snap ? 1 - Math.exp(-dt / 4) : 1
+    const middle = this.middleCloud.value
+    const high = this.highCloud.value
+    // Keep separate decks disjoint where a mountain or a storm reaches their band.
+    middle.x = Math.max(this.profile.value.y, middleBase + geoid)
+    middle.y = middleTop + geoid
+    middle.z += ((dry ? smooth(0.16, 0.69, coverage) : 0) - middle.z) * upperBlend
+    high.x = Math.max(middle.y, this.profile.value.y, highBase + geoid)
+    high.y = highTop + geoid
+    high.z += ((dry ? smooth(0.07, 0.60, coverage) : 0) - high.z) * upperBlend
     this.weatherInitialized = true
     this.drift.addScaledVector(wind, dt)
     // At most 4 cm/s of extra translation. This changes erosion at the edge
@@ -210,6 +244,9 @@ export class VolumetricCloudPass extends Pass {
     phase(u.spacingPhase.value, this.eye, this.drift, SPACING_PERIOD)
     phase(u.shapePhase.value, this.eye, this.drift, SHAPE_PERIOD)
     phase(u.detailPhase.value, this.eye, this.drift, DETAIL_PERIOD, this.detailDrift)
+    const cirrus = u.cirrusPhase.value.subVectors(this.eye, this.drift).divideScalar(SPACING_PERIOD)
+    cirrus.addScaledVector(CIRRUS_AXIS, -0.86 * cirrus.dot(CIRRUS_AXIS))
+    cirrus.set(cirrus.x - Math.floor(cirrus.x), cirrus.y - Math.floor(cirrus.y), cirrus.z - Math.floor(cirrus.z))
     renderer.setRenderTarget(this.target)
     renderer.render(this.scene, this.camera)
     if (this.groundShadow.cloudGroundStrength.value > 0) this.renderGroundShadow(renderer)

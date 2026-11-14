@@ -1,10 +1,8 @@
-import { navigationTo, type GeoPoint } from './route'
+import { destinationPoint, navigationTo, type GeoPoint } from './route'
 
 export const METERS_PER_MILE = 1609.344
 export const MIN_SKIP_MILES = 1
 export const MAX_SKIP_MILES = 10000
-const EARTH_METERS = 6371008.8
-const RAD = Math.PI / 180
 
 /** Place on the destination-to-aircraft great circle, then compute the inbound
  * bearing at the new location (not simply the reciprocal at the airport). */
@@ -16,12 +14,8 @@ export function skipToPosition(current: GeoPoint, destination: GeoPoint, miles: 
     throw new Error('Your current position is not ready yet. Try again in a moment.')
   }
   const outbound = navigationTo(destination, current)
-  const bearing = (outbound.distanceNm < 0.01 ? currentHeading + 180 : outbound.bearing) * RAD
-  const distance = miles * METERS_PER_MILE / EARTH_METERS
-  const lat = destination.lat * RAD, lon = destination.lon * RAD
-  const targetLat = Math.asin(Math.max(-1, Math.min(1, Math.sin(lat) * Math.cos(distance) + Math.cos(lat) * Math.sin(distance) * Math.cos(bearing))))
-  const targetLon = lon + Math.atan2(Math.sin(bearing) * Math.sin(distance) * Math.cos(lat), Math.cos(distance) - Math.sin(lat) * Math.sin(targetLat))
-  const point = { lat: targetLat / RAD, lon: ((targetLon / RAD + 540) % 360) - 180 }
+  const bearing = outbound.distanceNm < 0.01 ? currentHeading + 180 : outbound.bearing
+  const point = destinationPoint(destination, bearing, miles * METERS_PER_MILE)
   // The simulation clamps latitudes at 89.9°; reject instead of silently moving
   // the requested point and changing the remaining distance.
   if (Math.abs(point.lat) > 89.9) throw new Error('That point is too close to a pole. Try a slightly different distance.')

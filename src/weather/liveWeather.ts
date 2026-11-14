@@ -52,7 +52,7 @@ function speedKt(v: { value?: number; unit?: string } | undefined) {
 }
 
 const COVER_BY_TYPE: [RegExp, number][] = [
-  [/^CLEAR/, 0.05],
+  [/^CLEAR/, 0],
   [/^MOSTLY_CLEAR/, 0.2],
   [/^PARTLY_CLOUDY/, 0.45],
   [/^MOSTLY_CLOUDY/, 0.75],
@@ -189,8 +189,11 @@ export const CLEAR_HAZE = 3e-5
 
 /** What the renderer should be showing for a report. */
 export function visualTargets(c: Conditions) {
+  // Fog and mist reports can count the obscured sky as cloud cover. Keep
+  // the reported conditions in the UI while leaving the approach visible.
+  const groundFog = c.precip === 'none' && /^(FOG|MIST)/.test(c.type)
   let haze = CLEAR_HAZE
-  if (c.visibilityKm !== null) {
+  if (!groundFog && c.visibilityKm !== null) {
     // Koschmieder: extinction = 3.912 / visibility; the haze density scale is that extinction at sea level.
     // Capped near 13 km: thicker than that hides the ground from pattern height and the sim stops being flyable.
     const fromVisibility = Math.min(3e-4, 3.912 / (Math.max(1.5, c.visibilityKm) * 1000))
@@ -200,8 +203,7 @@ export function visualTargets(c: Conditions) {
   }
   if (c.precip !== 'none') haze = Math.max(haze, 8e-5 + 1.2e-4 * c.intensity)
   return {
-    // Kept short of a solid deck so an approach under an overcast still has ground contact.
-    coverage: 0.06 + 0.66 * c.cloudCover,
+    coverage: groundFog ? 0 : 0.72 * c.cloudCover,
     haze,
     precip: c.precip === 'none' ? 0 : c.intensity,
     snow: c.precip === 'snow' ? 1 : 0,

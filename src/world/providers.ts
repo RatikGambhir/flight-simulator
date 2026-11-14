@@ -11,11 +11,12 @@
 //            but no 3D buildings.
 
 import { TilesRenderer } from '3d-tiles-renderer'
+import { DownloadPriorityQueue, LRUCache, PriorityQueue } from '3d-tiles-renderer/core'
+import { GoogleCloudAuthPlugin } from '3d-tiles-renderer/core/plugins'
 import {
   CesiumIonAuthPlugin,
   CesiumIonOverlay,
   GLTFExtensionsPlugin,
-  GoogleCloudAuthPlugin,
   ImageOverlayPlugin,
   TerrariumMeshPlugin,
   TileCompressionPlugin,
@@ -50,32 +51,53 @@ const QUALITY: Record<Quality, { errorTarget: number; bytes: number; jobs: numbe
   ultra: { errorTarget: 6, bytes: 1400e6, jobs: 30 },
 }
 
+// Photogrammetry holds decoded images on the CPU as well as uploaded textures.
+// Keep headroom for those copies, in-flight decodes and the atmosphere buffers.
+const PHOTOGRAMMETRY: typeof QUALITY = {
+  low: { errorTarget: 32, bytes: 160e6, jobs: 6 },
+  medium: { errorTarget: 21, bytes: 240e6, jobs: 8 },
+  high: { errorTarget: 14, bytes: 320e6, jobs: 10 },
+  ultra: { errorTarget: 8, bytes: 480e6, jobs: 12 },
+}
+
 let draco: DRACOLoader | null = null
 function getDraco() {
   if (!draco) {
     draco = new DRACOLoader()
     draco.setDecoderPath(`${import.meta.env.BASE_URL}draco/`)
-    draco.preload()
+    draco.setWorkerLimit(2)
   }
   return draco
 }
 
-function tune(tiles: TilesRenderer, q: Quality) {
-  const cfg = QUALITY[q]
+function tune(tiles: TilesRenderer, cfg: (typeof QUALITY)[Quality], parseJobs = 4) {
+  // The renderer defaults are shared across instances. Preserve the library's
+  // priorities while giving each layer its own limits and teardown lifetime.
+  const cache = new LRUCache()
+  cache.unloadPriorityCallback = tiles.lruCache.unloadPriorityCallback
+  tiles.lruCache = cache
+  const downloads = new DownloadPriorityQueue()
+  downloads.priorityCallback = tiles.downloadQueue.priorityCallback
+  tiles.downloadQueue = downloads
+  const parsing = new PriorityQueue()
+  parsing.priorityCallback = tiles.parseQueue.priorityCallback
+  tiles.parseQueue = parsing
   tiles.errorTarget = cfg.errorTarget
   tiles.lruCache.maxBytesSize = cfg.bytes
   tiles.lruCache.minBytesSize = cfg.bytes * 0.6
   tiles.downloadQueue.maxJobsPerOrigin = cfg.jobs
-  tiles.parseQueue.maxJobs = 4
+  tiles.parseQueue.maxJobs = parseJobs
   tiles.group.matrixAutoUpdate = false
 }
 
-function photogrammetryPlugins(tiles: TilesRenderer) {
-  tiles.registerPlugin(new GLTFExtensionsPlugin({ dracoLoader: getDraco() }))
-  // Normals are needed for post-process sun/sky lighting; compression halves GPU memory.
+function photogrammetryPlugins(tiles: TilesRenderer, quality: Quality) {
+  // The decoder is shared across tile renderers, including during provider and quality switches.
+  tiles.registerPlugin(new GLTFExtensionsPlugin({ dracoLoader: getDraco(), autoDispose: false }))
+  // Normals are needed for post-process sun/sky lighting.
   tiles.registerPlugin(new TileCompressionPlugin({ generateNormals: true, disableMipmaps: false }))
-  tiles.registerPlugin(new TilesFadePlugin())
-  tiles.registerPlugin(new UnloadTilesPlugin({ delay: 4000 }))
+  tiles.registerPlugin(new TilesFadePlugin({ maximumFadeOutTiles: 16 }))
+  tiles.registerPlugin(new UnloadTilesPlugin({ delay: 1200 }))
+  tune(tiles, PHOTOGRAMMETRY[quality], 2)
 }
 
 /**
@@ -128,9 +150,8 @@ export function createLayers(settings: Settings, renderer: WebGLRenderer): { lay
     case 'google': {
       const tiles = new TilesRenderer()
       tiles.registerPlugin(new GoogleCloudAuthPlugin({ apiToken: settings.googleApiKey.trim(), autoRefreshToken: true }))
-      photogrammetryPlugins(tiles)
+      photogrammetryPlugins(tiles, q)
       sharpenImagery(tiles, renderer)
-      tune(tiles, q)
       return { layers: [{ tiles, ground: true, bvh: true, label: 'Google Photorealistic 3D Tiles' }], attributions: [] }
     }
     case 'cesium': {
@@ -138,9 +159,8 @@ export function createLayers(settings: Settings, renderer: WebGLRenderer): { lay
       if (settings.cesiumMode === 'photorealistic') {
         const tiles = new TilesRenderer()
         tiles.registerPlugin(new CesiumIonAuthPlugin({ apiToken: token, assetId: '2275207', autoRefreshToken: true }))
-        photogrammetryPlugins(tiles)
+        photogrammetryPlugins(tiles, q)
         sharpenImagery(tiles, renderer)
-        tune(tiles, q)
         return { layers: [{ tiles, ground: true, bvh: true, label: 'Google Photorealistic 3D Tiles (via Cesium ion)' }], attributions: [] }
       }
       const terrain = new TilesRenderer()
@@ -150,12 +170,11 @@ export function createLayers(settings: Settings, renderer: WebGLRenderer): { lay
       )
       terrain.registerPlugin(new UnloadTilesPlugin({ delay: 4000 }))
       sharpenImagery(terrain, renderer)
-      tune(terrain, q)
+      tune(terrain, QUALITY[q])
       const buildings = new TilesRenderer()
       buildings.registerPlugin(new CesiumIonAuthPlugin({ apiToken: token, assetId: '96188', autoRefreshToken: true }))
-      photogrammetryPlugins(buildings)
+      photogrammetryPlugins(buildings, q)
       sharpenImagery(buildings, renderer)
-      tune(buildings, q)
       buildings.errorTarget = QUALITY[q].errorTarget * 1.5
       return {
         layers: [
@@ -174,7 +193,7 @@ export function createLayers(settings: Settings, renderer: WebGLRenderer): { lay
         new TerrariumMeshPlugin({ url: TERRARIUM_URL, maxZoom: 15, overlay, applyOverlayTexture: true, unlit: true }),
       )
       tiles.registerPlugin(new UnloadTilesPlugin({ delay: 4000 }))
-      tune(tiles, q)
+      tune(tiles, QUALITY[q])
       sharpenImagery(tiles, renderer)
       // The terrain is raised to its real height in the vertex shader, but three.js culls each
       // mesh by the bounds of the flat, sea-level grid underneath. Low over high ground (parked at
