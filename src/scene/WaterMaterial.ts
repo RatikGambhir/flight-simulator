@@ -1,5 +1,5 @@
 // Shared animated water shading for ocean and inland lake surfaces.
-import { CanvasTexture, Color, LinearMipmapLinearFilter, Matrix4, MeshPhysicalMaterial, NoColorSpace, RepeatWrapping, Uniform, Vector3 } from 'three'
+import { CanvasTexture, Color, LinearMipmapLinearFilter, Matrix4, MeshPhysicalMaterial, NoColorSpace, RepeatWrapping, Uniform, Vector2, Vector3 } from 'three'
 import { frame } from '../world/frame'
 
 /** Tileable procedural wave normal map (sum of directional sines). */
@@ -53,7 +53,7 @@ export class WaterMaterial extends MeshPhysicalMaterial {
   private readonly anchorFromEcef = frame.worldFromEcef.clone()
   private readonly waterFromWorld = new Uniform(new Matrix4())
 
-  constructor() {
+  constructor(curvature = new Vector2(1, 1)) {
     const normalMap = makeWaveNormals()
     super({
       color: new Color('#04202f'),
@@ -67,11 +67,18 @@ export class WaterMaterial extends MeshPhysicalMaterial {
     this.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = this.time
       shader.uniforms.waterFromWorld = this.waterFromWorld
+      shader.uniforms.waterCurvature = new Uniform(curvature)
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vWaterWorld;\nuniform mat4 waterFromWorld;')
+        .replace('#include <common>', '#include <common>\nvarying vec3 vWaterWorld;\nuniform mat4 waterFromWorld;\nuniform vec2 waterCurvature;')
+        .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\nobjectNormal.xz *= waterCurvature;')
+        .replace('#include <begin_vertex>', /* glsl */ `
+          #include <begin_vertex>
+          vec2 radiusSquared = transformed.xz * transformed.xz;
+          transformed.y *= 1.0 + dot(radiusSquared, waterCurvature - 1.0) / max(1e-6, radiusSquared.x + radiusSquared.y);
+        `)
         .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvWaterWorld = (waterFromWorld * modelMatrix * vec4(transformed, 1.0)).xyz;')
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vWaterWorld;\nuniform float uTime;')
+        .replace('#include <common>', '#include <common>\nvarying vec3 vWaterWorld;\nuniform float uTime;\nuniform mat4 waterFromWorld;')
         .replace(
           '#include <normal_fragment_maps>',
           /* glsl */ `
@@ -87,8 +94,9 @@ export class WaterMaterial extends MeshPhysicalMaterial {
           vec2 waves = n1.xy * 0.55 * nearFade + n2.xy * 0.45 * midFade + n3.xy * 0.35 * farFade;
           // Keep the curved surface normal, including the local frame rotation.
           vec3 surface = inverseTransformDirection(normal, viewMatrix);
-          vec3 tangent = normalize(cross(vec3(0.0, 0.0, 1.0), surface));
-          vec3 bitangent = normalize(cross(surface, tangent));
+          vec3 waveSouth = transpose(mat3(waterFromWorld)) * vec3(0.0, 0.0, 1.0);
+          vec3 tangent = normalize(cross(surface, waveSouth));
+          vec3 bitangent = normalize(cross(tangent, surface));
           vec3 worldN = normalize(surface + tangent * waves.x + bitangent * waves.y);
           normal = normalize((viewMatrix * vec4(worldN, 0.0)).xyz);
           `,
