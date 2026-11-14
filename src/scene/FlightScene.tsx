@@ -47,11 +47,8 @@ const CLOUD_QUALITY: Record<Quality, 'low' | 'medium' | 'high' | 'ultra'> = {
   ultra: 'ultra',
 }
 
-// Refresh every cloud pixel each frame, then temporally antialias. The stock
-// 4x4 Bayer reconstruction exposes a grid on moving aircraft/cloud boundaries.
-// The volumetric march is the most expensive pass in the frame: its cost scales
-// with resolution squared and inversely with the step size, and the temporal
-// accumulation hides the extra noise of a coarser march.
+// Keep the original cloud image size and march steps. The depth-aware resolve
+// in cloudRendering.ts refreshes one of four samples per pixel block each frame.
 const CLOUD_RESOLUTION: Record<Quality, number> = { low: 0.33, medium: 0.42, high: 0.5, ultra: 0.65 }
 const CLOUD_STEP: Record<Quality, number> = { low: 100, medium: 60, high: 40, ultra: 20 }
 
@@ -705,7 +702,7 @@ function SceneContents() {
           <Clouds
             ref={bindClouds}
             qualityPreset={CLOUD_QUALITY[quality]}
-            temporalUpscale={false}
+            temporalUpscale
             // The camera sees to the horizon and beyond; without a cap the shadow cascades
             // are stretched over that whole range and cloud shadows smear into one sheet.
             shadow-maxFar={6e4}

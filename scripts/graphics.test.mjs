@@ -296,6 +296,62 @@ test('compatibility patches apply to the installed cloud shaders and are idempot
   } finally { effect.dispose() }
 })
 
+test('four cloud phases cover each pixel once, including the edges of an odd size', () => {
+  const { effect, camera } = setup()
+  try {
+    const pass = effect.cloudsPass
+    effect.temporalUpscale = true
+    pass.setSize(101, 57)
+    const size = pass.currentMaterial.uniforms.resolution.value
+    assert.deepEqual(size.toArray(), [102, 58])
+    assert.deepEqual([pass.currentRenderTarget.width, pass.currentRenderTarget.height], [51, 29])
+    const phases = []
+    for (let frame = 0; frame < 4; frame++) {
+      pass.currentMaterial.uniforms.frame.value = frame
+      pass.resolveMaterial.uniforms.frame.value = frame
+      pass.currentMaterial.copyCameraSettings(camera)
+      pass.resolveMaterial.onBeforeRender()
+      const jitter = pass.currentMaterial.uniforms.temporalJitter.value.clone().multiply(size)
+      assert.ok(jitter.equals(pass.resolveMaterial.uniforms.jitterOffset.value))
+      phases.push(jitter.toArray().join(','))
+    }
+    assert.equal(new Set(phases).size, 4)
+    effect.temporalUpscale = false
+    assert.deepEqual([pass.currentRenderTarget.width, pass.currentRenderTarget.height], [101, 57])
+  } finally { effect.dispose() }
+})
+
+test('cloud shadows reuse the fitted cascades for one frame and redraw after a camera cut', () => {
+  const camera = new PerspectiveCamera()
+  const effect = new CloudsEffect(camera)
+  try {
+    let fits = 0
+    let draws = 0
+    effect.shadowMaps.update = () => { fits++ }
+    effect.shadowPass.update = () => { draws++ }
+    stabilizeClouds(effect)
+    effect.temporalUpscale = true
+    const reset = effect.shadowPass.resolveMaterial.uniforms.resetHistory
+    const draw = () => {
+      effect.shadowMaps.update()
+      effect.shadowPass.update(null, 0, 1 / 30)
+    }
+    draw()
+    reset.value = false
+    draw()
+    assert.deepEqual([fits, draws], [1, 1])
+    draw()
+    assert.deepEqual([fits, draws], [2, 2])
+    reset.value = true
+    draw()
+    assert.deepEqual([fits, draws], [3, 3])
+    reset.value = false
+    effect.shadow.mapSize.set(384, 384)
+    draw()
+    assert.deepEqual([fits, draws], [4, 4], 'a resized map cannot reuse the old shadow texture')
+  } finally { effect.dispose() }
+})
+
 test('normal flight accumulates history after the first frame', () => {
   const { effect, camera, update, isReset } = setup()
   try {
