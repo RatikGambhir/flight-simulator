@@ -413,7 +413,12 @@ void prepareRayScattering(const float cosTheta) {${phaseTerms}
   #ifdef TEMPORAL_UPSCALE
   vec3 noiseSize = vec3(textureSize(stbnTexture, 0));
   vec2 pixel = gl_FragCoord.xy * 2.0 + temporalJitter * resolution;
-  stbn = texture(stbnTexture, vec3(pixel, float(frame % int(noiseSize.z))) / noiseSize).r;
+  // Decorrelate the repeating gradient in the bundled jitter volume from
+  // the sample grid. Keep the volume's temporal slice for the existing TAA.
+  uint hash = uint(pixel.x) * 1597334677u ^ uint(pixel.y) * 3812015801u;
+  hash = (hash ^ (hash >> 16u)) * 2246822519u;
+  vec2 offset = vec2(float(hash & 127u), float((hash >> 8u) & 127u));
+  stbn = texture(stbnTexture, vec3(pixel + offset, float(frame % int(noiseSize.z))) / noiseSize).r;
   #else
   stbn = getSTBN();
   #endif`)
