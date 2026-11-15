@@ -71,8 +71,7 @@ export const S = {
   AP_SELECTED_HEADING: 61,
   AP_SELECTED_ALT_FT: 62,
   AP_SELECTED_SPEED: 63,
-  ROCKET_PROPELLANT: 64,
-  LEN: 65,
+  LEN: 64,
 } as const
 
 export const Flags = {
@@ -86,6 +85,7 @@ export const Flags = {
   AP_ENGAGED: 128,
   OVERSPEED: 256,
   TAILSTRIKE: 512,
+  ROCKET_CLIMB: 1024,
 } as const
 
 export const ApModes = { HEADING: 1, ALTITUDE: 2, AUTOTHROTTLE: 4, MANAGED: 8, SELECTED: 16, MACH: 32, MPH: 64 } as const
@@ -158,6 +158,8 @@ export interface FlightTargets {
 export type SimCommand =
   | ({ type: 'spawn' } & SpawnRequest)
   | ({ type: 'spawn_rocket'; lat: number; lon: number; ground_elevation_ft?: number | null } & RocketFlightState)
+  | { type: 'climb_rocket'; altitude_ft: number }
+  | { type: 'cancel_rocket_climb' }
   | { type: 'spawn_runway'; airport: string; runway?: string | null; kind: RunwaySpawnKind }
   | { type: 'reset' }
   | { type: 'set_aircraft'; id: string }

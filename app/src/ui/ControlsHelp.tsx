@@ -36,9 +36,11 @@ export function ControlsHelp({ onClose, full }: { onClose: () => void; full?: bo
         <div className="notice info" style={{ marginTop: 18 }}>
           {rocket ? <>
             <b>X-15 air launch.</b> Start at 45,000 ft, then press <span className="kbd">⇧R</span> to power up the XLR99.
-            Use <span className="kbd">⇧F</span> to cut power and coast, and <span className="kbd">G</span> to lower the gear for a glide landing.
+            The XLR99 has unlimited fuel. Use <span className="kbd">⇧F</span> to cut power and coast, and <span className="kbd">G</span> to lower the gear for a glide landing.
             <br />
-            <b>Flight state.</b> Set altitude, Mach and true heading to reposition the aircraft with a full propellant load and the engine off.
+            <b>Runway start.</b> In Departure, select an airport and choose On runway. For a manual takeoff, use full power and rotate at 250 kt. Raise the gear after liftoff.
+            <br />
+            <b>Fly climb.</b> Enter an altitude and use Fly climb to guide the rocket ascent on your current heading. Place now sets your altitude, Mach and true heading instantly.
           </> : <>
           <b>Your first takeoff:</b> press <span className="kbd">⇧R</span> for full throttle, keep straight with <span className="kbd">Q</span>/<span className="kbd">E</span>,
           and at the rotate speed shown on the aircraft card gently hold <span className="kbd">S</span> to lift the nose. Once climbing, raise the gear with{' '}

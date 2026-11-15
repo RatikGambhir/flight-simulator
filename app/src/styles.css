@@ -937,6 +937,12 @@ input[type='checkbox'] {
   margin-top: 0;
 }
 
+@media (min-width: 511px) {
+  .rocket-flight fieldset {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 1fr) auto;
+  }
+}
+
 .app:has(.rocket-flight) > .loading {
   bottom: 195px;
   pointer-events: none;
@@ -1318,7 +1324,6 @@ input[type='checkbox'] {
   .hud-targets fieldset { grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 1.45fr); }
   .hud-target-actions { grid-column: 1 / -1; }
   .hud-cruise-preset { grid-row: 3; }
-  .rocket-flight button[type='submit'] { grid-column: 1 / -1; }
   .app:has(.rocket-flight) > .loading { bottom: 217px; }
   .camera-bar { bottom: 217px; right: 14px; }
 }

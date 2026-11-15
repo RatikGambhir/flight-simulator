@@ -2,7 +2,7 @@
 
 use glam::{DQuat, DVec3};
 
-use crate::aircraft::{EngineKind, X15_EMPTY_MASS_KG, X15_FULL_POWER_SECONDS};
+use crate::aircraft::EngineKind;
 use crate::atmosphere::{isa, G0};
 use crate::autopilot::ApOutput;
 use crate::engine;
@@ -79,17 +79,6 @@ impl Simulation {
         let spool_tau = (s.spool_time_s / 3.0).max(0.05);
         let tau = if n1_target > self.engine { spool_tau * (1.5 - self.engine) } else { spool_tau * 0.8 };
         self.engine += (n1_target - self.engine) * (dt / tau).min(1.0);
-        if s.engine == EngineKind::Rocket {
-            if self.rocket_propellant > 0.0 {
-                self.rocket_propellant = (self.rocket_propellant - self.engine * dt / X15_FULL_POWER_SECONDS).max(0.0);
-                if self.rocket_propellant == 0.0 {
-                    self.message("X-15 propellant depleted · glide to landing");
-                }
-            }
-            if self.rocket_propellant == 0.0 {
-                self.engine = 0.0;
-            }
-        }
 
         if s.retractable_gear {
             self.gear = approach(self.gear, if self.gear_cmd_down { 1.0 } else { 0.0 }, dt / 6.0);
@@ -112,8 +101,10 @@ impl Simulation {
         if let Some(why) = self.autopilot.pilot_override(&self.input, self.on_ground) {
             self.autopilot.disengage(Some(why));
         }
-        let ap_inp = self.ap_inputs();
-        let ap = self.autopilot.update(&ap_inp, self.spec, dt);
+        let ap = self.update_rocket_climb(dt).unwrap_or_else(|| {
+            let ap_inp = self.ap_inputs();
+            self.autopilot.update(&ap_inp, self.spec, dt)
+        });
         self.apply_autopilot_config(&ap);
         self.ap_out = ap;
         self.update_systems(dt, ap.throttle);
@@ -135,11 +126,7 @@ impl Simulation {
         let air = isa(geo0.height - geoid);
         let rho = air.density;
         let rocket = s.engine == EngineKind::Rocket;
-        let mass = if rocket {
-            X15_EMPTY_MASS_KG + (s.mass_kg - X15_EMPTY_MASS_KG) * self.rocket_propellant
-        } else {
-            s.mass_kg
-        };
+        let mass = s.mass_kg;
         let area = s.wing_area_m2;
 
         // ---- Air mass ----------------------------------------------------
@@ -213,7 +200,7 @@ impl Simulation {
         let q_max = s.max_pitch_rate.to_radians();
         let r_max = s.max_yaw_rate.to_radians();
         let tau = s.response_time_s;
-        let assisted = self.assist || self.autopilot.engaged;
+        let assisted = self.assist || self.autopilot.engaged || self.rocket_climb.is_some();
         let q_path = if speed > 5.0 { accel.dot(lift_dir) / speed } else { 0.0 };
         let flying_speed = speed > 0.55 * s.v_rotate_kt * KT_TO_MS;
 
@@ -326,6 +313,10 @@ impl Simulation {
             }
         } else if airborne {
             self.surfaces.y * q_max * eff + q_path * 0.8
+        } else if rocket {
+            // The runway launch uses a limited rotation to clear the ventral fin.
+            let target_pitch = self.surfaces.y.max(0.0) * (s.tailstrike_pitch_deg - 1.0).to_radians();
+            (target_pitch - pitch) * 1.8 * eff
         } else {
             // On the ground: elevator authority vs. weight on the nose gear.
             let lift_ratio = ((accel_aero.dot(up)) / G0).clamp(0.0, 1.0);

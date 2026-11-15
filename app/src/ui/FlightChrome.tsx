@@ -34,13 +34,14 @@ function TakeoffGuide() {
         done.current = (flags & Flags.ON_GROUND) === 0
       }
       const spec = list[s[S.AIRCRAFT_INDEX] | 0]
-      // The autopilot flies the takeoff itself; coaching would only get in the way.
-      if (flags & Flags.AP_ENGAGED) done.current = true
+      // Guided departures fly the takeoff themselves.
+      if (flags & (Flags.AP_ENGAGED | Flags.ROCKET_CLIMB)) done.current = true
       if (done.current || !spec || flags & (Flags.AWAITING_GROUND | Flags.CRASHED)) {
         setStep((p) => (p === null ? p : null))
         return
       }
       const onGround = (flags & Flags.ON_GROUND) !== 0
+      const rocket = spec.engine === 'rocket'
       const ias = s[S.IAS_KT]
       const vr = spec.v_rotate_kt
       const pull = invert ? '↑' : 'S / ↓'
@@ -48,14 +49,15 @@ function TakeoffGuide() {
       if (onGround && flags & Flags.PARKING_BRAKE) next = { key: 'N', text: 'Release the parking brake' }
       else if (onGround && s[S.THROTTLE] < 0.9) next = { key: '⇧R', text: 'Full throttle to start the takeoff roll' }
       else if (onGround && ias < vr - 8) next = { key: 'J / E', text: `Keep it straight. Rotate at ${Math.round(vr)} kt (now ${Math.round(ias)})` }
-      else if (onGround) next = { key: pull, text: `Rotate: hold ${pull} to lift the nose about 10°, then release` }
+      else if (onGround) next = { key: pull, text: rocket ? 'Raise the nose and hold until liftoff' : `Rotate: hold ${pull} to lift the nose about 10°, then release` }
       else if (s[S.AGL_FT] < 150 && s[S.VS_FPM] > 0) next = { key: '', text: 'Positive climb — let it climb away' }
       else if (spec.retractable_gear && s[S.GEAR] > 0.5) next = { key: 'G', text: 'Gear up' }
       else if ((s[S.FLAPS_INDEX] | 0) > 0 && s[S.AGL_FT] < 1000) next = { key: '', text: 'Climb to 1,000 ft, then raise the flaps' }
       else if ((s[S.FLAPS_INDEX] | 0) > 0) next = { key: '[', text: 'Flaps up, one notch at a time as speed builds' }
       else {
         done.current = true
-        next = { key: 'Z', text: 'Airborne! Press Z and the autopilot flies you to your destination, or fly it yourself' }
+        next = rocket ? { key: pull, text: 'For a space climb, ease the nose up to about 45°' }
+          : { key: 'Z', text: 'Airborne! Press Z and the autopilot flies you to your destination, or fly it yourself' }
         setTimeout(() => setStep(null), 6000)
       }
       setStep((p) => (p && p.key === next.key && p.text === next.text ? p : next))

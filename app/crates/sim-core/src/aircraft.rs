@@ -7,8 +7,6 @@ use serde::Serialize;
 
 pub const BLACKBIRD_CRUISE_MACH: f64 = 3.2;
 pub const X15_MAX_MACH: f64 = 6.7;
-pub(crate) const X15_EMPTY_MASS_KG: f64 = 5_577.0;
-pub(crate) const X15_FULL_POWER_SECONDS: f64 = 85.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -747,6 +745,7 @@ static CATALOG: &[AircraftSpec] = &[
         manufacturer_style: "North American Aviation",
         category: "NASA rocket research aircraft",
         description: "Air-launched XLR99 rocket plane. Climb under rocket power, coast above the atmosphere and glide back to Earth.",
+        // Keep launch mass throughout the unlimited-fuel flight.
         mass_kg: 14_186.0,
         wing_area_m2: 18.6,
         wingspan_m: 6.71,
@@ -788,7 +787,7 @@ static CATALOG: &[AircraftSpec] = &[
         min_load_factor: -1.0,
         aerobatic: true,
         full_authority_q: 5_000.0,
-        v_rotate_kt: 185.0,
+        v_rotate_kt: 250.0,
         v_approach_kt: 176.0,
         v_cruise_kt: 235.0,
         v_max_kt: 650.0,

@@ -59,8 +59,8 @@ function drawPanel(g: CanvasRenderingContext2D, s: Float64Array, width: number, 
   dial(g, 739, 155, 'XLR99 POWER', `${Math.round(s[S.ENGINE] * 100)}%`, s[S.ENGINE])
   dial(g, 239, 377, 'TAS KT', String(Math.round(s[S.TAS_KT])), s[S.TAS_KT] / 4200)
   dial(g, 489, 377, 'HEADING °T', String(Math.round(s[S.HEADING]) % 360).padStart(3, '0'), s[S.HEADING] / 360)
-  const fuel = s[S.ROCKET_PROPELLANT]
-  dial(g, 739, 377, 'PROPELLANT', `${Math.round(fuel * 100)}%`, fuel)
+  const climbRate = s[S.VS_FPM] / 1000
+  dial(g, 739, 377, 'V/S KFT/MIN', climbRate.toFixed(1), 0.5 + climbRate / 400)
 }
 
 export function buildX15Cockpit(model: AircraftModel): Cockpit {

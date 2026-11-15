@@ -187,7 +187,7 @@ export function Hud() {
         color(nodes.gear, gear > 0.99 ? '#55e08a' : gear < 0.01 ? '#e9fbff' : '#ffb547')
       }
       const fi = s[S.FLAPS_INDEX] | 0
-      text(nodes.flaps, rocket ? `${Math.round(s[S.ROCKET_PROPELLANT] * 100)}%` : spec ? spec.flap_detents[fi] ?? String(fi) : String(fi))
+      text(nodes.flaps, rocket ? `${Math.round(s[S.ENGINE] * 100)}%` : spec ? spec.flap_detents[fi] ?? String(fi) : String(fi))
       text(nodes.spd, s[S.SPOILERS] > 0.05 ? 'EXT' : '—')
       color(nodes.spd, s[S.SPOILERS] > 0.05 ? '#ffb547' : '')
       text(nodes.brake, flags & Flags.PARKING_BRAKE ? 'PARK' : s[S.BRAKE] > 0 ? 'ON' : '—')
@@ -290,7 +290,7 @@ export function Hud() {
             <b data-k="gear" />
           </div>
           <div className="cell">
-            <span className="hud-unit">{aircraft?.engine === 'rocket' ? 'FUEL' : 'FLAPS'}</span>
+            <span className="hud-unit">{aircraft?.engine === 'rocket' ? 'XLR99' : 'FLAPS'}</span>
             <b data-k="flaps" />
           </div>
           <div className="cell">

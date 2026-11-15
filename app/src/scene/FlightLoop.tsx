@@ -104,6 +104,7 @@ export function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, oc
       wingTip: aircraft.model.wingTipRight,
       specificForce: new Vector3(0, 1, 0),
       heightAboveGround: 0,
+      spaceFlight: aircraft.model.id === 'x15',
       onGround: true,
       groundSpeed: 0,
     }),
@@ -373,11 +374,11 @@ export function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, oc
     sunThrough.current += (through - sunThrough.current) * Math.min(1, dt * 1.5)
 
     if (ocean) {
-      ocean.update(camera.position, st.geoid, now / 1000)
-      // Don't flood the view with water before the terrain around us has streamed in.
-      // ...and not at all well inland, where the sea shell sits far below the terrain.
+      // The local wave mesh has a finite radius. At suborbital altitudes the
+      // distant imagery already covers the ocean, including beyond that edge.
       const nearSeaLevel = s[S.GROUND_HEIGHT] - st.geoid < 80
-      ocean.mesh.visible = nearSeaLevel && (st.groundSamples > 0 || world.loadProgress > 0.95)
+      ocean.mesh.visible = eyeHeight < 40_000 && nearSeaLevel && (st.groundSamples > 0 || world.loadProgress > 0.95)
+      if (ocean.mesh.visible) ocean.update(camera.position, st.geoid, now / 1000)
     }
     lakes?.update(s[S.LAT], s[S.LON], now / 1000)
 

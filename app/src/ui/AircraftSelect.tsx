@@ -37,8 +37,9 @@ export function AircraftSelect({ onClose }: { onClose: () => void }) {
 
   const choose = (id: string) => {
     const { spawn, setSpawn } = useApp.getState()
-    if (id === 'x15') setSpawn(x15Departure(spawn))
-    else if (spawn.kind === 'rocket') setSpawn({
+    if (id === 'x15') {
+      if (id !== aircraftId) setSpawn(x15Departure(spawn))
+    } else if (spawn.kind === 'rocket') setSpawn({
       kind: 'coords', label: spawn.label, lat: spawn.lat, lon: spawn.lon, elevationFt: spawn.elevationFt,
       mode: 'air', aglFt: 3000, heading: spawn.heading,
     })

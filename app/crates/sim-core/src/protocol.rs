@@ -84,6 +84,9 @@ pub enum SimCommand {
         mach: f64,
         ground_elevation_ft: Option<f64>,
     },
+    /// Guide a physical X-15 climb toward the requested apogee.
+    ClimbRocket { altitude_ft: f64 },
+    CancelRocketClimb,
     SpawnRunway {
         airport: String,
         #[serde(default)]
@@ -261,9 +264,7 @@ pub mod snap {
     pub const AP_SELECTED_HEADING: usize = 61;
     pub const AP_SELECTED_ALT_FT: usize = 62;
     pub const AP_SELECTED_SPEED: usize = 63;
-    /// Fraction of the XLR99 launch propellant remaining.
-    pub const ROCKET_PROPELLANT: usize = 64;
-    pub const LEN: usize = 65;
+    pub const LEN: usize = 64;
 
     pub mod flags {
         pub const ON_GROUND: u32 = 1;
@@ -276,6 +277,7 @@ pub mod snap {
         pub const AP_ENGAGED: u32 = 128;
         pub const OVERSPEED: u32 = 256;
         pub const TAILSTRIKE: u32 = 512;
+        pub const ROCKET_CLIMB: u32 = 1024;
     }
 
     pub mod ap_modes {

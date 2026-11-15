@@ -61,6 +61,7 @@ export function RocketFlight({ spec }: { spec: AircraftSpec }) {
   const covered = useApp((s) => s.pauseMenu || s.routeOpen || s.skipToOpen || s.helpOverlay || Boolean(s.crashed))
   const [fields, setFields] = useState(() => rocketFields(X15_LAUNCH))
   const [ready, setReady] = useState(false)
+  const [climbing, setClimbing] = useState(false)
 
   useEffect(() => {
     let generation = -1
@@ -69,6 +70,7 @@ export function RocketFlight({ spec }: { spec: AircraftSpec }) {
       const current = sim.snapshotsReceived > 0 && s[S.AIRCRAFT_INDEX] === spec.index
       const available = current && (s[S.FLAGS] & (Flags.AWAITING_GROUND | Flags.CRASHED)) === 0
       setReady(available)
+      setClimbing(current && (s[S.FLAGS] & Flags.ROCKET_CLIMB) !== 0)
       if (!available || generation === s[S.GENERATION]) return
       generation = s[S.GENERATION]
       setFields(rocketFields({
@@ -84,6 +86,13 @@ export function RocketFlight({ spec }: { spec: AircraftSpec }) {
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    const altitude = Number(fields.altitude_ft)
+    if (!ready || climbing || fields.altitude_ft === '' || !Number.isInteger(altitude) || altitude < 0 || altitude > X15_MAX_ALT_FT) return
+    sim.command({ type: 'climb_rocket', altitude_ft: altitude })
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+  }
+
+  function place() {
     const state = readRocketFields(fields)
     if (!ready || !state) return
     const s = sim.latest
@@ -101,7 +110,12 @@ export function RocketFlight({ spec }: { spec: AircraftSpec }) {
     }}>
     <fieldset disabled={!ready}>
       <RocketFlightFields fields={fields} setFields={setFields} hud />
-      <button className="btn primary" type="submit" disabled={!readRocketFields(fields)}>Set flight state</button>
+      <div className="hud-target-actions">
+        {climbing ? <button className="btn primary" type="button" onClick={() => sim.command({ type: 'cancel_rocket_climb' })}>Cancel climb</button>
+          : <button className="btn primary" type="submit" formNoValidate title="Use the rocket to climb on your current heading">Fly climb</button>}
+        <button className="btn" type="button" disabled={!readRocketFields(fields)} onClick={place}
+          title="Place the aircraft immediately at this altitude, speed and heading">Place now</button>
+      </div>
       <RocketFlightPresets fields={fields} setFields={setFields} />
     </fieldset>
   </form>

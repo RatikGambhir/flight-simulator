@@ -24,6 +24,7 @@ const _sf = new Vector3()
 const _q = new Quaternion()
 const _target = new Vector3()
 const _rot = new Matrix3()
+const EARTH_MEAN_RADIUS_M = 6_371_008.8
 
 export interface AircraftPose {
   position: Vector3
@@ -38,6 +39,7 @@ export interface AircraftPose {
   specificForce: Vector3
   /** Height of the aircraft's reference point above the ground (m). */
   heightAboveGround: number
+  spaceFlight: boolean
   onGround: boolean
   groundSpeed: number
 }
@@ -183,7 +185,9 @@ export class CameraRig {
     this.lastMode = this.mode
 
     // Field of view and near plane (only touch the projection when they change).
-    const targetFov = this.mode === 'cockpit' ? this.cockpitFov : this.mode === 'flyby' ? 40 : 58
+    const spaceView = this.mode === 'chase' && pose.spaceFlight
+      ? MathUtils.smoothstep(pose.heightAboveGround, 35_000, 90_000) : 0
+    const targetFov = this.mode === 'cockpit' ? this.cockpitFov : this.mode === 'flyby' ? 40 : 58 + 10 * spaceView
     const near = this.mode === 'cockpit' ? 0.03 : 0.3
     let fov = cam.fov
     if (Math.abs(fov - targetFov) > 0.01) fov = modeChanged || this.mode === 'cockpit' ? targetFov : MathUtils.lerp(fov, targetFov, Math.min(1, dt * 3))
@@ -210,7 +214,7 @@ export class CameraRig {
         this.flybyView(pose)
         break
       default:
-        this.chaseView(pose, dt)
+        this.chaseView(pose, dt, spaceView)
     }
     if (this.mode !== 'cockpit') this.keepAboveGround(pose)
     cam.updateMatrixWorld()
@@ -236,15 +240,15 @@ export class CameraRig {
     return out.addScaledVector(_up, -1)
   }
 
-  private orbitDirection(base: Vector3, out: Vector3) {
+  private orbitDirection(base: Vector3, out: Vector3, yaw = this.yaw, pitch = this.pitch) {
     // Start from `base` (unit, horizontal), swing around the vertical by yaw,
     // then raise toward the vertical by pitch.
-    out.copy(base).applyAxisAngle(_up, this.yaw)
+    out.copy(base).applyAxisAngle(_up, yaw)
     _axis.copy(out).cross(_up).normalize()
-    return out.applyAxisAngle(_axis, this.pitch)
+    return out.applyAxisAngle(_axis, pitch)
   }
 
-  private chaseView(p: AircraftPose, dt: number) {
+  private chaseView(p: AircraftPose, dt: number, spaceView: number) {
     // Follow the heading smoothly (ignoring roll) so the horizon stays calm.
     const flatFwd = _v.copy(_fwd).addScaledVector(_up, -_fwd.dot(_up))
     if (flatFwd.lengthSq() < 1e-6) flatFwd.copy(this.smoothedFwd)
@@ -257,7 +261,12 @@ export class CameraRig {
       this.smoothedFwd.lerp(flatFwd, 1 - Math.exp(-dt * 2.2)).normalize()
     }
     const dist = (p.length * 1.25 + 14) * this.zoom
-    this.orbitDirection(_dir.copy(this.smoothedFwd).negate(), _dir)
+    // The horizon dips by acos(R / (R + h)). At the edge of space, look
+    // below that tangent to frame the curved Earth behind the aircraft.
+    const dip = spaceView > 0 ? Math.acos(EARTH_MEAN_RADIUS_M / (EARTH_MEAN_RADIUS_M + p.heightAboveGround)) : 0
+    const yaw = this.yaw - spaceView * 0.95
+    const pitch = Math.min(1.45, this.pitch + spaceView * 1.5 * dip)
+    this.orbitDirection(_dir.copy(this.smoothedFwd).negate(), _dir, yaw, pitch)
     // The camera trails the aircraft's acceleration a little (up to ~6 m).
     this.lag.update(this.extraG(p, _sf).multiplyScalar(-2.2 * Math.min(1.5, this.zoom)), dt, 6)
     const desired = _target.copy(p.position).addScaledVector(_dir, dist).add(this.lag.x)
