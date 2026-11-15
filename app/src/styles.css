@@ -774,6 +774,27 @@ input[type='checkbox'] {
   text-align: right;
 }
 
+.hud-speed-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+
+.hud-mph-toggle.btn {
+  padding: 3px 6px;
+  border-radius: 5px;
+  font: inherit;
+  font-size: 11px;
+  pointer-events: auto;
+}
+
+.hud-mph-toggle[aria-pressed="true"] {
+  color: #a9d4ff;
+  border-color: #4da3ff;
+  background: #143551;
+}
+
 .hud-big {
   font-size: 34px;
   font-weight: 700;
@@ -798,11 +819,16 @@ input[type='checkbox'] {
   bottom: 18px;
   left: 50%;
   transform: translateX(-50%);
-  display: flex;
-  gap: 18px;
-  padding: 10px 18px;
-  align-items: center;
+  padding: 9px 13px;
   font-size: 12px;
+  width: min(560px, calc(100% - 28px));
+}
+
+.hud-systems {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+  align-items: center;
 }
 
 .hud-bottom .cell {
@@ -810,11 +836,95 @@ input[type='checkbox'] {
   flex-direction: column;
   align-items: center;
   gap: 3px;
-  min-width: 54px;
+  min-width: 0;
+  white-space: nowrap;
 }
 
 .hud-bottom .cell b {
   font-size: 15px;
+}
+
+.hud-targets {
+  border-top: 1px solid rgba(159, 198, 230, 0.23);
+  margin-top: 9px;
+  padding-top: 9px;
+  pointer-events: auto;
+}
+
+.hud-targets fieldset {
+  display: grid;
+  grid-template-columns: minmax(58px, 0.9fr) minmax(78px, 1fr) minmax(134px, 1.2fr) auto;
+  align-items: end;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+
+.hud-target-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.hud-targets .hud-unit {
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.hud-targets input,
+.hud-targets select {
+  min-width: 0;
+  width: 100%;
+  height: 32px;
+  padding: 0 6px;
+  color: #e9fbff;
+  font: 600 13px var(--hud-font);
+  border: 1px solid rgba(159, 198, 230, 0.27);
+  border-radius: 6px;
+  background: rgba(5, 17, 28, 0.88);
+}
+
+.hud-targets input {
+  appearance: textfield;
+}
+
+.hud-targets input::-webkit-inner-spin-button,
+.hud-targets input::-webkit-outer-spin-button {
+  appearance: none;
+}
+
+.hud-targets :is(input, select, button):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.hud-target-speed {
+  display: flex;
+  gap: 4px;
+}
+
+.hud-target-speed select {
+  flex: 0 0 79px;
+}
+
+.hud-target-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.hud-targets .btn {
+  min-height: 32px;
+  padding: 5px 8px;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.hud-cruise-preset {
+  grid-column: 1 / -1;
+  justify-self: start;
+  color: #b9d3e8;
 }
 
 .throttle-bar {
@@ -1156,9 +1266,44 @@ input[type='checkbox'] {
   color: var(--muted);
 }
 
-.hud.compact .hud-side,
-.hud.compact .hud-bottom {
+.hud.compact .hud-side.right,
+.hud.compact .hud-side.left .hud-small,
+.hud.compact .hud-side.left:not(.ground-speed-mph) :is(.hud-unit, .hud-big),
+.hud.compact .hud-systems,
+.hud.compact .hud-bottom:not(:has(.hud-targets)) {
   display: none;
+}
+
+.hud.compact .hud-side.left {
+  min-width: 0;
+  padding: 6px 8px;
+}
+
+.hud.compact .hud-side.left:not(.ground-speed-mph) .hud-speed-header {
+  margin-bottom: 0;
+}
+
+.hud.compact .hud-targets {
+  border-top: 0;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+@media (max-width: 1250px) {
+  .camera-bar { bottom: 176px; }
+}
+
+@media (max-width: 880px) {
+  .hud-coords { display: none; }
+}
+
+@media (max-width: 510px) {
+  .hud-bottom .cell b { font-size: 12px; }
+  .hud-systems .hud-unit { font-size: 9px; letter-spacing: 0.04em; }
+  .hud-targets fieldset { grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 1.45fr); }
+  .hud-target-actions { grid-column: 1 / -1; }
+  .hud-cruise-preset { grid-row: 3; }
+  .camera-bar { bottom: 217px; right: 14px; }
 }
 
 @media (max-width: 1500px) {

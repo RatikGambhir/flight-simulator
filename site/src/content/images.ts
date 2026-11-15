@@ -1,5 +1,5 @@
-// Every photo on the site except the hero is an unedited frame captured inside
-// GeoFlight (Ultra quality, Google Photorealistic 3D Tiles), resized and encoded.
+// The scene photos come from GeoFlight captures. The Sunset capture has an
+// edited cloud layer.
 import hero1280 from '@/assets/images/hero-1280.avif'
 import hero1672 from '@/assets/images/hero-1672.avif'
 import heroJpg from '@/assets/images/hero-1600.jpg'
@@ -65,7 +65,10 @@ export const PHOTOS = {
   paris: capture(paris1280, paris2560, parisJpg, 'A Skyhawk approaches the Eiffel Tower over the Seine in late-afternoon light.'),
   tokyo: capture(tokyo1280, tokyo2560, tokyoJpg, 'An A380 banks over the Tokyo waterfront above a dense field of towers.'),
   matterhorn: capture(matterhorn1280, matterhorn2560, matterhornJpg, 'An F-16 flies toward the Matterhorn above a layer of cloud in the Swiss Alps.'),
-  sunset: capture(sunset1280, sunset2560, sunsetJpg, 'An A380 cruising above a cloud deck as the sun sets on the horizon.'),
+  sunset: {
+    ...capture(sunset1280, sunset2560, sunsetJpg, 'A twin-engine airliner banks above scattered clouds as the sun sets to its left.'),
+    height: 1618,
+  },
   night: capture(night1280, night2560, nightJpg, 'An A380 at night above moonlit clouds, cabin windows lit, stars overhead.'),
   channel: {
     avif: [

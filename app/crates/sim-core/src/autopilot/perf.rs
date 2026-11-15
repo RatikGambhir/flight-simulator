@@ -179,7 +179,8 @@ impl Perf {
             hard_surface_only: jet,
             crosswind_limit_kt: if jet { 30.0 } else { 15.0 },
             tailwind_limit_kt: if jet { 10.0 } else { 5.0 },
-            cruise_alt_ft: s.cruise_alt_ft.min(s.max_alt_ft),
+            // Blackbird managed routes use dry power and the subsonic Mach cap.
+            cruise_alt_ft: if s.id == "sr71" { 35_000.0 } else { s.cruise_alt_ft.min(s.max_alt_ft) },
             max_alt_ft: s.max_alt_ft,
             alt_per_nm: if jet { 150.0 } else { 60.0 },
             wingspan_m: s.wingspan_m,

@@ -144,6 +144,7 @@ impl Harness {
             mode: SpawnMode::Air,
             agl_ft: Some(agl_ft),
             speed_kt,
+            cruise: false,
             ground_elevation_ft: Some(ground_ft),
             keep_autopilot: false,
         }));

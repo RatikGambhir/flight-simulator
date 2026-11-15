@@ -55,7 +55,7 @@ fn afterburning_fighters_climb_on_dry_power() {
 
 #[test]
 fn flap_schedule_is_monotonic_and_ends_at_vref() {
-    for s in catalog().iter().filter(|s| !s.auto_flaps) {
+    for s in catalog().iter().filter(|s| !s.auto_flaps && s.flap_detents.len() > 1) {
         let p = Perf::from_spec(s);
         let n = p.flap_count;
         assert!((p.min_speed_for_flaps(n - 1) - p.v_ref).abs() < 1e-9, "{}", s.id);
@@ -364,7 +364,7 @@ fn engaging_without_a_destination_holds_the_current_flight() {
     assert_eq!(ap.target_altitude_ft, 4_800.0);
     assert_eq!(ap.target_speed_kt, 250.0);
     // Hold mode accepts the classic target adjustments.
-    ap.apply(&AutopilotCommand { heading_delta: Some(-10.0), altitude_delta_ft: Some(500.0), ..Default::default() }, spec("b737"));
+    ap.apply(&AutopilotCommand { heading_delta: Some(-10.0), altitude_delta_ft: Some(500.0), ..Default::default() }, &inp, spec("b737"));
     assert_eq!(ap.target_heading, 80.0);
     assert_eq!(ap.target_altitude_ft, 5_300.0);
 }

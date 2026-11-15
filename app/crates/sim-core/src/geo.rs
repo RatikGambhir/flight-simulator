@@ -21,6 +21,7 @@ pub const FT_TO_M: f64 = 0.3048;
 pub const M_TO_FT: f64 = 1.0 / FT_TO_M;
 pub const KT_TO_MS: f64 = 0.514_444_444;
 pub const MS_TO_KT: f64 = 1.0 / KT_TO_MS;
+pub const MPH_TO_MS: f64 = 0.447_04;
 
 /// A geodetic position on the WGS84 ellipsoid.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

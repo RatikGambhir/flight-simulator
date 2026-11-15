@@ -135,7 +135,7 @@ class Controls {
       return
     }
     const t = e.target as HTMLElement | null
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
     if (app.phase !== 'flying') return
     if (e.metaKey || e.ctrlKey) return
     // A key press is a user gesture: make sure audio is running.
@@ -253,8 +253,9 @@ class Controls {
     const { settings, pauseMenu, routeOpen, skipToOpen } = useApp.getState()
     const shift = this.down.has('ShiftLeft') || this.down.has('ShiftRight')
     const alt = this.down.has('AltLeft') || this.down.has('AltRight')
-    const blocked = pauseMenu || routeOpen || skipToOpen
-    if (skipToOpen) {
+    const editingTargets = document.activeElement?.matches('[data-flight-targets] :is(input, select)') === true
+    const blocked = pauseMenu || routeOpen || skipToOpen || editingTargets
+    if (skipToOpen || editingTargets) {
       this.down.clear()
       this.axes.pitch = this.axes.roll = this.axes.yaw = 0
     }

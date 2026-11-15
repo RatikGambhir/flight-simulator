@@ -68,7 +68,10 @@ export const S = {
   AP_LATERAL: 59,
   /** Distance remaining along the autopilot's route (nm; -1 when not navigating). */
   AP_DIST_NM: 60,
-  LEN: 61,
+  AP_SELECTED_HEADING: 61,
+  AP_SELECTED_ALT_FT: 62,
+  AP_SELECTED_SPEED: 63,
+  LEN: 64,
 } as const
 
 export const Flags = {
@@ -84,7 +87,9 @@ export const Flags = {
   TAILSTRIKE: 512,
 } as const
 
-export const ApModes = { HEADING: 1, ALTITUDE: 2, AUTOTHROTTLE: 4, MANAGED: 8 } as const
+export const ApModes = { HEADING: 1, ALTITUDE: 2, AUTOTHROTTLE: 4, MANAGED: 8, SELECTED: 16, MACH: 32, MPH: 64 } as const
+
+export const KT_TO_MPH = 1852 / 1609.344
 
 export const hasFlag = (snap: Float64Array, flag: number) => ((snap[S.FLAGS] | 0) & flag) !== 0
 
@@ -116,6 +121,8 @@ export interface SpawnRequest {
   mode?: SpawnMode
   agl_ft?: number | null
   speed_kt?: number | null
+  /** Use the selected aircraft's high-altitude cruise condition, when supported. */
+  cruise?: boolean
   ground_elevation_ft?: number | null
   /** Keep the autopilot flying after the move (skip-to along the route). */
   keep_autopilot?: boolean
@@ -135,6 +142,12 @@ export interface AutopilotCommand {
   speed_delta_kt?: number
 }
 
+export interface FlightTargets {
+  heading: number
+  altitude_ft: number
+  speed: { unit: 'knots' | 'mach' | 'ground_mph'; value: number }
+}
+
 export type SimCommand =
   | ({ type: 'spawn' } & SpawnRequest)
   | { type: 'spawn_runway'; airport: string; runway?: string | null; kind: RunwaySpawnKind }
@@ -152,6 +165,7 @@ export type SimCommand =
   | { type: 'set_assist'; enabled: boolean }
   | { type: 'toggle_autopilot' }
   | ({ type: 'autopilot' } & AutopilotCommand)
+  | ({ type: 'fly_targets' } & FlightTargets)
   | { type: 'ground'; lat: number; lon: number; height: number | null }
   | { type: 'set_time_scale'; scale: number }
   | { type: 'collision'; what: string }

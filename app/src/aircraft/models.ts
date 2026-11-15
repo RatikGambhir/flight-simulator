@@ -9,6 +9,7 @@ import { build737, buildA320, buildA380 } from './exterior/airliners'
 import { buildBizjet, buildLongitude } from './exterior/businessJets'
 import { buildCessna } from './exterior/cessna'
 import { buildFighter } from './exterior/fighter'
+import { buildBlackbird } from './exterior/blackbird'
 import type { AircraftModel } from './exterior/parts'
 
 export type { AircraftModel, ControlSurface, GearLeg, LampKind, ModelLamp, Spinner, SurfaceKind } from './exterior/parts'
@@ -21,6 +22,7 @@ const BUILDERS: Record<string, (livery?: LiveryId) => AircraftModel> = {
   longitude: buildLongitude,
   c172: buildCessna,
   f16: buildFighter,
+  sr71: buildBlackbird,
   c5m: buildC5M,
   c17: buildC17,
 }

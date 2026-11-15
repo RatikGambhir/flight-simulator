@@ -8,6 +8,7 @@
 //! inlet-temperature / dynamic-pressure limiting at low level that keep a
 //! real F-16 near Mach 1.2 on the deck and about Mach 2.05 at 40,000 ft.
 
+use crate::aircraft::AircraftSpec;
 use crate::atmosphere::isa;
 
 /// Table altitudes (m): 0, 10k, 20k, 30k, 40k, 50k ft.
@@ -43,6 +44,35 @@ const MAX: [[f64; 12]; 6] = [
 /// the way from military to maximum.
 const MIN_AB: f64 = 0.15;
 
+// Representative installed J58 thrust, normalized to static afterburning
+// thrust. Tuned to the Blackbird's published envelope. At high Mach the inlet
+// and ejector supply much of the installed thrust, even in the thin air.
+const J58_ALT_M: [f64; 6] = [0.0, 9_144.0, 16_764.0, 21_336.0, 25_908.0, 28_956.0];
+const J58_MACH: [f64; 8] = [0.0, 0.9, 1.2, 1.6, 2.2, 2.8, 3.2, 3.4];
+#[rustfmt::skip]
+const J58_MAX: [[f64; 8]; 6] = [
+    [1.000, 1.04, 0.98, 0.72, 0.42, 0.28, 0.20, 0.14],
+    [0.450, 0.65, 0.74, 0.78, 0.72, 0.59, 0.46, 0.36],
+    [0.170, 0.24, 0.33, 0.43, 0.56, 0.60, 0.60, 0.50],
+    [0.081, 0.13, 0.18, 0.25, 0.37, 0.45, 0.47, 0.40],
+    [0.040, 0.07, 0.10, 0.14, 0.20, 0.30, 0.32, 0.26],
+    [0.025, 0.04, 0.06, 0.08, 0.12, 0.19, 0.23, 0.19],
+];
+
+pub(crate) fn blackbird_thrust(spec: &AircraftSpec, engine: f64, alt_m: f64, mach: f64) -> f64 {
+    let (i, fa) = interp_axis(&J58_ALT_M, alt_m);
+    let (j, fm) = interp_axis(&J58_MACH, mach);
+    let row = |r: &[f64; 8]| r[j] + (r[j + 1] - r[j]) * fm;
+    let mut fraction = row(&J58_MAX[i]) + (row(&J58_MAX[i + 1]) - row(&J58_MAX[i])) * fa;
+    let top = J58_ALT_M[J58_ALT_M.len() - 1];
+    if alt_m > top {
+        fraction *= isa(alt_m).density / isa(top).density;
+    }
+    let max = spec.afterburner_thrust_n * fraction;
+    let mil = spec.max_thrust_n * fraction / (1.0 + 0.46 * mach.clamp(0.0, 3.4));
+    blend_thrust(mil, max, spec.idle_thrust, spec.afterburner_detent, engine)
+}
+
 fn interp_axis(axis: &[f64], x: f64) -> (usize, f64) {
     let x = x.clamp(axis[0], axis[axis.len() - 1]);
     let i = axis.iter().rposition(|&a| a <= x).unwrap_or(0).min(axis.len() - 2);
@@ -63,11 +93,15 @@ fn lookup(table: &[[f64; 12]; 6], alt_m: f64, mach: f64) -> f64 {
 /// afterburner adds thrust up to maximum.
 pub fn afterburning_thrust(mil_static_n: f64, ab_static_n: f64, idle: f64, detent: f64, engine: f64, alt_m: f64, mach: f64) -> f64 {
     let mil = mil_static_n * lookup(&MIL, alt_m, mach);
+    let max = if engine > detent { ab_static_n * lookup(&MAX, alt_m, mach) } else { mil };
+    blend_thrust(mil, max, idle, detent, engine)
+}
+
+fn blend_thrust(mil: f64, max: f64, idle: f64, detent: f64, engine: f64) -> f64 {
     if engine <= detent {
         let x = (engine / detent.max(1e-3)).clamp(0.0, 1.0);
         return mil * (idle + (1.0 - idle) * x);
     }
-    let max = ab_static_n * lookup(&MAX, alt_m, mach);
     let x = ((engine - detent) / (1.0 - detent).max(1e-3)).clamp(0.0, 1.0);
     mil + (max - mil).max(0.0) * (MIN_AB + (1.0 - MIN_AB) * x)
 }

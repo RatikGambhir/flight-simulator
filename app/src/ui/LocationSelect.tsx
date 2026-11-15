@@ -1,7 +1,7 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { sim } from '../sim/simClient'
 import type { Airport, AirportDetail, RunwaySpawnKind, SearchResult, SpawnMode } from '../sim/protocol'
-import type { SpawnChoice } from '../state/store'
+import { useApp, type SpawnChoice } from '../state/store'
 
 const FEATURED: { label: string; query: string }[] = [
   { label: "Chicago O'Hare", query: 'KORD' },
@@ -91,6 +91,7 @@ function ResultIcon({ kind }: { kind: string }) {
 }
 
 export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { initial: SpawnChoice; onConfirm: (s: SpawnChoice) => void; onClose: () => void; confirmLabel: string }) {
+  const blackbird = useApp((s) => s.aircraftId === 'sr71')
   const [query, setQuery] = useState('')
   const deferredQuery = useDeferredValue(query)
   const [results, setResults] = useState<SearchResult[]>([])
@@ -99,9 +100,10 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
   const [detail, setDetail] = useState<AirportDetail | null>(null)
   const [runway, setRunway] = useState<string | null>(initial.kind === 'runway' ? initial.runway : null)
   const [rwMode, setRwMode] = useState<RunwaySpawnKind>(initial.kind === 'runway' ? initial.mode : 'takeoff')
-  const [placeMode, setPlaceMode] = useState<SpawnMode>('air')
-  const [agl, setAgl] = useState(2500)
-  const [heading, setHeading] = useState(0)
+  const [placeMode, setPlaceMode] = useState<SpawnMode>(initial.kind === 'coords' ? initial.mode : 'air')
+  const [agl, setAgl] = useState(initial.kind === 'coords' ? initial.aglFt : 2500)
+  const [heading, setHeading] = useState(initial.kind === 'coords' ? initial.heading : 0)
+  const [cruise, setCruise] = useState(blackbird && initial.kind === 'coords' && initial.cruise === true)
   const [lat, setLat] = useState(initial.kind === 'coords' ? initial.lat.toFixed(5) : '')
   const [lon, setLon] = useState(initial.kind === 'coords' ? initial.lon.toFixed(5) : '')
   const [online, setOnline] = useState<SearchResult[]>([])
@@ -201,21 +203,22 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
   }
 
   const confirm = () => {
-    if (selected?.kind === 'airport' && detail) {
+    if (!cruise && selected?.kind === 'airport' && detail) {
       onConfirm({ kind: 'runway', airport: detail.airport.ident, airportName: detail.airport.name, runway, mode: rwMode })
       return
     }
     const la = Number(lat)
     const lo = Number(lon)
-    if (!Number.isFinite(la) || !Number.isFinite(lo) || Math.abs(la) > 90 || Math.abs(lo) > 180) return
+    if (lat === '' || lon === '' || !Number.isFinite(la) || !Number.isFinite(lo) || Math.abs(la) > 90 || Math.abs(lo) > 180) return
     onConfirm({
       kind: 'coords',
       label: selected?.title ?? `${la.toFixed(3)}, ${lo.toFixed(3)}`,
       lat: la,
       lon: lo,
-      mode: placeMode,
+      mode: cruise ? 'air' : placeMode,
       aglFt: agl,
       heading,
+      cruise,
       elevationFt: selected?.elevation_ft ?? null,
     })
   }
@@ -290,32 +293,36 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
                   </div>
                   <div className="spacer" />
                   <div className="segmented">
-                    <button className={rwMode === 'takeoff' ? 'on' : ''} onClick={() => setRwMode('takeoff')}>
+                    <button className={!cruise && rwMode === 'takeoff' ? 'on' : ''} onClick={() => { setCruise(false); setRwMode('takeoff') }}>
                       On runway
                     </button>
-                    <button className={rwMode === 'approach' ? 'on' : ''} onClick={() => setRwMode('approach')}>
+                    <button className={!cruise && rwMode === 'approach' ? 'on' : ''} onClick={() => { setCruise(false); setRwMode('approach') }}>
                       Final approach
                     </button>
+                    {blackbird && <button className={cruise ? 'on' : ''} aria-pressed={cruise} onClick={() => setCruise(true)}>Cruise · 85,000 ft</button>}
                   </div>
                 </div>
-                <div className="label" style={{ marginTop: 12 }}>
-                  Runway (true heading · length)
-                </div>
-                <div className="runways">
-                  <button className={`btn ${runway === null ? 'selected' : ''}`} onClick={() => setRunway(null)}>
-                    Auto (longest)
-                  </button>
-                  {detail.runways.flatMap((rw) =>
-                    rw.ends.map((e) => (
-                      <button key={e.ident + rw.length_ft} className={`btn ${runway === e.ident ? 'selected' : ''}`} onClick={() => setRunway(e.ident)}>
-                        <b>{e.ident}</b>
-                        <span className="faint">
-                          {Math.round(e.heading_deg)}° · {Math.round(rw.length_ft).toLocaleString()} ft
-                        </span>
-                      </button>
-                    )),
-                  )}
-                </div>
+                {cruise ? <div className="field" style={{ marginTop: 12 }}>
+                  <label>Mach 3.2 · Heading {heading}°</label>
+                  <input aria-label="Cruise heading" type="range" min={0} max={359} step={1} value={heading} onChange={(e) => setHeading(Number(e.target.value))} />
+                </div> : <>
+                  <div className="label" style={{ marginTop: 12 }}>Runway (true heading · length)</div>
+                  <div className="runways">
+                    <button className={`btn ${runway === null ? 'selected' : ''}`} onClick={() => setRunway(null)}>
+                      Auto (longest)
+                    </button>
+                    {detail.runways.flatMap((rw) =>
+                      rw.ends.map((e) => (
+                        <button key={e.ident + rw.length_ft} className={`btn ${runway === e.ident ? 'selected' : ''}`} onClick={() => setRunway(e.ident)}>
+                          <b>{e.ident}</b>
+                          <span className="faint">
+                            {Math.round(e.heading_deg)}° · {Math.round(rw.length_ft).toLocaleString()} ft
+                          </span>
+                        </button>
+                      )),
+                    )}
+                  </div>
+                </>}
               </div>
             ) : (
               <div className="detail glass">
@@ -328,12 +335,13 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
                   </div>
                   <div className="spacer" />
                   <div className="segmented">
-                    <button className={placeMode === 'air' ? 'on' : ''} onClick={() => setPlaceMode('air')}>
+                    <button className={!cruise && placeMode === 'air' ? 'on' : ''} onClick={() => { setCruise(false); setPlaceMode('air') }}>
                       In flight
                     </button>
-                    <button className={placeMode === 'ground' ? 'on' : ''} onClick={() => setPlaceMode('ground')}>
+                    <button className={!cruise && placeMode === 'ground' ? 'on' : ''} onClick={() => { setCruise(false); setPlaceMode('ground') }}>
                       On ground
                     </button>
+                    {blackbird && <button className={cruise ? 'on' : ''} aria-pressed={cruise} onClick={() => setCruise(true)}>Cruise · 85,000 ft</button>}
                   </div>
                 </div>
                 <div className="coords-grid">
@@ -346,8 +354,10 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
                     <input className="input" value={lon} onChange={(e) => setLon(e.target.value)} placeholder="-87.6298" />
                   </div>
                   <div className="field">
-                    <label>Height above ground: {agl.toLocaleString()} ft</label>
-                    <input type="range" min={500} max={20000} step={100} value={agl} disabled={placeMode === 'ground'} onChange={(e) => setAgl(Number(e.target.value))} />
+                    {cruise ? <label>Mach 3.2 at 85,000 ft MSL</label> : <>
+                      <label>Height above ground: {agl.toLocaleString()} ft</label>
+                      <input type="range" min={500} max={20000} step={100} value={agl} disabled={placeMode === 'ground'} onChange={(e) => setAgl(Number(e.target.value))} />
+                    </>}
                   </div>
                   <div className="field">
                     <label>Heading: {heading}°</label>

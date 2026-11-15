@@ -16,6 +16,7 @@ const LOCKHEED_LIVERIES = [
 ] as const
 
 export function liveryOptions(aircraft: string): readonly { id: LiveryId; label: string }[] {
+  if (aircraft === 'sr71') return [{ id: 'default', label: 'U.S. Air Force · Blackbird' }]
   if (aircraft === 'c5m' || aircraft === 'f16') return LOCKHEED_LIVERIES
   if (aircraft === 'c17') return [MILITARY, ...AIRLINE_LIVERIES.slice(1)]
   return AIRLINE_LIVERIES

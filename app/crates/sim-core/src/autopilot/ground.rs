@@ -70,6 +70,7 @@ impl Autopilot {
                         let vr = perf.v_rotate * KT_TO_MS / inp.sigma.max(0.3).sqrt();
                         let need = (vr * vr - v * v).max(0.0) / (2.0 * self.gs_rate.max(0.3));
                         if along + need > length - 150.0 {
+                            self.selected = None;
                             self.runway = self.departure.clone();
                             self.set_phase(Phase::Rollout, Some("Takeoff rejected — not enough runway remaining".into()));
                             return self.arrival_ground(inp, perf, dt);

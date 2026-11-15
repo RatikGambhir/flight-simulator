@@ -72,6 +72,18 @@ export function autopilotStatus(s: ArrayLike<number>, ctx: ApContext = {}): ApSt
     return { engaged, managed: false, phase: 'OFF', lateral: '', nav: '', targets: '', tone: 'off' }
   }
   const phase = phaseName(s[S.AP_PHASE])
+  if (modes & ApModes.SELECTED) {
+    const hdg = String(Math.round(s[S.AP_SELECTED_HEADING]) % 360 || 360).padStart(3, '0')
+    const alt = thousands.format(Math.round(s[S.AP_SELECTED_ALT_FT]))
+    const value = s[S.AP_SELECTED_SPEED]
+    const speed = modes & ApModes.MACH ? `MACH ${value.toFixed(2)}`
+      : modes & ApModes.MPH ? `GS ${thousands.format(value)} MPH` : `SPD ${Math.round(value)} KEAS`
+    const altitudeError = s[S.AP_SELECTED_ALT_FT] - s[S.ALT_MSL_FT]
+    const selectedPhase = phase === 'HDG/ALT HOLD' && Math.abs(altitudeError) > 150
+      ? altitudeError > 0 ? 'CLIMB' : 'DESCENT'
+      : phase
+    return { engaged, managed: false, phase: selectedPhase, lateral: AP_LATERAL[s[S.AP_LATERAL] | 0] ?? '', nav: `HDG ${hdg}`, targets: `ALT ${alt} · ${speed}`, tone: 'on' }
+  }
   const managed = (modes & ApModes.MANAGED) !== 0
   const lateral = AP_LATERAL[s[S.AP_LATERAL] | 0] ?? ''
   const hdg = String(Math.round(s[S.AP_HEADING]) % 360 || 360).padStart(3, '0')
@@ -117,7 +129,7 @@ export function flightModes(s: ArrayLike<number>): [string, string, string] {
   const at = (modes & ApModes.AUTOTHROTTLE) !== 0
   const phase = phaseName(s[S.AP_PHASE])
   const lateral = AP_LATERAL[s[S.AP_LATERAL] | 0] ?? ''
-  const spd = at ? 'SPD' : ''
+  const spd = at ? (modes & ApModes.MACH ? 'MACH' : modes & ApModes.MPH ? 'GS' : 'SPD') : ''
   const n1 = at ? 'N1' : ''
   const lnav = lateral === 'LOC' ? 'VOR/LOC' : lateral === 'RWY HDG' ? 'HDG SEL' : 'LNAV'
   switch (phase) {

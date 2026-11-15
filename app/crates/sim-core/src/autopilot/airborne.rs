@@ -68,7 +68,9 @@ impl Autopilot {
         if self.target().is_some() {
             self.plan_runway(inp, perf, false);
         }
-        let ctx = self.ctx(inp, perf);
+        // A selected climb-out can take over while a previous route still
+        // has a landing runway. It continues up the departure runway track.
+        let ctx = if self.selected.is_none() { self.ctx(inp, perf) } else { None };
         let cmd = match ctx {
             Some(ctx) => self.managed(inp, perf, &ctx, dt),
             None => self.unmanaged(inp, perf),
@@ -95,7 +97,11 @@ impl Autopilot {
             Phase::InitialClimb => {
                 self.initial_climb_vertical(inp, perf, &mut cmd);
                 if inp.agl_ft >= perf.acceleration_agl_ft {
-                    self.set_phase(Phase::Climb, Some("Climbing on runway heading".into()));
+                    if self.selected.is_some() {
+                        self.set_phase(Phase::Hold, Some("Flying selected targets".into()));
+                    } else {
+                        self.set_phase(Phase::Climb, Some("Climbing on runway heading".into()));
+                    }
                 }
             }
             _ => {
@@ -549,7 +555,7 @@ impl Autopilot {
         }
     }
 
-    fn retract_flaps(&mut self, inp: &ApInputs, perf: &Perf) -> Option<usize> {
+    pub(super) fn retract_flaps(&mut self, inp: &ApInputs, perf: &Perf) -> Option<usize> {
         if perf.auto_flaps || inp.flaps_index == 0 || self.flap_timer < 3.0 {
             return None;
         }

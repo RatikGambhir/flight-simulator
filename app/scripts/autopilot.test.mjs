@@ -81,6 +81,31 @@ test('hold mode lists the held heading, altitude and speed', () => {
   assert.deepEqual(flightModes(s), ['SPD', 'HDG SEL', 'ALT HOLD'])
 })
 
+test('selected Mach targets stay visible from takeoff through altitude capture', () => {
+  const s = snapshot({
+    FLAGS: ENGAGED, AP_PHASE: phase('TAKEOFF'), AP_MODES: ApModes.SELECTED | ApModes.MACH | ApModes.AUTOTHROTTLE,
+    AP_SELECTED_HEADING: 5, AP_SELECTED_ALT_FT: 85000, AP_SELECTED_SPEED: 3.2,
+  })
+  assert.deepEqual(autopilotStatus(s, { destination: 'KLAX' }).targets, 'ALT 85,000 · MACH 3.20')
+  assert.equal(autopilotStatus(s, { destination: 'KLAX' }).nav, 'HDG 005')
+  assert.equal(autopilotStatus(s).phase, 'TAKEOFF')
+  s[S.AP_PHASE] = phase('HDG/ALT HOLD')
+  assert.equal(autopilotStatus(s).phase, 'CLIMB')
+  s[S.ALT_MSL_FT] = 85000
+  assert.equal(autopilotStatus(s).phase, 'HDG/ALT HOLD')
+  assert.equal(flightModes(s)[0], 'MACH')
+})
+
+test('the autopilot display identifies a selected ground speed in MPH', () => {
+  const s = snapshot({
+    FLAGS: ENGAGED, AP_PHASE: phase('HDG/ALT HOLD'), AP_MODES: ApModes.SELECTED | ApModes.MPH | ApModes.AUTOTHROTTLE,
+    ALT_MSL_FT: 85000, AP_SELECTED_HEADING: 90, AP_SELECTED_ALT_FT: 85000, AP_SELECTED_SPEED: 2100,
+  })
+  assert.equal(autopilotStatus(s).targets, 'ALT 85,000 · GS 2,100 MPH')
+  assert.equal(autopilotStatus(s).nav, 'HDG 090')
+  assert.equal(flightModes(s)[0], 'GS')
+})
+
 test('managed cruise shows the route, distance, runway and targets', () => {
   const s = snapshot({
     FLAGS: ENGAGED,

@@ -19,7 +19,7 @@ use crate::autopilot::{ApInputs, ApOutput, Autopilot, NavTarget};
 use crate::engine;
 use crate::geo::{self, ecef_to_geodetic, geodetic_to_ecef, EnuFrame, FT_TO_M, KT_TO_MS, MS_TO_KT, M_TO_FT};
 pub use crate::autopilot::nav::nosewheel_limit;
-use crate::protocol::{snap, ControlInput, RunwaySpawnKind, SimCommand, SimEvent, SpawnMode, SpawnRequest};
+use crate::protocol::{snap, ControlInput, FlightTargets, RunwaySpawnKind, SimCommand, SimEvent, SpawnMode, SpawnRequest, TargetSpeed};
 use crate::weather::{Weather, WeatherSettings};
 use crate::world;
 
@@ -109,6 +109,11 @@ struct AwaitGround {
     absolute: bool,
 }
 
+enum AutopilotResume {
+    Standard,
+    Selected(FlightTargets),
+}
+
 pub struct Simulation {
     spec: &'static AircraftSpec,
     aircraft_index: usize,
@@ -141,7 +146,7 @@ pub struct Simulation {
     /// The autopilot's demands for the current step (merged with the pilot's inputs).
     ap_out: ApOutput,
     /// Re-engage the autopilot once a relocation finishes (skip-to).
-    ap_resume: bool,
+    ap_resume: Option<AutopilotResume>,
     terrain_ahead: Option<TerrainAhead>,
     weather: Weather,
     /// Low-passed specific force in body axes (x fwd, y left, z up), in g.
@@ -201,7 +206,7 @@ impl Simulation {
             bank_ref: None,
             autopilot: Autopilot::default(),
             ap_out: ApOutput::default(),
-            ap_resume: false,
+            ap_resume: None,
             terrain_ahead: None,
             weather: Weather::default(),
             spec_force: DVec3::Z,
@@ -272,6 +277,12 @@ impl Simulation {
     // -----------------------------------------------------------------------
 
     pub fn command(&mut self, cmd: SimCommand) {
+        if self.autopilot.selected_targets().is_some()
+            && matches!(&cmd, SimCommand::ToggleGear | SimCommand::FlapsUp | SimCommand::FlapsDown
+                | SimCommand::SetFlaps { .. } | SimCommand::ToggleSpoilers | SimCommand::ToggleParkingBrake)
+        {
+            self.autopilot.disengage(Some("Autopilot disconnected by pilot input"));
+        }
         match cmd {
             SimCommand::Spawn(req) => {
                 self.last_spawn = Some(SimCommand::Spawn(req.clone()));
@@ -344,7 +355,16 @@ impl Simulation {
                     Some(false) => self.autopilot.disengage(Some("Autopilot disengaged")),
                     _ => {}
                 }
-                self.autopilot.apply(&c, self.spec);
+                let inp = self.ap_inputs();
+                self.autopilot.apply(&c, &inp, self.spec);
+            }
+            SimCommand::FlyTargets(targets) => {
+                if self.crashed || self.awaiting.is_some() {
+                    self.message("Autopilot is available once the aircraft is placed and ready");
+                } else {
+                    let inp = self.ap_inputs();
+                    self.autopilot.engage_selected(&inp, self.spec, targets);
+                }
             }
             SimCommand::SetDestination { airport, runway } => {
                 let target = airport.as_deref().and_then(|id| NavTarget::lookup(id, runway.clone()));
@@ -415,8 +435,17 @@ impl Simulation {
         self.pos = geodetic_to_ecef(g.lat, g.lon, target);
         self.awaiting = None;
         self.update_derived();
-        if std::mem::take(&mut self.ap_resume) {
-            self.engage_autopilot();
+        self.resume_autopilot();
+    }
+
+    fn resume_autopilot(&mut self) {
+        match self.ap_resume.take() {
+            Some(AutopilotResume::Standard) => self.engage_autopilot(),
+            Some(AutopilotResume::Selected(targets)) => {
+                let inp = self.ap_inputs();
+                self.autopilot.engage_selected(&inp, self.spec, targets);
+            }
+            None => {}
         }
     }
 
@@ -434,7 +463,7 @@ impl Simulation {
         self.weather.reset_gusts();
         self.autopilot.reset();
         self.ap_out = ApOutput::default();
-        self.ap_resume = false;
+        self.ap_resume = None;
         self.terrain_ahead = None;
         self.gamma_ref = None;
         self.bank_ref = None;
@@ -451,8 +480,8 @@ impl Simulation {
         let w = s.mass_kg * G0;
         let cl = w * gamma.cos() / (q * s.wing_area_m2).max(1.0);
         let alpha = (cl - s.cl0 - s.flap_cl * self.flaps) / s.cl_alpha;
-        let cd = s.cd0 + s.induced_k() * cl * cl + s.flap_cd * self.flaps + s.gear_cd * self.gear;
         let mach = tas / air.speed_of_sound;
+        let cd = s.cd0 + s.induced_k_at(mach) * cl * cl + s.flap_cd * self.flaps + s.gear_cd * self.gear;
         let cd = cd + engine::wave_drag(s.wave_drag_cd, s.drag_rise_mach, mach);
         let t_req = q * s.wing_area_m2 * cd + w * gamma.sin();
         // Thrust rises monotonically with the lever, so bisect for the setting.
@@ -472,6 +501,9 @@ impl Simulation {
     /// Total thrust (N) for an engine state 0..1 at an altitude (m MSL) and Mach number.
     fn thrust_at(&self, engine: f64, tas: f64, rho: f64, mach: f64, alt_msl: f64) -> f64 {
         let s = self.spec;
+        if s.id == "sr71" {
+            return engine::blackbird_thrust(s, engine, alt_msl, mach);
+        }
         if s.afterburner_thrust_n > 0.0 {
             return engine::afterburning_thrust(s.max_thrust_n, s.afterburner_thrust_n, s.idle_thrust, s.afterburner_detent, engine, alt_msl, mach);
         }
@@ -547,7 +579,9 @@ impl Simulation {
     }
 
     fn spawn(&mut self, req: &SpawnRequest) {
-        let resume = req.keep_autopilot && self.autopilot.engaged;
+        let resume = (req.keep_autopilot && self.autopilot.engaged).then(|| {
+            self.autopilot.selected_targets().map_or(AutopilotResume::Standard, AutopilotResume::Selected)
+        });
         self.autopilot.set_spawn_target(None);
         let lat = req.lat.clamp(-89.9, 89.9);
         let lon = geo::wrap_deg_180(req.lon);
@@ -560,24 +594,38 @@ impl Simulation {
         match req.mode {
             SpawnMode::Ground => {
                 self.flaps_index = s.takeoff_flaps();
-                self.flaps = self.flaps_index as f64 / (s.flap_detents.len() - 1) as f64;
+                self.flaps = s.flap_fraction(self.flaps_index);
                 self.place(lat, lon, fallback + s.gear_height_m, req.heading, SpawnMode::Ground, 0.0, 0.0);
                 self.awaiting = Some(AwaitGround { deadline: self.time + 15.0, mode: SpawnMode::Ground, agl_m: 0.0, absolute: false });
             }
             SpawnMode::Air => {
                 let agl_m = req.agl_ft.unwrap_or(3000.0).max(200.0) * FT_TO_M;
-                let ias = req.speed_kt.unwrap_or(s.v_cruise_kt.min(250.0) * 0.85).max(s.v_approach_kt);
+                let cruise = req.cruise && s.id == "sr71";
+                let (height, ias) = if cruise {
+                    // Snapshots measure altitude at the aircraft's contact reference.
+                    let height = world::msl_ft_to_ellipsoid_m(lat, lon, s.cruise_alt_ft) + s.belly_height_m;
+                    let air = isa(s.cruise_alt_ft * FT_TO_M + s.belly_height_m);
+                    let ias = aircraft::BLACKBIRD_CRUISE_MACH * air.speed_of_sound * (air.density / RHO_SL).sqrt() / KT_TO_MS;
+                    (height, ias)
+                } else {
+                    let ias = req.speed_kt.unwrap_or(s.v_cruise_kt.min(250.0) * 0.85).max(s.v_approach_kt);
+                    (fallback + agl_m, ias)
+                };
                 self.flaps_index = 0;
                 self.flaps = 0.0;
                 self.gear_cmd_down = !s.retractable_gear;
                 self.gear = if s.retractable_gear { 0.0 } else { 1.0 };
-                self.place(lat, lon, fallback + agl_m, req.heading, SpawnMode::Air, ias, 0.0);
+                self.place(lat, lon, height, req.heading, SpawnMode::Air, ias, 0.0);
                 self.gear_cmd_down = !s.retractable_gear;
                 self.gear = if s.retractable_gear { 0.0 } else { 1.0 };
-                self.awaiting = Some(AwaitGround { deadline: self.time + 8.0, mode: SpawnMode::Air, agl_m, absolute: false });
+                // Cruise is specified in MSL and can start before terrain has streamed in.
+                self.awaiting = (!cruise).then_some(AwaitGround { deadline: self.time + 8.0, mode: SpawnMode::Air, agl_m, absolute: false });
             }
         }
         self.ap_resume = resume;
+        if self.awaiting.is_none() {
+            self.resume_autopilot();
+        }
     }
 
     fn spawn_runway(&mut self, ident: &str, runway: Option<&str>, kind: RunwaySpawnKind) -> bool {
@@ -599,7 +647,7 @@ impl Simulation {
             RunwaySpawnKind::Takeoff => {
                 let (la, lo) = geo::destination(lat, lon, hdg.to_radians(), 30.0);
                 self.flaps_index = s.takeoff_flaps();
-                self.flaps = self.flaps_index as f64 / (s.flap_detents.len() - 1) as f64;
+                self.flaps = s.flap_fraction(self.flaps_index);
                 self.place(la.to_degrees(), lo.to_degrees(), field_h + s.gear_height_m, hdg, SpawnMode::Ground, 0.0, 0.0);
                 self.awaiting = Some(AwaitGround { deadline: self.time + 15.0, mode: SpawnMode::Ground, agl_m: 0.0, absolute: false });
                 self.message(format!("{} runway {} — ready for takeoff", ap.ident, end.ident));
@@ -612,7 +660,7 @@ impl Simulation {
                 let gamma = -3f64.to_radians();
                 let h = field_h + dist * 3f64.to_radians().tan() + s.gear_height_m;
                 self.flaps_index = s.flap_detents.len() - 1;
-                self.flaps = 1.0;
+                self.flaps = s.flap_fraction(self.flaps_index);
                 self.gear_cmd_down = true;
                 self.gear = 1.0;
                 self.place(la.to_degrees(), lo.to_degrees(), h, hdg, SpawnMode::Air, s.v_approach_kt, gamma);
@@ -855,6 +903,26 @@ impl Simulation {
         if ap.altitude_hold { m |= ap_modes::ALTITUDE; }
         if ap.autothrottle { m |= ap_modes::AUTOTHROTTLE; }
         if ap.is_managed() { m |= ap_modes::MANAGED; }
+        if let Some(targets) = ap.selected_targets() {
+            m |= ap_modes::SELECTED;
+            out[AP_SELECTED_HEADING] = targets.heading;
+            out[AP_SELECTED_ALT_FT] = targets.altitude_ft;
+            out[AP_SELECTED_SPEED] = match targets.speed {
+                TargetSpeed::Knots(kt) => kt,
+                TargetSpeed::Mach(mach) => {
+                    m |= ap_modes::MACH;
+                    mach
+                }
+                TargetSpeed::GroundMph(mph) => {
+                    m |= ap_modes::MPH;
+                    mph
+                }
+            };
+        } else {
+            out[AP_SELECTED_HEADING] = 0.0;
+            out[AP_SELECTED_ALT_FT] = 0.0;
+            out[AP_SELECTED_SPEED] = 0.0;
+        }
         out[AP_MODES] = m as f64;
         out[AIRCRAFT_INDEX] = self.aircraft_index as f64;
         out[TOUCHDOWN_FPM] = self.last_touchdown_fpm;
@@ -955,6 +1023,7 @@ mod tests {
                 heading: 90.0,
                 mode: SpawnMode::Air,
                 agl_ft: Some(5000.0),
+                cruise: false,
                 speed_kt: None,
                 ground_elevation_ft: Some(600.0),
                 keep_autopilot: false,
@@ -982,6 +1051,7 @@ mod tests {
             heading: 0.0,
             mode: SpawnMode::Air,
             agl_ft: Some(6000.0),
+            cruise: false,
             speed_kt: Some(250.0),
             ground_elevation_ft: Some(600.0),
             keep_autopilot: false,
@@ -1044,6 +1114,7 @@ mod tests {
             heading,
             mode: SpawnMode::Air,
             agl_ft: Some(agl_ft),
+            cruise: false,
             speed_kt: None,
             ground_elevation_ft: Some(600.0),
             keep_autopilot: false,
@@ -1200,6 +1271,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn blackbird_sustains_mach_32_at_85000_feet() {
+        let mut sim = Simulation::new();
+        sim.command(SimCommand::SetAircraft { id: "sr71".into() });
+        sim.command(SimCommand::Spawn(SpawnRequest {
+            lat: 34.9,
+            lon: -117.9,
+            heading: 270.0,
+            mode: SpawnMode::Air,
+            agl_ft: None,
+            speed_kt: None,
+            cruise: true,
+            ground_elevation_ft: Some(2300.0),
+            keep_autopilot: false,
+        }));
+        assert!(sim.awaiting.is_none());
+        assert!((read(&sim, snap::ALT_MSL_FT) - 85_000.0).abs() < 0.1);
+        assert!((read(&sim, snap::MACH) - 3.2).abs() < 0.001);
+        for _ in 0..180 {
+            for _ in 0..120 {
+                sim.step(1.0 / 120.0);
+            }
+            let s = sim.snapshot();
+            assert!((s[snap::ALT_MSL_FT] - 85_000.0).abs() < 150.0, "altitude {}", s[snap::ALT_MSL_FT]);
+            assert!((s[snap::MACH] - 3.2).abs() < 0.04, "Mach {}", s[snap::MACH]);
+        }
+        let s = sim.snapshot();
+        assert!(s[snap::VS_FPM].abs() < 100.0, "vertical speed {}", s[snap::VS_FPM]);
+        assert_eq!(s[snap::GEAR], 0.0);
+        assert_eq!(s[snap::FLAPS], 0.0);
+        assert!(s[snap::AFTERBURNER] > 0.0);
+        assert_eq!(s[snap::FLAGS] as u32 & (snap::flags::CRASHED | snap::flags::STALL), 0);
+    }
+
     // ---- Fighter (F-16 class) performance against published figures -------
 
     fn fighter_at(alt_ft: f64, ias_kt: f64) -> Simulation {
@@ -1211,6 +1316,7 @@ mod tests {
             heading: 90.0,
             mode: SpawnMode::Air,
             agl_ft: Some(alt_ft - 600.0),
+            cruise: false,
             speed_kt: Some(ias_kt),
             ground_elevation_ft: Some(600.0),
             keep_autopilot: false,

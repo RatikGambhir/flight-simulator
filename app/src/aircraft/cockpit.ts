@@ -8,6 +8,7 @@ import { build172Cockpit } from './cockpit172'
 import { build737Cockpit } from './cockpit737'
 import { buildFighterCockpit } from './cockpitFighter'
 import { buildAirlifterCockpit } from './cockpitAirlifters'
+import { buildBlackbirdCockpit } from './cockpitBlackbird'
 
 export interface Cockpit {
   root: Group
@@ -59,6 +60,7 @@ export function buildCockpit(model: AircraftModel): Cockpit {
   if (model.id === 'b737') return build737Cockpit(model)
   if (model.cockpit === 'ga') return build172Cockpit(model)
   if (model.cockpit === 'fighter') return buildFighterCockpit(model)
+  if (model.cockpit === 'blackbird') return buildBlackbirdCockpit(model)
   const root = new Group()
   root.name = 'cockpit'
   const eye = model.eye

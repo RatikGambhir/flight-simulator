@@ -34,6 +34,7 @@ export const LIVERIES: Record<string, Livery> = {
   c172: { base: '#fbfbf8', belly: '#fbfbf8', stripe: '#1f4f9c', accent: '#c8202f', tail: '#fbfbf8', tailLogo: '#1f4f9c', title: 'N172GF' },
   // Two-tone air-superiority grey: medium sides, light underside, dark spine.
   f16: { base: '#5f676e', belly: '#7b838a', stripe: '#454c53', accent: '#1f2226', tail: '#5f676e', tailLogo: '#383e44', title: 'U.S. AIR FORCE', military: true },
+  sr71: { base: '#282b30', belly: '#22252a', stripe: '#777c80', accent: '#a2483c', tail: '#25282d', tailLogo: '#aa5547', title: 'U.S. AIR FORCE', military: true },
   c5m: { base: '#777f86', belly: '#697177', stripe: '#333a41', accent: '#aab0b4', tail: '#737b82', tailLogo: '#353c43', title: 'U.S. AIR FORCE', military: true },
   c17: { base: '#858c91', belly: '#6d757b', stripe: '#3e474f', accent: '#a0a8ad', tail: '#7c848a', tailLogo: '#3e474f', title: 'U.S. AIR FORCE', military: true },
 }
@@ -149,6 +150,54 @@ export function paintFighterTail(livery: Livery): Texture {
   g.stroke()
   g.fillRect(130, 238, 252, 24)
   const tex = new CanvasTexture(c)
+  tex.colorSpace = SRGBColorSpace
+  return tex
+}
+
+/** Dark titanium panels and low-visibility markings in the Blackbird's tube UVs. */
+export function paintBlackbird(livery: Livery): Texture {
+  const c = document.createElement('canvas')
+  c.width = c.height = 1024
+  const g = c.getContext('2d')!
+  const grad = g.createLinearGradient(0, 0, c.width, 0)
+  for (const [u, color] of [[0, livery.base], [0.5, livery.belly], [1, livery.base]] as const) grad.addColorStop(u, color)
+  g.fillStyle = grad
+  g.fillRect(0, 0, c.width, c.height)
+  for (let i = 0; i < 23; i++) {
+    const y = 46 + i * 41 + (i % 4) * 5
+    g.fillStyle = i % 3 === 0 ? '#ffffff0a' : '#0000000a'
+    g.fillRect(0, y, c.width, 24 + (i % 3) * 6)
+    g.fillStyle = '#101217'
+    g.fillRect(0, y, c.width, i === 2 ? 3 : 1)
+  }
+  for (const u of [0.15, 0.34, 0.66, 0.85]) g.fillRect(c.width * u, 110, 1, 865)
+  paintSideTitles(g, livery, c.width, c.height, 0.21, 0.38, 19)
+  g.fillStyle = livery.accent
+  for (const u of [0.18, 0.82]) g.fillRect(c.width * u - 13, 219, 26, 5)
+  const tex = new CanvasTexture(c)
+  tex.flipY = false
+  tex.wrapS = RepeatWrapping
+  tex.anisotropy = 4
+  tex.colorSpace = SRGBColorSpace
+  return tex
+}
+
+/** Dark airfoil skin in chord/span UVs with the Blackbird's corrugated panels. */
+export function paintBlackbirdAirfoil(livery: Livery): Texture {
+  const c = document.createElement('canvas')
+  c.width = c.height = 512
+  const g = c.getContext('2d')!
+  g.fillStyle = livery.tail
+  g.fillRect(0, 0, c.width, c.height)
+  for (let x = 65; x < 460; x += 13) {
+    g.fillStyle = x % 3 === 0 ? '#42444a' : '#33363c'
+    g.fillRect(x, 0, 2, c.height)
+    g.fillStyle = '#191b20'
+    g.fillRect(x + 2, 0, 1, c.height)
+  }
+  for (const y of [27, 118, 271, 407]) g.fillRect(0, y, c.width, 2)
+  const tex = new CanvasTexture(c)
+  tex.anisotropy = 4
   tex.colorSpace = SRGBColorSpace
   return tex
 }

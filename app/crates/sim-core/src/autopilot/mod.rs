@@ -19,12 +19,13 @@ mod ground;
 pub mod nav;
 pub mod perf;
 mod route;
+mod selected;
 #[cfg(test)]
 mod tests;
 
 use crate::aircraft::AircraftSpec;
 use crate::geo::{wrap_deg_180, wrap_deg_360, M_TO_FT};
-use crate::protocol::{AutopilotCommand, ControlInput};
+use crate::protocol::{AutopilotCommand, ControlInput, FlightTargets};
 
 use control::{autothrottle, bank_for_heading_error, gamma_for_vs, load_factor, lowpass, roll_stick, slew};
 pub use nav::{NavTarget, RunwayGeom, Wind};
@@ -236,6 +237,7 @@ pub struct Autopilot {
     pub dist_to_go_nm: Option<f64>,
 
     destination: Option<NavTarget>,
+    selected: Option<FlightTargets>,
     spawn_target: Option<NavTarget>,
     runway: Option<RunwayGeom>,
     geom: Option<ApproachGeometry>,
@@ -299,6 +301,7 @@ impl Default for Autopilot {
             vertical_speed_fpm: 1800.0,
             dist_to_go_nm: None,
             destination: None,
+            selected: None,
             spawn_target: None,
             runway: None,
             geom: None,
@@ -398,6 +401,7 @@ impl Autopilot {
 
     /// Clears everything flight-specific (new spawn); keeps the destination.
     pub fn reset(&mut self) {
+        self.selected = None;
         self.engaged = false;
         self.phase = Phase::Off;
         self.lateral = Lateral::None;
@@ -414,6 +418,9 @@ impl Autopilot {
     }
 
     fn replan(&mut self, inp: &ApInputs, spec: &AircraftSpec) {
+        if self.selected.is_some() {
+            return;
+        }
         self.clear_plan();
         if self.engaged && !inp.on_ground && !matches!(self.phase, Phase::Flare | Phase::Rollout | Phase::Stopped) {
             self.engage(inp, spec);
@@ -424,6 +431,16 @@ impl Autopilot {
     /// autopilot cannot fly from here.
     pub fn engage(&mut self, inp: &ApInputs, spec: &AircraftSpec) -> bool {
         let perf = self.perf_for(spec).clone();
+        self.selected = None;
+        self.init_engagement(inp);
+        let ok = if inp.on_ground { self.engage_on_ground(inp, &perf) } else { self.engage_airborne(inp, &perf) };
+        if ok {
+            self.engaged = true;
+        }
+        ok
+    }
+
+    fn init_engagement(&mut self, inp: &ApInputs) {
         self.init_filters(inp);
         self.go_arounds = 0;
         self.gate_checked = false;
@@ -434,11 +451,6 @@ impl Autopilot {
         self.heading_hold = true;
         self.altitude_hold = true;
         self.leg = Leg::None;
-        let ok = if inp.on_ground { self.engage_on_ground(inp, &perf) } else { self.engage_airborne(inp, &perf) };
-        if ok {
-            self.engaged = true;
-        }
-        ok
     }
 
     pub fn disengage(&mut self, message: Option<&str>) {
@@ -448,6 +460,7 @@ impl Autopilot {
             }
         }
         self.engaged = false;
+        self.selected = None;
         self.phase = Phase::Off;
         self.lateral = Lateral::None;
         self.dist_to_go_nm = None;
@@ -467,6 +480,10 @@ impl Autopilot {
         if !self.engaged {
             return false;
         }
+        if self.selected.is_some() {
+            self.disengage(Some("Autopilot disconnected by manual thrust"));
+            return true;
+        }
         if matches!(self.phase, Phase::Taxi | Phase::LineUp | Phase::TakeoffRoll | Phase::Rotate) {
             self.disengage(Some("Autopilot disconnected: manual thrust during takeoff"));
             return true;
@@ -483,6 +500,12 @@ impl Autopilot {
         if !self.engaged {
             return None;
         }
+        if self.selected.is_some()
+            && (input.pitch.abs().max(input.roll.abs()).max(input.yaw.abs()).max(input.throttle_rate.abs()) > 0.025
+                || input.brake > 0.025 || input.reverse > 0.025)
+        {
+            return Some("Autopilot disconnected by pilot input");
+        }
         if input.pitch.abs() > 0.6 || input.roll.abs() > 0.6 {
             return Some("Autopilot disconnected by pilot input");
         }
@@ -496,7 +519,11 @@ impl Autopilot {
     }
 
     /// Mode-control-panel style commands (target adjustments).
-    pub fn apply(&mut self, cmd: &AutopilotCommand, spec: &AircraftSpec) {
+    pub fn apply(&mut self, cmd: &AutopilotCommand, inp: &ApInputs, spec: &AircraftSpec) {
+        if self.selected.is_some() {
+            self.adjust_selected(cmd, inp, spec);
+            return;
+        }
         let perf = self.perf_for(spec).clone();
         if let Some(v) = cmd.autothrottle {
             self.autothrottle = v;
@@ -568,7 +595,10 @@ impl Autopilot {
         let perf = self.perf_for(spec).clone();
         let out = match self.phase {
             Phase::Off => ApOutput::default(),
-            Phase::Hold => self.hold(inp, &perf, dt),
+            Phase::Hold => match self.selected {
+                Some(targets) => self.fly_selected(inp, spec, &perf, targets, dt),
+                None => self.hold(inp, &perf, dt),
+            },
             Phase::Taxi | Phase::LineUp | Phase::TakeoffRoll | Phase::Rotate => self.departure_ground(inp, &perf, dt),
             Phase::Rollout | Phase::Stopped => self.arrival_ground(inp, &perf, dt),
             _ => self.airborne(inp, &perf, dt),
@@ -590,6 +620,9 @@ impl Autopilot {
     // -----------------------------------------------------------------------
 
     fn target(&self) -> Option<&NavTarget> {
+        if self.selected.is_some() {
+            return None;
+        }
         self.destination.as_ref().or(self.spawn_target.as_ref())
     }
 

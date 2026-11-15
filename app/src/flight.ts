@@ -44,6 +44,7 @@ export function spawnCommand(s: SpawnChoice): SimCommand {
     heading: s.heading,
     mode: s.mode,
     agl_ft: s.aglFt,
+    cruise: s.cruise,
     speed_kt: null,
     ground_elevation_ft: s.elevationFt,
   }
@@ -105,6 +106,6 @@ export function describeSpawn(s: SpawnChoice): { title: string; subtitle: string
   }
   return {
     title: s.label,
-    subtitle: `${s.lat.toFixed(4)}, ${s.lon.toFixed(4)} · ${s.mode === 'air' ? `In flight at ${Math.round(s.aglFt).toLocaleString()} ft AGL` : 'On the ground'}`,
+    subtitle: `${s.lat.toFixed(4)}, ${s.lon.toFixed(4)} · ${s.cruise ? 'Mach 3.2 at 85,000 ft MSL' : s.mode === 'air' ? `In flight at ${Math.round(s.aglFt).toLocaleString()} ft AGL` : 'On the ground'}`,
   }
 }

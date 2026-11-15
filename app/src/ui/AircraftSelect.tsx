@@ -36,6 +36,8 @@ export function AircraftSelect({ onClose }: { onClose: () => void }) {
   }, [list, liveries])
 
   const choose = (id: string) => {
+    const { spawn, setSpawn } = useApp.getState()
+    if (id !== 'sr71' && spawn.kind === 'coords' && spawn.cruise) setSpawn({ ...spawn, cruise: false })
     setAircraft(id)
     applySelection({ paused: true })
   }
@@ -53,6 +55,7 @@ export function AircraftSelect({ onClose }: { onClose: () => void }) {
       <div className="sheet-body">
         <div className="aircraft-grid">
           {list.map((a) => {
+            const blackbird = a.id === 'sr71'
             const selected = a.id === aircraftId
             const livery = liveries[a.id] ?? 'default'
             const preview = thumbnails[thumbnailKey(a.id, livery)]
@@ -72,14 +75,14 @@ export function AircraftSelect({ onClose }: { onClose: () => void }) {
                     </p>
                     <div className="stats">
                       <span>Cruise</span>
-                      <span>{a.v_cruise_kt} kt</span>
+                      <span>{blackbird ? 'Mach 3.2' : `${a.v_cruise_kt} kt`}</span>
                       <span>Ceiling</span>
                       <span>{a.service_ceiling_note}</span>
                       <span>Length / span</span>
                       <span>{a.length_m.toFixed(1)} / {a.wingspan_m.toFixed(1)} m</span>
                       <span>Engines</span>
                       <span>
-                        {a.engine_count} × {a.engine === 'propeller' ? 'piston/prop' : a.afterburner_thrust_n > 0 ? 'afterburning turbofan' : 'turbofan'}
+                        {a.engine_count} × {blackbird ? 'J58 turbojet' : a.engine === 'propeller' ? 'piston/prop' : a.afterburner_thrust_n > 0 ? 'afterburning turbofan' : 'turbofan'}
                       </span>
                       <span>Rotate / approach</span>
                       <span>{a.v_rotate_kt} / {a.v_approach_kt} kt</span>

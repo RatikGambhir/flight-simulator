@@ -203,6 +203,9 @@ export class AircraftController {
         case 'elevator':
           theta = -r.elevator * sfc.max * sfc.sign
           break
+        case 'elevon':
+          theta = -Math.max(-1, Math.min(1, r.elevator * sfc.sign + r.aileron)) * sfc.max
+          break
         case 'rudder':
           theta = r.rudder * sfc.max
           break
@@ -230,7 +233,7 @@ export class AircraftController {
         sp.blades.visible = !blur
       }
     }
-    m.exhaust?.(r.engine, r.latest[S.AFTERBURNER], this.time)
+    m.exhaust?.(r.engine, r.latest[S.AFTERBURNER], this.time, r.latest[S.MACH])
     const strobeOn = this.time % 1.2 < 0.06 || (this.time % 1.2 > 0.14 && this.time % 1.2 < 0.2)
     for (const st of m.strobes) st.visible = strobeOn
     const beaconOn = (this.time + 0.5) % 1.0 < 0.1

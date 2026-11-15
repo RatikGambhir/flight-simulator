@@ -4,7 +4,7 @@ import { BoxGeometry, CylinderGeometry, Group, Mesh, Object3D, PointLight, Spher
 import { hingeFrame, revolveZ, toHingeLocal, wingPanelGeometry, wingPoint, wingUpperPoint, type WingParams } from '../geometry'
 import type { AircraftMaterials } from '../materials'
 
-export type SurfaceKind = 'aileron' | 'elevator' | 'rudder' | 'flap' | 'spoiler'
+export type SurfaceKind = 'aileron' | 'elevator' | 'elevon' | 'rudder' | 'flap' | 'spoiler'
 
 export interface ControlSurface {
   pivot: Object3D
@@ -55,11 +55,11 @@ export interface AircraftModel {
   /** Hidden in the cockpit view (fuselage shell etc). */
   exteriorOnly: Object3D[]
   eye: Vector3
-  cockpit: 'airliner' | 'bizjet' | 'ga' | 'fighter'
+  cockpit: 'airliner' | 'bizjet' | 'ga' | 'fighter' | 'blackbird'
   /** Default cockpit look angle (rad, negative = down); -0.2 when unset. */
   cockpitLookPitch?: number
-  /** Animates the engine exhaust (nozzle glow, afterburner plume), if any. */
-  exhaust?: (engine: number, afterburner: number, time: number) => void
+  /** Animates engine effects and variable-geometry inlets, if any. */
+  exhaust?: (engine: number, afterburner: number, time: number, mach: number) => void
   wingTipRight: Vector3
   span: number
   length: number

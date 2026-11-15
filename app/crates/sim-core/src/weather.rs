@@ -26,6 +26,10 @@ const PROFILE_EXP: f64 = 1.0 / 7.0;
 /// Cap on the profile factor (reached ~270 m above ground).
 const PROFILE_MAX: f64 = 1.6;
 
+pub(crate) fn wind_profile_factor(agl_m: f64) -> f64 {
+    (agl_m.max(0.5) / REF_HEIGHT_M).powf(PROFILE_EXP).min(PROFILE_MAX)
+}
+
 /// Small, fast PRNG (xorshift64*) with Gaussian sampling.
 #[derive(Debug, Clone)]
 struct Rng {
@@ -173,8 +177,7 @@ impl Weather {
     /// Steady wind speed (m/s) at a height above ground.
     #[inline]
     pub fn steady_speed(&self, agl_m: f64) -> f64 {
-        let f = (agl_m.max(0.5) / REF_HEIGHT_M).powf(PROFILE_EXP).min(PROFILE_MAX);
-        self.settings.wind_speed_ms * f
+        self.settings.wind_speed_ms * wind_profile_factor(agl_m)
     }
 
     /// RMS vertical gust intensity (m/s) at a height, combining the

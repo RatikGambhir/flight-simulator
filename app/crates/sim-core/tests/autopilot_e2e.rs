@@ -12,10 +12,164 @@ mod common;
 
 use common::{airport_terrain, Harness, DT};
 use sim_core::autopilot::{Lateral, Phase};
-use sim_core::geo::{self, FT_TO_M};
-use sim_core::protocol::{RunwaySpawnKind, SpawnMode, SpawnRequest};
+use sim_core::geo::{self, FT_TO_M, KT_TO_MS, MPH_TO_MS};
+use sim_core::protocol::{FlightTargets, RunwaySpawnKind, SpawnMode, SpawnRequest, TargetSpeed};
 use sim_core::stepper::FixedStepper;
 use sim_core::{snap, world, ControlInput, SimCommand, SimEvent, Simulation};
+
+#[test]
+fn selected_blackbird_targets_take_off_climb_to_mach_and_hold() {
+    let mut h = Harness::new("sr71", airport_terrain(&["KORD"]));
+    h.spawn_runway("KORD", "28R", RunwaySpawnKind::Takeoff);
+    h.destination("KMKE");
+    let targets = FlightTargets { heading: 260.0, altitude_ft: 85_000.0, speed: TargetSpeed::Mach(3.2) };
+    h.command(SimCommand::FlyTargets(targets));
+    assert_eq!(h.phase(), Phase::TakeoffRoll);
+    let captured = |h: &Harness, alt: f64| {
+        let s = h.snap();
+        (s[snap::ALT_MSL_FT] - alt).abs() < 100.0
+            && (s[snap::MACH] - 3.2).abs() < 0.025
+            && geo::wrap_deg_180(s[snap::HEADING] - 260.0).abs() < 2.0
+    };
+    let reached = h.run_until(3_600.0, |h| captured(h, targets.altitude_ft));
+    assert!(reached, "{}: {:.0} ft, Mach {:.2}, {:.1} kt, {:.0} fpm, throttle {:.0}%", h.phase_names(),
+        h.snap()[snap::ALT_MSL_FT], h.snap()[snap::MACH], h.snap()[snap::IAS_KT], h.snap()[snap::VS_FPM], h.snap()[snap::THROTTLE] * 100.0);
+    h.run_until(180.0, |_| false);
+    assert!(h.engaged() && captured(&h, targets.altitude_ft));
+    assert_healthy(&h, "selected Blackbird flight");
+    assert!(h.snap()[snap::AFTERBURNER] > 0.0);
+
+    h.command(SimCommand::FlyTargets(FlightTargets { altitude_ft: 100_000.0, ..targets }));
+    let reachable_alt = h.snap()[snap::AP_SELECTED_ALT_FT];
+    assert!((85_000.0..90_000.0).contains(&reachable_alt), "selected {reachable_alt} ft");
+    assert!(h.messages().iter().any(|message| message.contains("power limit")));
+    assert!(h.run_until(600.0, |h| captured(h, reachable_alt)));
+    h.run_until(120.0, |_| false);
+    assert!(h.engaged() && captured(&h, reachable_alt));
+    h.input = ControlInput { throttle_rate: -1.0, ..Default::default() };
+    h.step();
+    assert!(!h.engaged());
+}
+
+#[test]
+fn selected_knots_capture_from_airborne_and_release_to_pilot() {
+    let mut h = Harness::new("b737", airport_terrain(&["KORD"]));
+    h.spawn_air(41.97, -87.9, 91.0, 6500.0, Some(235.0));
+    h.destination("KJFK");
+    h.command(SimCommand::FlyTargets(FlightTargets { heading: 120.0, altitude_ft: 11_000.0, speed: TargetSpeed::Knots(260.0) }));
+    let captured = |h: &Harness| {
+        let s = h.snap();
+        (s[snap::HEADING] - 120.0).abs() < 2.0 && (s[snap::ALT_MSL_FT] - 11_000.0).abs() < 80.0
+            && (s[snap::IAS_KT] - 260.0).abs() < 4.0
+    };
+    assert!(h.run_until(450.0, captured));
+    assert!(h.engaged());
+    assert_healthy(&h, "selected 737 flight");
+    h.command(SimCommand::Spawn(SpawnRequest {
+        lat: 42.0, lon: -87.5, heading: 105.0, mode: SpawnMode::Air, agl_ft: Some(9_000.0),
+        speed_kt: Some(240.0), cruise: false, ground_elevation_ft: None, keep_autopilot: true,
+    }));
+    h.settle();
+    assert!(h.engaged());
+    assert_eq!(h.snap()[snap::AP_SELECTED_HEADING], 120.0);
+    assert_eq!(h.snap()[snap::AP_SELECTED_ALT_FT], 11_000.0);
+    assert_eq!(h.snap()[snap::AP_SELECTED_SPEED], 260.0);
+    h.input = ControlInput { roll: 0.1, ..Default::default() };
+    h.step();
+    assert!(!h.engaged());
+}
+
+#[test]
+fn selected_ground_speed_holds_heading_and_altitude_when_the_wind_changes() {
+    let mut h = Harness::new("sr71", airport_terrain(&["KORD"]));
+    h.weather(250.0, 20.0, 0.0);
+    h.spawn_runway("KORD", "28R", RunwaySpawnKind::Takeoff);
+    let targets = FlightTargets {
+        heading: 270.0,
+        altitude_ft: 85_000.0,
+        speed: TargetSpeed::GroundMph(2100.0),
+    };
+    h.command(SimCommand::FlyTargets(targets));
+    assert_eq!(h.phase(), Phase::TakeoffRoll);
+    let mph = |kt: f64| kt * KT_TO_MS / MPH_TO_MS;
+    let captured = |h: &Harness| {
+        let s = h.snap();
+        (s[snap::HEADING] - targets.heading).abs() < 1.0
+            && (s[snap::ALT_MSL_FT] - targets.altitude_ft).abs() < 100.0
+            && (mph(s[snap::GS_KT]) - 2100.0).abs() < 2.0
+    };
+    assert!(h.run_until(3_600.0, captured), "{}: {:.0} ft, {:.0} mph over ground",
+        h.phase_names(), h.snap()[snap::ALT_MSL_FT], mph(h.snap()[snap::GS_KT]));
+    assert!(mph(h.snap()[snap::TAS_KT]) > 2125.0);
+    assert_ne!(h.snap()[snap::AP_MODES] as u32 & snap::ap_modes::MPH, 0);
+    assert_eq!(h.snap()[snap::AP_SELECTED_SPEED], 2100.0);
+
+    h.weather(70.0, 20.0, 0.0);
+    h.run_until(180.0, |_| false);
+    assert!(captured(&h));
+    assert!(mph(h.snap()[snap::TAS_KT]) < 2075.0);
+    assert!(h.engaged());
+    assert_healthy(&h, "selected ground speed flight");
+
+    h.command(SimCommand::FlyTargets(FlightTargets {
+        speed: TargetSpeed::GroundMph(2400.0),
+        ..targets
+    }));
+    assert!(h.messages().iter().any(|message| {
+        message.contains("2400 MPH is too fast at 85000 ft. Maximum")
+    }));
+    assert_eq!(h.snap()[snap::AP_SELECTED_SPEED], 2100.0);
+}
+
+#[test]
+fn blackbird_reports_the_ground_speed_floor_and_holds_700_mph_lower_down() {
+    let mut h = Harness::new("sr71", airport_terrain(&["KORD"]));
+    h.spawn_air(41.97, -87.9, 270.0, 38_500.0, Some(285.0));
+    let targets = FlightTargets {
+        heading: 270.0,
+        altitude_ft: 80_000.0,
+        speed: TargetSpeed::GroundMph(700.0),
+    };
+    h.command(SimCommand::FlyTargets(targets));
+    assert!(!h.engaged());
+    assert!(h.messages().iter().any(|message| {
+        message.contains("700 MPH is too slow at 80000 ft. Minimum 1408 MPH")
+    }));
+
+    h.weather(270.0, 20.0, 0.0);
+    h.command(SimCommand::FlyTargets(targets));
+    assert!(!h.engaged());
+    assert!(h.messages().iter().any(|message| message.contains("Minimum 1371 MPH")));
+
+    h.command(SimCommand::FlyTargets(FlightTargets { altitude_ft: 40_000.0, ..targets }));
+    assert!(h.engaged());
+    let captured = |h: &Harness| {
+        let s = h.snap();
+        let mph = s[snap::GS_KT] * KT_TO_MS / MPH_TO_MS;
+        (s[snap::ALT_MSL_FT] - 40_000.0).abs() < 100.0 && (mph - 700.0).abs() < 2.0
+    };
+    assert!(h.run_until(300.0, captured));
+    h.run_for(120.0);
+    assert!(captured(&h));
+    assert_healthy(&h, "700 MPH Blackbird flight");
+}
+
+#[test]
+fn selected_targets_replace_a_managed_takeoff_without_following_its_arrival() {
+    let mut h = Harness::new("b737", airport_terrain(&["KORD", "KMKE"]));
+    h.spawn_runway("KORD", "28R", RunwaySpawnKind::Takeoff);
+    h.destination("KMKE");
+    h.toggle_ap();
+    assert_eq!(h.phase(), Phase::TakeoffRoll);
+    assert!(h.sim.autopilot.runway().is_some());
+    h.command(SimCommand::FlyTargets(FlightTargets {
+        heading: 260.0, altitude_ft: 6_000.0, speed: TargetSpeed::Knots(250.0),
+    }));
+    assert!(h.run_until(400.0, |h| h.phase() == Phase::Hold
+        && (h.snap()[snap::ALT_MSL_FT] - 6_000.0).abs() < 90.0
+        && geo::wrap_deg_180(h.snap()[snap::HEADING] - 260.0).abs() < 2.0));
+    assert_healthy(&h, "switch to selected targets during takeoff");
+}
 
 /// What must hold after any flight: nothing crashed and the aircraft was flown, not moved.
 fn assert_healthy(h: &Harness, what: &str) {
@@ -109,6 +263,7 @@ fn every_aircraft_type_completes_a_flight() {
         ("longitude", "KORD", "28R", "KMDW"),
         ("c172", "KORD", "28R", "KDPA"),
         ("f16", "KORD", "28R", "KMDW"),
+        ("sr71", "KORD", "28R", "KMKE"),
         ("a380", "KORD", "28R", "KMKE"),
         ("c5m", "KORD", "28R", "KMKE"),
         ("c17", "KORD", "28R", "KMKE"),
@@ -552,6 +707,7 @@ fn taxis_from_off_the_runway_lines_up_and_takes_off() {
         heading: g.course_deg() + 90.0,
         mode: SpawnMode::Ground,
         agl_ft: None,
+        cruise: false,
         speed_kt: None,
         ground_elevation_ft: Some(ap.elevation_ft),
         keep_autopilot: false,
@@ -600,6 +756,7 @@ fn on_the_ground_far_from_any_runway_it_declines_to_engage() {
         heading: 0.0,
         mode: SpawnMode::Ground,
         agl_ft: None,
+        cruise: false,
         speed_kt: None,
         ground_elevation_ft: Some(0.0),
         keep_autopilot: false,
@@ -630,6 +787,7 @@ fn skip_to_keeps_the_autopilot_flying() {
         heading: 0.0,
         mode: SpawnMode::Air,
         agl_ft: Some(5_000.0),
+        cruise: false,
         speed_kt: None,
         ground_elevation_ft: Some(mke.elevation_ft),
         keep_autopilot: true,

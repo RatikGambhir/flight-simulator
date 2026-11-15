@@ -29,10 +29,11 @@ src/
 
 ## Images
 
-Except for the hero, every photo is an unedited frame captured inside the simulator at Ultra quality
-with Google Photorealistic 3D Tiles, then resized and encoded. Aircraft portraits are rendered from the
-simulator's own procedural models. When adding a capture, export AVIF at 1280 and 2560 px wide (even
-pixel dimensions) plus a 1600 px JPEG, and register it in `src/content/images.ts`.
+Most scene photos are frames captured inside the simulator at Ultra quality with Google
+Photorealistic 3D Tiles, then resized and encoded. The Sunset capture has an edited cloud layer.
+Aircraft portraits are rendered from the simulator's own procedural models. When adding a capture,
+export AVIF at 1280 and 2560 px wide (even pixel dimensions) plus a 1600 px JPEG, and register it in
+`src/content/images.ts`.
 
 ## Links
 

@@ -209,3 +209,56 @@ test('airlifters have distinct flight decks, live instruments and accessible fli
     }
   }
 })
+
+test('Blackbird builds its twin inlets, moving elevons and readable cruise instruments', async () => {
+  const { buildAircraft, disposeAircraftMeshes } = await import('../src/aircraft/models.ts')
+  const { buildCockpit } = await import('../src/aircraft/cockpit.ts')
+  const model = buildAircraft('sr71', 3)
+  const cockpit = buildCockpit(model)
+  try {
+    assert.equal(model.length.toFixed(2), '32.73')
+    assert.equal(model.span, 16.94)
+    assert.deepEqual(model.surfaces.map(({ kind }) => kind).sort(), ['elevon', 'elevon', 'elevon', 'elevon', 'rudder', 'rudder'])
+    assert.deepEqual(model.gear.map(({ pivot }) => pivot.children.filter((part) => part.isGroup).length), [3, 3, 2])
+    const spikes = model.root.getObjectsByProperty('name', 'inlet-spike')
+    const nacelles = model.root.getObjectsByProperty('name', 'j58-nacelle')
+    const plumes = model.root.getObjectsByProperty('name', 'afterburner-plume')
+    assert.equal(spikes.length, 2)
+    assert.equal(nacelles.length, 2)
+    assert.equal(plumes.length, 2)
+    model.exhaust(1, 0.5, 1, 3.2)
+    assert.ok(spikes.every((spike) => spike.position.z > 0.6))
+    assert.ok(plumes.every((plume) => plume.visible))
+    for (const [i, spike] of spikes.entries()) {
+      spike.geometry.computeBoundingBox()
+      nacelles[i].geometry.computeBoundingBox()
+      plumes[i].geometry.computeBoundingBox()
+      assert.ok(spike.geometry.boundingBox.min.z + spike.position.z < nacelles[i].geometry.boundingBox.min.z)
+      assert.ok(plumes[i].geometry.boundingBox.min.z >= -1e-6)
+      assert.ok(plumes[i].geometry.boundingBox.max.z > 6)
+      assert.ok(plumes[i].position.z > nacelles[i].geometry.boundingBox.max.z)
+    }
+    model.exhaust(0.6, 0, 2, 0.9)
+    assert.ok(spikes.every((spike) => spike.position.z === 0))
+    assert.ok(plumes.every((plume) => !plume.visible))
+
+    const s = new Float64Array(S.LEN)
+    s[S.MACH] = 3.2
+    s[S.ALT_MSL_FT] = 85000
+    s[S.AFTERBURNER] = 0.5
+    cockpit.update(s, { pitch: 0.2, roll: -0.2, throttle: 0.9 })
+    assert.ok(cockpit.stick.rotation.x < 0)
+    assert.ok(cockpit.throttles.every((lever) => lever.rotation.x < 0))
+    cockpit.root.updateMatrixWorld(true)
+    for (const name of ['blackbird-flight-instruments', 'blackbird-autopilot', 'blackbird-gear']) {
+      const control = cockpit.root.getObjectByName(name)
+      const target = control.getWorldPosition(new Vector3())
+      const ray = new Raycaster(model.eye, target.sub(model.eye).normalize(), 0, 3)
+      assert.equal(ray.intersectObject(cockpit.root, true)[0]?.object.uuid, control.uuid, name)
+    }
+  } finally {
+    cockpit.dispose()
+    disposeAircraftMeshes(cockpit.root, false)
+    disposeAircraftMeshes(model.root)
+  }
+})

@@ -5,6 +5,8 @@
 
 use serde::Serialize;
 
+pub const BLACKBIRD_CRUISE_MACH: f64 = 3.2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EngineKind {
@@ -120,6 +122,22 @@ impl AircraftSpec {
 
     pub fn induced_k(&self) -> f64 {
         1.0 / (std::f64::consts::PI * self.oswald * self.aspect_ratio())
+    }
+
+    pub(crate) fn induced_k_at(&self, mach: f64) -> f64 {
+        let factor = if self.id == "sr71" {
+            // Tuned for the chine and highly swept delta at cruise.
+            1.0 + 0.35 * ((mach - 0.9) / (BLACKBIRD_CRUISE_MACH - 0.9)).clamp(0.0, 1.0)
+        } else if self.wave_drag_cd > 0.0 {
+            crate::engine::induced_drag_factor(mach)
+        } else {
+            1.0
+        };
+        self.induced_k() * factor
+    }
+
+    pub(crate) fn flap_fraction(&self, index: usize) -> f64 {
+        index as f64 / (self.flap_detents.len() - 1).max(1) as f64
     }
 
     pub fn takeoff_flaps(&self) -> usize {
@@ -311,6 +329,64 @@ static CATALOG: &[AircraftSpec] = &[
         max_alt_ft: 45_000.0,
         autoland_max_gust_ms: 2.1,
         service_ceiling_note: "FL450",
+    },
+    AircraftSpec {
+        id: "sr71",
+        name: "Lockheed SR-71 Blackbird",
+        manufacturer_style: "Lockheed Skunk Works, USA",
+        category: "Strategic reconnaissance jet",
+        description: "Twin J58 afterburning turbojets, a long chined fuselage and Mach 3.2 cruise at 85,000 ft. Advance the throttle past 80% to light the afterburners.",
+        // NASA FS-2008-6-030-DFRC and USAF museum specifications. Mass
+        // represents a partially fuelled aircraft. Aerodynamics are tuned.
+        mass_kg: 48_000.0,
+        wing_area_m2: 167.2,
+        wingspan_m: 16.94,
+        length_m: 32.73,
+        gear_height_m: 2.65,
+        belly_height_m: 1.35,
+        wheelbase_m: 11.4,
+        retractable_gear: true,
+        rest_pitch_deg: 0.0,
+        tailstrike_pitch_deg: 11.5,
+        engine: EngineKind::Jet,
+        engine_count: 2,
+        max_thrust_n: 2.0 * 111_200.0,
+        spool_time_s: 5.0,
+        idle_thrust: 0.045,
+        prop_power_w: 0.0,
+        afterburner_thrust_n: 2.0 * 144_570.0,
+        afterburner_detent: 0.8,
+        thrust_reversers: false,
+        cd0: 0.013,
+        oswald: 0.83,
+        cl0: 0.02,
+        cl_alpha: 3.95,
+        alpha_stall_deg: 23.0,
+        flap_cl: 0.0,
+        flap_cd: 0.0,
+        gear_cd: 0.038,
+        spoiler_cd: 0.0,
+        spoiler_cl: 0.0,
+        flap_detents: &["—"],
+        auto_flaps: false,
+        wave_drag_cd: 0.018,
+        drag_rise_mach: 0.85,
+        max_roll_rate: 25.0,
+        max_pitch_rate: 7.0,
+        max_yaw_rate: 4.5,
+        response_time_s: 0.7,
+        max_load_factor: 2.5,
+        min_load_factor: 0.0,
+        aerobatic: false,
+        full_authority_q: 6_000.0,
+        v_rotate_kt: 180.0,
+        v_approach_kt: 170.0,
+        v_cruise_kt: 311.0,
+        v_max_kt: 450.0,
+        cruise_alt_ft: 85_000.0,
+        max_alt_ft: 100_000.0,
+        autoland_max_gust_ms: 1.0,
+        service_ceiling_note: "85,000 ft",
     },
     AircraftSpec {
         id: "longitude",

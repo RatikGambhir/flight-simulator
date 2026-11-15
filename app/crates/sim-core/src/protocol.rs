@@ -52,6 +52,9 @@ pub struct SpawnRequest {
     /// For air spawns: indicated airspeed in knots (defaults to cruise-ish).
     #[serde(default)]
     pub speed_kt: Option<f64>,
+    /// Start at the aircraft's high-altitude cruise condition when available.
+    #[serde(default)]
+    pub cruise: bool,
     /// Known ground elevation in feet MSL, if any (e.g. airport elevation).
     #[serde(default)]
     pub ground_elevation_ft: Option<f64>,
@@ -94,6 +97,7 @@ pub enum SimCommand {
     SetAssist { enabled: bool },
     ToggleAutopilot,
     Autopilot(AutopilotCommand),
+    FlyTargets(FlightTargets),
     /// Ground height (meters above the WGS84 ellipsoid) sampled by the
     /// renderer under the aircraft. `height: None` means "no data here".
     Ground { lat: f64, lon: f64, height: Option<f64> },
@@ -142,6 +146,21 @@ pub struct AutopilotCommand {
     pub heading_delta: Option<f64>,
     pub altitude_delta_ft: Option<f64>,
     pub speed_delta_kt: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(tag = "unit", content = "value", rename_all = "snake_case")]
+pub enum TargetSpeed {
+    Knots(f64),
+    Mach(f64),
+    GroundMph(f64),
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct FlightTargets {
+    pub heading: f64,
+    pub altitude_ft: f64,
+    pub speed: TargetSpeed,
 }
 
 /// Discrete notifications for the UI.
@@ -231,7 +250,10 @@ pub mod snap {
     pub const AP_LATERAL: usize = 59;
     /// Distance remaining along the autopilot's route (nm; -1 when not navigating).
     pub const AP_DIST_NM: usize = 60;
-    pub const LEN: usize = 61;
+    pub const AP_SELECTED_HEADING: usize = 61;
+    pub const AP_SELECTED_ALT_FT: usize = 62;
+    pub const AP_SELECTED_SPEED: usize = 63;
+    pub const LEN: usize = 64;
 
     pub mod flags {
         pub const ON_GROUND: u32 = 1;
@@ -252,5 +274,8 @@ pub mod snap {
         pub const AUTOTHROTTLE: u32 = 4;
         /// Managed flight: navigating to a destination.
         pub const MANAGED: u32 = 8;
+        pub const SELECTED: u32 = 16;
+        pub const MACH: u32 = 32;
+        pub const MPH: u32 = 64;
     }
 }

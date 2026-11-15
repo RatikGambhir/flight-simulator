@@ -39,6 +39,7 @@ export interface Settings {
   sensitivity: number
   assist: boolean
   showFps: boolean
+  groundSpeedMph: boolean
   shadows: boolean
   timeScale: number
   /** Direction the surface wind blows from (degrees true). */
@@ -71,6 +72,7 @@ const DEFAULTS: Settings = {
   sensitivity: 0.75,
   assist: true,
   showFps: false,
+  groundSpeedMph: false,
   shadows: true,
   timeScale: 1,
   windFromDeg: 270,
@@ -124,7 +126,7 @@ function loadLiveries(): Record<string, LiveryId> {
 
 export type SpawnChoice =
   | { kind: 'runway'; airport: string; airportName: string; runway: string | null; mode: RunwaySpawnKind }
-  | { kind: 'coords'; label: string; lat: number; lon: number; mode: SpawnMode; aglFt: number; heading: number; elevationFt: number | null }
+  | { kind: 'coords'; label: string; lat: number; lon: number; mode: SpawnMode; aglFt: number; heading: number; elevationFt: number | null; cruise?: boolean }
 
 /** The landing runway the autopilot chose (reported by the simulation). */
 export interface AutopilotRunway {

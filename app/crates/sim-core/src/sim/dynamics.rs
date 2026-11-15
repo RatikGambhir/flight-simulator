@@ -6,7 +6,7 @@ use crate::aircraft::EngineKind;
 use crate::atmosphere::{isa, G0};
 use crate::autopilot::ApOutput;
 use crate::engine;
-use crate::geo::{ecef_to_geodetic, EnuFrame, KT_TO_MS};
+use crate::geo::{ecef_to_geodetic, EnuFrame, EARTH_MEAN_RADIUS, KT_TO_MS};
 use crate::protocol::SimEvent;
 use crate::world;
 
@@ -49,8 +49,8 @@ impl Simulation {
     fn update_systems(&mut self, dt: f64, ap_throttle: Option<f64>) {
         let s = self.spec;
         match ap_throttle {
-            // The autothrottle works in the dry range; afterburner is the pilot's call.
-            Some(t) if s.afterburner_detent > 0.0 => self.lever = t.min(s.afterburner_detent),
+            // Selected Blackbird targets can use afterburner through the supersonic climb.
+            Some(t) if s.afterburner_detent > 0.0 && !self.autopilot.selected_afterburner(s) => self.lever = t.min(s.afterburner_detent),
             Some(t) => self.lever = t,
             None => self.lever = (self.lever + self.input.throttle_rate * 0.6 * dt).clamp(0.0, 1.0),
         }
@@ -88,7 +88,7 @@ impl Simulation {
         if s.auto_flaps {
             self.flaps_index = if self.gear_cmd_down { s.flap_detents.len() - 1 } else { 0 };
         }
-        let flap_target = self.flaps_index as f64 / (s.flap_detents.len() - 1).max(1) as f64;
+        let flap_target = s.flap_fraction(self.flaps_index);
         // Fighter flaperons are fast-acting hydraulic surfaces.
         self.flaps = approach(self.flaps, flap_target, dt * if s.auto_flaps { 0.5 } else { 0.12 });
 
@@ -168,7 +168,7 @@ impl Simulation {
         } else {
             (cl_lin(alpha), 0.0)
         };
-        let k_induced = if s.wave_drag_cd > 0.0 { s.induced_k() * engine::induced_drag_factor(mach) } else { s.induced_k() };
+        let k_induced = s.induced_k_at(mach);
         let cd = s.cd0
             + engine::wave_drag(s.wave_drag_cd, s.drag_rise_mach, mach)
             + k_induced * phi * cl * cl
@@ -248,7 +248,8 @@ impl Simulation {
             // Path hold uses the inertial flight path so gusts don't drag the reference around.
             let gamma = self.vel.try_normalize().map_or(0.0, |vi| vi.dot(up).clamp(-1.0, 1.0).asin());
             if assisted {
-                // Load factor that holds the flight path at this bank: 1/cos(bank).
+                // Load factor that holds the flight path at this bank. In ECEF,
+                // level flight also requires following the Earth's curvature.
                 // Airliners stay within ±67° of bank; aerobatic aircraft may be
                 // inverted (negative g holds the path) and fade to zero g through
                 // knife-edge, where the wing cannot hold the path at all.
@@ -266,7 +267,8 @@ impl Simulation {
                 } else if self.gamma_ref.is_none() && stick.abs() < 0.05 {
                     self.gamma_ref = Some(gamma);
                 }
-                let mut n_neutral = gamma.cos() * bank_gain;
+                let curvature_g = self.d.gs.powi(2) / ((EARTH_MEAN_RADIUS + geo0.height) * G0);
+                let mut n_neutral = gamma.cos() * (1.0 - curvature_g) * bank_gain;
                 if let Some(gr) = self.gamma_ref {
                     let corr = ((gr - gamma) * speed / G0 * 0.35).clamp(-0.3, 0.3);
                     n_neutral += if s.aerobatic { corr * bank_gain.clamp(-1.5, 1.5) } else { corr };

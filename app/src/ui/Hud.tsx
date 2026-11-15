@@ -2,11 +2,12 @@
 // to the DOM from a requestAnimationFrame loop instead of React state.
 
 import { useEffect, useRef } from 'react'
-import { Flags, S } from '../sim/protocol'
+import { Flags, KT_TO_MPH, S } from '../sim/protocol'
 import { autopilotStatus } from '../sim/autopilotStatus'
 import { sim } from '../sim/simClient'
 import { useAircraftList } from './useAircraftList'
 import { useApp } from '../state/store'
+import { AutopilotTargets } from './AutopilotTargets'
 import { angleDelta, navigationTo } from '../navigation/route'
 import { landingRunway, lineupHeading } from '../navigation/runwayGuide'
 import { useWeather } from '../weather/liveWeather'
@@ -44,12 +45,15 @@ export function Hud() {
   listRef.current = list
   // In the cockpit the real instruments take over; keep the HUD compact.
   const cockpit = useApp((s) => s.camera === 'cockpit')
+  const groundSpeedMph = useApp((s) => s.settings.groundSpeedMph)
+  const aircraftId = useApp((s) => s.aircraftId)
+  const aircraft = list.find((spec) => spec.id === aircraftId)
 
   useEffect(() => {
     const el = root.current!
     const q = <T extends HTMLElement = HTMLElement>(k: string) => el.querySelector<T>(`[data-k="${k}"]`)!
     const nodes = {
-      ias: q('ias'),
+      speed: q('speed'),
       gs: q('gs'),
       mach: q('mach'),
       wind: q('wind'),
@@ -108,10 +112,12 @@ export function Hud() {
     const tick = () => {
       raf = requestAnimationFrame(tick)
       const s = sim.latest
+      const app = useApp.getState()
       const flags = s[S.FLAGS] | 0
       const spec = listRef.current[s[S.AIRCRAFT_INDEX] | 0]
-      text(nodes.ias, fmt(s[S.IAS_KT]))
-      text(nodes.gs, `GS ${fmt(s[S.GS_KT])}  TAS ${fmt(s[S.TAS_KT])}`)
+      const mph = app.settings.groundSpeedMph
+      text(nodes.speed, fmt(mph ? s[S.GS_KT] * KT_TO_MPH : s[S.IAS_KT]))
+      text(nodes.gs, mph ? `AIRSPEED ${fmt(s[S.IAS_KT])} KT` : `GS ${fmt(s[S.GS_KT])}  TAS ${fmt(s[S.TAS_KT])}`)
       text(nodes.mach, s[S.MACH] > 0.4 ? `M ${s[S.MACH].toFixed(2)}` : `G ${s[S.G_LOAD].toFixed(1)}`)
       text(nodes.alt, fmt(Math.round(s[S.ALT_MSL_FT] / 10) * 10))
       const agl = s[S.AGL_FT]
@@ -121,7 +127,7 @@ export function Hud() {
       const hdg = s[S.HEADING]
       text(nodes.hdg, `${String(Math.round(hdg) % 360).padStart(3, '0')}°`)
       strip.style.transform = `translateX(${210 - (hdg + 360) * HEADING_PX_PER_DEG}px)`
-      const destination = useApp.getState().destination?.airport
+      const destination = app.destination?.airport
       if (destination && sim.snapshotsReceived) {
         const nav = navigationTo({ lat: s[S.LAT], lon: s[S.LON] }, destination)
         const delta = angleDelta(nav.bearing, hdg)
@@ -188,7 +194,6 @@ export function Hud() {
       const lat = s[S.LAT]
       const lon = s[S.LON]
       text(nodes.coords, `${Math.abs(lat).toFixed(4)}°${lat >= 0 ? 'N' : 'S'}  ${Math.abs(lon).toFixed(4)}°${lon >= 0 ? 'E' : 'W'}`)
-      const app = useApp.getState()
       const wx = app.settings.liveWeather ? useWeather.getState().conditions : null
       let wxText = ''
       if (wx) {
@@ -243,9 +248,19 @@ export function Hud() {
       <div className="destination-heading-hint" data-k="destinationHint" style={{ display: 'none' }} />
       <div className="runway-heading-hint" data-k="runwayHint" style={{ display: 'none' }} />
       <div className="hud-status" data-k="status" />
-      <div className="hud-side left box">
-        <div className="hud-unit">AIRSPEED KT</div>
-        <div className="hud-big" data-k="ias" />
+      <div className={`hud-side left box${groundSpeedMph ? ' ground-speed-mph' : ''}`}>
+        <div className="hud-speed-header">
+          <div className="hud-unit">{groundSpeedMph ? 'GROUND SPEED' : 'AIRSPEED KT'}</div>
+          <button type="button" className="btn hud-mph-toggle" aria-pressed={groundSpeedMph}
+            aria-label="Show ground speed in MPH" title="Show ground speed in miles per hour"
+            onKeyDown={(event) => {
+              if (event.key === ' ' || event.key === 'Enter') event.stopPropagation()
+            }}
+            onClick={() => useApp.getState().updateSettings({ groundSpeedMph: !groundSpeedMph })}>
+            MPH
+          </button>
+        </div>
+        <div className="hud-big" data-k="speed" />
         <div className="hud-small" data-k="gs" />
         <div className="hud-small" data-k="mach" />
         <div className="hud-small" data-k="wind" />
@@ -258,35 +273,38 @@ export function Hud() {
       </div>
       <div className="hud-warning" data-k="warn" />
       <div className="hud-bottom box">
-        <div className="cell">
-          <div className="throttle-bar" data-k="thrBar">
-            <i />
+        <div className="hud-systems">
+          <div className="cell">
+            <div className="throttle-bar" data-k="thrBar">
+              <i />
+            </div>
+          </div>
+          <div className="cell">
+            <span className="hud-unit">THR</span>
+            <b data-k="thr" />
+          </div>
+          <div className="cell">
+            <span className="hud-unit">GEAR</span>
+            <b data-k="gear" />
+          </div>
+          <div className="cell">
+            <span className="hud-unit">FLAPS</span>
+            <b data-k="flaps" />
+          </div>
+          <div className="cell">
+            <span className="hud-unit">SPDBRK</span>
+            <b data-k="spd" />
+          </div>
+          <div className="cell">
+            <span className="hud-unit">BRAKE</span>
+            <b data-k="brake" />
+          </div>
+          <div className="cell">
+            <span className="hud-unit">LOAD</span>
+            <b data-k="gload" />
           </div>
         </div>
-        <div className="cell">
-          <span className="hud-unit">THR</span>
-          <b data-k="thr" />
-        </div>
-        <div className="cell">
-          <span className="hud-unit">GEAR</span>
-          <b data-k="gear" />
-        </div>
-        <div className="cell">
-          <span className="hud-unit">FLAPS</span>
-          <b data-k="flaps" />
-        </div>
-        <div className="cell">
-          <span className="hud-unit">SPDBRK</span>
-          <b data-k="spd" />
-        </div>
-        <div className="cell">
-          <span className="hud-unit">BRAKE</span>
-          <b data-k="brake" />
-        </div>
-        <div className="cell">
-          <span className="hud-unit">LOAD</span>
-          <b data-k="gload" />
-        </div>
+        {aircraft && <AutopilotTargets key={aircraft.id} spec={aircraft} />}
       </div>
       <div className="hud-coords box">
         <div data-k="wx" style={{ display: 'none' }} />

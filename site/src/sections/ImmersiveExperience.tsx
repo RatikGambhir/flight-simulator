@@ -32,7 +32,7 @@ const MOMENTS: readonly Moment[] = [
   {
     id: 'sunset',
     label: 'Sunset',
-    eyebrow: 'Local solar time 16:33',
+    eyebrow: 'Sunset · Cloud detail enhanced',
     photo: 'sunset',
     title: 'Golden hour above the deck',
     body: 'Volumetric clouds are lit from within as the sun sinks, and exposure adapts the way your eyes would, so a sunset glows instead of going grey.',
