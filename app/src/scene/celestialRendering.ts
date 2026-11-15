@@ -6,11 +6,19 @@ function replace(source: string, from: string, to: string) {
   return source.replace(from, to)
 }
 
-/** Antialias the solar disk and texture the existing phase-lit Moon. */
+/** Correct the atmospheric limb, antialias the Sun, and texture the phase-lit Moon. */
 export function prepareSky(material: SkyMaterial, texture: Texture) {
   if (material.userData.geoflightMoon) return
   let source = material.fragmentShader
   source = `uniform highp sampler2D lunarMap;\nuniform highp mat4 moonFixedFromECEF;\nuniform highp vec3 moonSunDirection;\n${source}`
+  // SafeSqrt clamps a negative discriminant to zero. From above the LUT's
+  // atmosphere, that turns every downward ray that misses the shell into a
+  // phantom tangent ray and paints an extra blue band at the local horizontal.
+  source = replace(source,
+    'Length distance_to_top_atmosphere_boundary = -rmu -\n      SafeSqrt(rmu * rmu - r * r +\n          atmosphere.top_radius * atmosphere.top_radius);',
+    `float topDiscriminant = rmu * rmu - (r - atmosphere.top_radius) * (r + atmosphere.top_radius);
+      Length distance_to_top_atmosphere_boundary =
+        topDiscriminant >= 0.0 ? -rmu - SafeSqrt(topDiscriminant) : -1.0 * m;`)
   source = replace(source, 'float antialias = smoothstep(\n      ATMOSPHERE.sun_angular_radius,\n      ATMOSPHERE.sun_angular_radius - fragmentAngle,\n      angle\n    );', /* glsl */ `
     float radius = ATMOSPHERE.sun_angular_radius;
     float antialias = 1.0 - smoothstep(max(0.0, radius - max(fragmentAngle, 1e-5)), radius, angle);`)

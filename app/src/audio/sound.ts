@@ -230,7 +230,15 @@ class SoundEngine {
     }
 
     // ---- Engines ------------------------------------------------------
-    if (jet) {
+    if (spec?.engine === 'rocket') {
+      this.set(this.roar.filter.frequency, 450 + 750 * n1)
+      this.set(this.roar.gain.gain, 0.85 * n1)
+      this.set(this.rumbleLow.gain.gain, 0.9 * n1)
+      this.set(this.whine1.gain.gain, 0)
+      this.set(this.whine2.gain.gain, 0)
+      this.set(this.prop.gain.gain, 0)
+      this.set(this.propFire.gain.gain, 0)
+    } else if (jet) {
       // Afterburner: a deep, ragged roar on top of the engine.
       const ab = crashed ? 0 : s[S.AFTERBURNER]
       const fan = 0.2 + 0.8 * Math.min(1, n1)

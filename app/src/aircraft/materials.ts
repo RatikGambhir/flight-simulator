@@ -35,6 +35,7 @@ export const LIVERIES: Record<string, Livery> = {
   // Two-tone air-superiority grey: medium sides, light underside, dark spine.
   f16: { base: '#5f676e', belly: '#7b838a', stripe: '#454c53', accent: '#1f2226', tail: '#5f676e', tailLogo: '#383e44', title: 'U.S. AIR FORCE', military: true },
   sr71: { base: '#282b30', belly: '#22252a', stripe: '#777c80', accent: '#a2483c', tail: '#25282d', tailLogo: '#aa5547', title: 'U.S. AIR FORCE', military: true },
+  x15: { base: '#303036', belly: '#25252b', stripe: '#dedcd5', accent: '#ac4036', tail: '#28292d', tailLogo: '#efc14e', title: 'U.S. AIR FORCE', military: true },
   c5m: { base: '#777f86', belly: '#697177', stripe: '#333a41', accent: '#aab0b4', tail: '#737b82', tailLogo: '#353c43', title: 'U.S. AIR FORCE', military: true },
   c17: { base: '#858c91', belly: '#6d757b', stripe: '#3e474f', accent: '#a0a8ad', tail: '#7c848a', tailLogo: '#3e474f', title: 'U.S. AIR FORCE', military: true },
 }
@@ -154,8 +155,8 @@ export function paintFighterTail(livery: Livery): Texture {
   return tex
 }
 
-/** Dark titanium panels and low-visibility markings in the Blackbird's tube UVs. */
-export function paintBlackbird(livery: Livery): Texture {
+/** Dark metal panels and side markings in the tube's UVs. */
+export function paintDarkFuselage(livery: Livery): Texture {
   const c = document.createElement('canvas')
   c.width = c.height = 1024
   const g = c.getContext('2d')!
@@ -200,6 +201,29 @@ export function paintBlackbirdAirfoil(livery: Livery): Texture {
   tex.anisotropy = 4
   tex.colorSpace = SRGBColorSpace
   return tex
+}
+
+/** X-15-3's yellow NASA fin marking and tail number, in chord/span UVs. */
+export function paintX15Tail(livery: Livery): Texture {
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = 512
+  const g = canvas.getContext('2d')!
+  g.fillStyle = livery.tail
+  g.fillRect(0, 0, 512, 512)
+  g.fillStyle = livery.tailLogo
+  g.fillRect(0, 21, 512, 148)
+  g.textAlign = 'center'
+  g.textBaseline = 'middle'
+  g.font = 'bold 110px Arial'
+  g.fillStyle = '#151619'
+  g.fillText('NASA', 256, 106)
+  g.fillStyle = livery.stripe
+  g.font = 'bold 72px "Arial Narrow", Arial'
+  g.fillText('66672', 256, 269)
+  const texture = new CanvasTexture(canvas)
+  texture.colorSpace = SRGBColorSpace
+  texture.anisotropy = 4
+  return texture
 }
 
 interface CabinDeckPaint {

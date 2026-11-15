@@ -1,4 +1,5 @@
 import { BINDINGS } from '../input/controls'
+import { useApp } from '../state/store'
 
 export function ControlsTable() {
   return (
@@ -19,11 +20,12 @@ export function ControlsTable() {
 }
 
 export function ControlsHelp({ onClose, full }: { onClose: () => void; full?: boolean }) {
+  const rocket = useApp((s) => s.aircraftId === 'x15')
   return (
     <div className={`sheet glass ${full ? 'full' : ''}`}>
       <div className="sheet-header">
         <h2>Flight controls</h2>
-        <span className="muted">Identical for every aircraft. Gamepads (standard layout) work too.</span>
+        <span className="muted">Standard gamepads work too.</span>
         <div className="spacer" />
         <button className="btn primary" onClick={onClose}>
           Close
@@ -32,6 +34,12 @@ export function ControlsHelp({ onClose, full }: { onClose: () => void; full?: bo
       <div className="sheet-body">
         <ControlsTable />
         <div className="notice info" style={{ marginTop: 18 }}>
+          {rocket ? <>
+            <b>X-15 air launch.</b> Start at 45,000 ft, then press <span className="kbd">⇧R</span> to power up the XLR99.
+            Use <span className="kbd">⇧F</span> to cut power and coast, and <span className="kbd">G</span> to lower the gear for a glide landing.
+            <br />
+            <b>Flight state.</b> Set altitude, Mach and true heading to reposition the aircraft with a full propellant load and the engine off.
+          </> : <>
           <b>Your first takeoff:</b> press <span className="kbd">⇧R</span> for full throttle, keep straight with <span className="kbd">Q</span>/<span className="kbd">E</span>,
           and at the rotate speed shown on the aircraft card gently hold <span className="kbd">S</span> to lift the nose. Once climbing, raise the gear with{' '}
           <span className="kbd">G</span> and flaps with <span className="kbd">[</span>.
@@ -42,6 +50,7 @@ export function ControlsHelp({ onClose, full }: { onClose: () => void; full?: bo
           <br />
           <b>Landing:</b> start from “Final approach”, keep the runway centred, reduce power with <span className="kbd">F</span> just above the runway, flare gently with{' '}
           <span className="kbd">S</span> and hold <span className="kbd">Space</span> to brake.
+          </>}
         </div>
       </div>
     </div>

@@ -2,7 +2,7 @@
 
 use glam::{DQuat, DVec3};
 
-use crate::aircraft::EngineKind;
+use crate::aircraft::{EngineKind, X15_EMPTY_MASS_KG, X15_FULL_POWER_SECONDS};
 use crate::atmosphere::{isa, G0};
 use crate::autopilot::ApOutput;
 use crate::engine;
@@ -79,6 +79,17 @@ impl Simulation {
         let spool_tau = (s.spool_time_s / 3.0).max(0.05);
         let tau = if n1_target > self.engine { spool_tau * (1.5 - self.engine) } else { spool_tau * 0.8 };
         self.engine += (n1_target - self.engine) * (dt / tau).min(1.0);
+        if s.engine == EngineKind::Rocket {
+            if self.rocket_propellant > 0.0 {
+                self.rocket_propellant = (self.rocket_propellant - self.engine * dt / X15_FULL_POWER_SECONDS).max(0.0);
+                if self.rocket_propellant == 0.0 {
+                    self.message("X-15 propellant depleted · glide to landing");
+                }
+            }
+            if self.rocket_propellant == 0.0 {
+                self.engine = 0.0;
+            }
+        }
 
         if s.retractable_gear {
             self.gear = approach(self.gear, if self.gear_cmd_down { 1.0 } else { 0.0 }, dt / 6.0);
@@ -123,7 +134,12 @@ impl Simulation {
         let geoid = world::geoid_undulation(geo0.lat_deg(), geo0.lon_deg());
         let air = isa(geo0.height - geoid);
         let rho = air.density;
-        let mass = s.mass_kg;
+        let rocket = s.engine == EngineKind::Rocket;
+        let mass = if rocket {
+            X15_EMPTY_MASS_KG + (s.mass_kg - X15_EMPTY_MASS_KG) * self.rocket_propellant
+        } else {
+            s.mass_kg
+        };
         let area = s.wing_area_m2;
 
         // ---- Air mass ----------------------------------------------------
@@ -329,7 +345,14 @@ impl Simulation {
             }
         }
 
-        let omega_des = DVec3::new(p_des, -q_des, -r_des);
+        let mut omega_des = DVec3::new(p_des, -q_des, -r_des);
+        if rocket && airborne {
+            // Peroxide reaction jets rotate the airframe when aerodynamic
+            // controls fade out. Translation still follows thrust and gravity.
+            let reaction = 1.0 - smoothstep(qbar / s.full_authority_q);
+            let reaction_rates = DVec3::new(self.surfaces.x, -self.surfaces.y, -self.surfaces.z) * 0.30;
+            omega_des = omega_des.lerp(reaction_rates, reaction);
+        }
         self.omega += (omega_des - self.omega) * (dt / tau).min(1.0);
         if airborne {
             // Rotational gusts nudge the airframe; the control law then works against them.

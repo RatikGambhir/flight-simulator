@@ -22,7 +22,7 @@ export function RoutePlanner({ onClose, full = false }: { onClose: () => void; f
   useEffect(() => {
     let alive = true
     setDeparture(null)
-    if (spawn.kind === 'coords') setDeparture(spawn)
+    if (spawn.kind !== 'runway') setDeparture(spawn)
     else sim.query<AirportDetail | null>({ type: 'airport', ident: spawn.airport }).then((d) => {
       if (alive) {
         setDeparture(d?.airport ?? null)

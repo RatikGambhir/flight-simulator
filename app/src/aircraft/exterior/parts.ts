@@ -55,7 +55,7 @@ export interface AircraftModel {
   /** Hidden in the cockpit view (fuselage shell etc). */
   exteriorOnly: Object3D[]
   eye: Vector3
-  cockpit: 'airliner' | 'bizjet' | 'ga' | 'fighter' | 'blackbird'
+  cockpit: 'airliner' | 'bizjet' | 'ga' | 'fighter' | 'blackbird' | 'rocket'
   /** Default cockpit look angle (rad, negative = down); -0.2 when unset. */
   cockpitLookPitch?: number
   /** Animates engine effects and variable-geometry inlets, if any. */

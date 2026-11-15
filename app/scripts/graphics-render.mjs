@@ -186,6 +186,14 @@ async function renderChecks() {
   check(delta(sunset, pixel(0.5, 0.56)) < 14, 'Small sunset time changes keep horizon color continuous')
 
   terrain.visible = false
+  camera.position.y = 107_960
+  camera.updateMatrixWorld()
+  render(0.65, 0)
+  const space = pixel(0.5, 0.43)
+  const limb = pixel(0.5, 0.35)
+  check(Math.max(...space) < 3 && limb[2] > 20,
+    `Above the atmosphere, only rays intersecting its curved limb show blue (${space}; ${limb})`)
+
   camera.position.y = 8500
   camera.updateMatrixWorld()
   render(-0.55, 1)

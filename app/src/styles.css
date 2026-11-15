@@ -927,6 +927,21 @@ input[type='checkbox'] {
   color: #b9d3e8;
 }
 
+.rocket-presets {
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.rocket-flight .rocket-presets {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
+
+.app:has(.rocket-flight) > .loading {
+  bottom: 195px;
+  pointer-events: none;
+}
+
 .throttle-bar {
   width: 10px;
   height: 46px;
@@ -1303,6 +1318,8 @@ input[type='checkbox'] {
   .hud-targets fieldset { grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 1.45fr); }
   .hud-target-actions { grid-column: 1 / -1; }
   .hud-cruise-preset { grid-row: 3; }
+  .rocket-flight button[type='submit'] { grid-column: 1 / -1; }
+  .app:has(.rocket-flight) > .loading { bottom: 217px; }
   .camera-bar { bottom: 217px; right: 14px; }
 }
 

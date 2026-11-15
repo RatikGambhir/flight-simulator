@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { liveryOptions, type LiveryId } from '../aircraft/liveries'
-import { applySelection } from '../flight'
+import { applySelection, x15Departure } from '../flight'
 import { useApp } from '../state/store'
 import { useAircraftList } from './useAircraftList'
 
@@ -37,7 +37,12 @@ export function AircraftSelect({ onClose }: { onClose: () => void }) {
 
   const choose = (id: string) => {
     const { spawn, setSpawn } = useApp.getState()
-    if (id !== 'sr71' && spawn.kind === 'coords' && spawn.cruise) setSpawn({ ...spawn, cruise: false })
+    if (id === 'x15') setSpawn(x15Departure(spawn))
+    else if (spawn.kind === 'rocket') setSpawn({
+      kind: 'coords', label: spawn.label, lat: spawn.lat, lon: spawn.lon, elevationFt: spawn.elevationFt,
+      mode: 'air', aglFt: 3000, heading: spawn.heading,
+    })
+    else if (id !== 'sr71' && spawn.kind === 'coords' && spawn.cruise) setSpawn({ ...spawn, cruise: false })
     setAircraft(id)
     applySelection({ paused: true })
   }
@@ -56,6 +61,7 @@ export function AircraftSelect({ onClose }: { onClose: () => void }) {
         <div className="aircraft-grid">
           {list.map((a) => {
             const blackbird = a.id === 'sr71'
+            const rocket = a.engine === 'rocket'
             const selected = a.id === aircraftId
             const livery = liveries[a.id] ?? 'default'
             const preview = thumbnails[thumbnailKey(a.id, livery)]
@@ -74,18 +80,18 @@ export function AircraftSelect({ onClose }: { onClose: () => void }) {
                       {a.description}
                     </p>
                     <div className="stats">
-                      <span>Cruise</span>
-                      <span>{blackbird ? 'Mach 3.2' : `${a.v_cruise_kt} kt`}</span>
-                      <span>Ceiling</span>
+                      <span>{rocket ? 'Record speed' : 'Cruise'}</span>
+                      <span>{rocket ? 'Mach 6.7' : blackbird ? 'Mach 3.2' : `${a.v_cruise_kt} kt`}</span>
+                      <span>{rocket ? 'Peak altitude' : 'Ceiling'}</span>
                       <span>{a.service_ceiling_note}</span>
                       <span>Length / span</span>
                       <span>{a.length_m.toFixed(1)} / {a.wingspan_m.toFixed(1)} m</span>
                       <span>Engines</span>
                       <span>
-                        {a.engine_count} × {blackbird ? 'J58 turbojet' : a.engine === 'propeller' ? 'piston/prop' : a.afterburner_thrust_n > 0 ? 'afterburning turbofan' : 'turbofan'}
+                        {a.engine_count} × {rocket ? 'XLR99 rocket' : blackbird ? 'J58 turbojet' : a.engine === 'propeller' ? 'piston/prop' : a.afterburner_thrust_n > 0 ? 'afterburning turbofan' : 'turbofan'}
                       </span>
-                      <span>Rotate / approach</span>
-                      <span>{a.v_rotate_kt} / {a.v_approach_kt} kt</span>
+                      <span>{rocket ? 'Air launch' : 'Rotate / approach'}</span>
+                      <span>{rocket ? '45,000 ft · Mach 0.75' : `${a.v_rotate_kt} / ${a.v_approach_kt} kt`}</span>
                     </div>
                   </div>
                 </button>

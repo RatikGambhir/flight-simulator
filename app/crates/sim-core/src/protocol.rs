@@ -76,6 +76,14 @@ pub enum RunwaySpawnKind {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SimCommand {
     Spawn(SpawnRequest),
+    SpawnRocket {
+        lat: f64,
+        lon: f64,
+        heading: f64,
+        altitude_ft: f64,
+        mach: f64,
+        ground_elevation_ft: Option<f64>,
+    },
     SpawnRunway {
         airport: String,
         #[serde(default)]
@@ -253,7 +261,9 @@ pub mod snap {
     pub const AP_SELECTED_HEADING: usize = 61;
     pub const AP_SELECTED_ALT_FT: usize = 62;
     pub const AP_SELECTED_SPEED: usize = 63;
-    pub const LEN: usize = 64;
+    /// Fraction of the XLR99 launch propellant remaining.
+    pub const ROCKET_PROPELLANT: usize = 64;
+    pub const LEN: usize = 65;
 
     pub mod flags {
         pub const ON_GROUND: u32 = 1;
