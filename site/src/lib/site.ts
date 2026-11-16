@@ -19,12 +19,9 @@ export const NAV_LINKS = [
 export type Platform = {
   name: string
   detail: string
-  available: boolean
 }
 
 export const PLATFORMS: readonly Platform[] = [
-  { name: 'macOS', detail: 'macOS 13 Ventura or later · Universal (Apple Silicon + Intel)', available: true },
-  { name: 'Browser', detail: 'Chrome, Edge or Safari 16+ with WebGL 2 · nothing to install', available: true },
-  { name: 'Windows', detail: 'No release yet', available: false },
-  { name: 'Linux', detail: 'No release yet', available: false },
+  { name: 'macOS', detail: 'macOS 13 Ventura or later · Universal (Apple Silicon + Intel)' },
+  { name: 'Browser', detail: 'Chrome, Edge or Safari 16+ with WebGL 2 · nothing to install' },
 ]

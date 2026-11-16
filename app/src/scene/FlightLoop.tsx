@@ -8,11 +8,13 @@ import { MathUtils, Raycaster, Vector2, Vector3, type DirectionalLight, type Hem
 import type { AircraftController } from '../aircraft/aircraftController'
 import { sound } from '../audio/sound'
 import { CameraRig, type AircraftPose } from '../camera/cameraRig'
+import { isRocket } from '../flight'
 import { controls } from '../input/controls'
 import { destinationPoint } from '../navigation/route'
 import { Flags, S, type SimCommand } from '../sim/protocol'
 import { sim } from '../sim/simClient'
 import { useApp } from '../state/store'
+import { useAircraftSpec } from '../ui/useAircraftList'
 import { CUMULUS, cloudProfileForWeather } from '../weather/cloudProfiles'
 import { CLEAR_HAZE, pollWeather, useWeather, visualTargets, type Conditions } from '../weather/liveWeather'
 import { enuBasis, frame } from '../world/frame'
@@ -93,6 +95,7 @@ export function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, oc
   useEffect(() => {
     rig.cockpitLookPitch = aircraft.model.cockpitLookPitch ?? -0.2
   }, [rig, aircraft])
+  const spaceFlight = isRocket(useAircraftSpec(aircraft.id))
   // Reused every frame (no per-frame allocation).
   const pose = useMemo<AircraftPose>(
     () => ({
@@ -105,11 +108,11 @@ export function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, oc
       wingTip: aircraft.model.wingTipRight,
       specificForce: new Vector3(0, 1, 0),
       heightAboveGround: 0,
-      spaceFlight: aircraft.model.id === 'x15',
+      spaceFlight,
       onGround: true,
       groundSpeed: 0,
     }),
-    [aircraft],
+    [aircraft, spaceFlight],
   )
 
   // Mouse: drag to orbit / look, wheel to zoom, double-click to reset.

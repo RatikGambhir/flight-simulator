@@ -2,7 +2,7 @@
 
 import { sound } from './audio/sound'
 import { sim } from './sim/simClient'
-import type { AirportDetail, RocketFlightState, SimCommand } from './sim/protocol'
+import type { AircraftSpec, AirportDetail, RocketFlightState, SimCommand } from './sim/protocol'
 import { useApp, type Settings, type SpawnChoice } from './state/store'
 import { simWeather, useWeather } from './weather/liveWeather'
 
@@ -36,8 +36,11 @@ export function syncDestination() {
 }
 
 export const X15_LAUNCH: RocketFlightState = { altitude_ft: 45_000, mach: 0.75, heading: 270 }
-export const X15_MAX_ALT_FT = 354_200
-export const X15_MAX_MACH = 6.7
+
+/** Rocket aircraft are placed by flight state and flown by rocket guidance, not the standard autopilot. */
+export function isRocket(spec: AircraftSpec | undefined): spec is AircraftSpec {
+  return spec?.engine === 'rocket'
+}
 
 export function x15Departure(spawn: SpawnChoice): SpawnChoice {
   if (spawn.kind === 'rocket') return spawn

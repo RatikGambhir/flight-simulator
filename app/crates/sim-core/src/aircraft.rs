@@ -118,6 +118,11 @@ pub struct AircraftSpec {
 }
 
 impl AircraftSpec {
+    /// Highest Mach number a flight-state placement may request (rocket aircraft only).
+    pub fn max_mach(&self) -> Option<f64> {
+        (self.engine == EngineKind::Rocket).then_some(X15_MAX_MACH)
+    }
+
     pub fn aspect_ratio(&self) -> f64 {
         self.wingspan_m * self.wingspan_m / self.wing_area_m2
     }

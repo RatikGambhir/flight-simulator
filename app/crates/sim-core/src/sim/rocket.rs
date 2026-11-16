@@ -1,4 +1,4 @@
-//! X-15 autopilot for a powered climb and sustained altitude hold.
+//! X-15 autopilot for a powered climb or descent and sustained altitude hold.
 
 use crate::aircraft::EngineKind;
 use crate::atmosphere::{isa, G0};
@@ -8,11 +8,14 @@ use crate::geo::{EARTH_MEAN_RADIUS, FT_TO_M, M_TO_FT};
 
 use super::Simulation;
 
+/// Guidance targets must clear the terrain below the aircraft by this much.
+const MIN_TERRAIN_CLEARANCE_FT: f64 = 1_000.0;
+
 #[derive(Clone, Copy)]
 pub(super) struct RocketGuidance {
     pub(super) target_ft: f64,
     pub(super) holding: bool,
-    heading: f64,
+    pub(super) heading: f64,
 }
 
 impl Simulation {
@@ -28,12 +31,19 @@ impl Simulation {
             self.message("X-15 autopilot is available once the aircraft is ready");
             return;
         }
-        if !(0.0..=self.spec.max_alt_ft).contains(&altitude_ft) || altitude_ft <= self.rocket_altitude_ft() {
-            self.message("Choose an altitude above the aircraft");
+        if !(0.0..=self.spec.max_alt_ft).contains(&altitude_ft) {
+            self.message(format!("Choose an altitude from 0 to {:.0} ft", self.spec.max_alt_ft));
+            return;
+        }
+        let current = self.rocket_altitude_ft();
+        let terrain_ft = current - self.d.agl.max(0.0) * M_TO_FT;
+        if altitude_ft < terrain_ft + MIN_TERRAIN_CLEARANCE_FT {
+            self.message("Choose an altitude at least 1,000 ft above the terrain");
             return;
         }
         self.set_rocket_guidance(altitude_ft, false);
-        self.message(format!("X-15 climbing to {altitude_ft:.0} ft"));
+        let verb = if altitude_ft < current { "descending" } else { "climbing" };
+        self.message(format!("X-15 {verb} to {altitude_ft:.0} ft"));
     }
 
     pub(super) fn hold_rocket_altitude(&mut self) {
@@ -44,6 +54,13 @@ impl Simulation {
         let altitude_ft = self.rocket_altitude_ft();
         self.set_rocket_guidance(altitude_ft, true);
         self.message(format!("X-15 holding {altitude_ft:.0} ft"));
+    }
+
+    /// Re-engage guidance carried through a move, on the new heading.
+    pub(super) fn resume_rocket_guidance(&mut self, guidance: RocketGuidance) {
+        if self.spec.engine == EngineKind::Rocket && !self.crashed {
+            self.set_rocket_guidance(guidance.target_ft, guidance.holding);
+        }
     }
 
     fn set_rocket_guidance(&mut self, target_ft: f64, holding: bool) {

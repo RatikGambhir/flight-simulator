@@ -1,13 +1,12 @@
 import { useRef } from 'react'
 import { motion, useReducedMotion, useScroll, useTransform } from 'motion/react'
-import { ArrowDownToLine, ArrowRight, ArrowUpRight, Check, Globe, Laptop, Minus } from 'lucide-react'
+import { ArrowDownToLine, ArrowRight, ArrowUpRight, Check, Globe, Laptop } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Picture } from '@/components/Picture'
 import { Reveal } from '@/components/Reveal'
 import { PHOTOS } from '@/content/images'
 import { PLATFORMS, REPO_URL, WEB_APP_URL } from '@/lib/site'
 import { useDownloadUrl } from '@/lib/latest-release'
-import { cn } from '@/lib/utils'
 
 export function FinalCta() {
   const downloadUrl = useDownloadUrl()
@@ -63,7 +62,7 @@ export function FinalCta() {
         <Reveal delay={0.24} className="mt-14 w-full max-w-2xl">
           <ul className="grid overflow-hidden rounded-2xl border border-white/10 bg-black/30 text-left backdrop-blur-xl sm:grid-cols-2">
             {PLATFORMS.map((p) => (
-              <li key={p.name} className={cn('flex items-start gap-3 border-white/10 p-4 not-last:border-b sm:odd:border-r sm:nth-last-[-n+2]:border-b-0', !p.available && 'opacity-60')}>
+              <li key={p.name} className="flex items-start gap-3 border-white/10 p-4 not-last:border-b sm:odd:border-r sm:nth-last-[-n+2]:border-b-0">
                 {p.name === 'Browser' ? (
                   <Globe className="mt-0.5 size-4 shrink-0 text-white/70" strokeWidth={1.75} aria-hidden />
                 ) : (
@@ -72,11 +71,7 @@ export function FinalCta() {
                 <div className="flex flex-col gap-1">
                   <span className="flex items-center gap-1.5 text-sm font-medium">
                     {p.name}
-                    {p.available ? (
-                      <Check className="size-3.5 text-sun" aria-label="Available" />
-                    ) : (
-                      <Minus className="size-3.5 text-white/50" aria-label="Not available" />
-                    )}
+                    <Check className="size-3.5 text-sun" aria-label="Available" />
                   </span>
                   <span className="text-xs leading-relaxed text-white/55">{p.detail}</span>
                 </div>

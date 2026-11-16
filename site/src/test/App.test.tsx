@@ -36,12 +36,14 @@ describe('landing page', () => {
     }
   })
 
-  it('lists macOS as the available platform', async () => {
+  it('lists only macOS and the browser as platforms', async () => {
     stubLatestRelease({ assets: [] })
     await renderApp()
 
     const download = document.getElementById('download')!
     expect(within(download).getByText('macOS')).toBeInTheDocument()
+    expect(within(download).getByText('Browser')).toBeInTheDocument()
+    expect(download).not.toHaveTextContent(/\b(windows|linux)\b/i)
   })
 
   it('points every download button at the newest .dmg from GitHub Releases', async () => {

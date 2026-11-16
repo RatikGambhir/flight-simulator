@@ -34,8 +34,8 @@ function TakeoffGuide() {
         done.current = (flags & Flags.ON_GROUND) === 0
       }
       const spec = list[s[S.AIRCRAFT_INDEX] | 0]
-      // Guided departures fly the takeoff themselves.
-      if (flags & (Flags.AP_ENGAGED | Flags.ROCKET_CLIMB)) done.current = true
+      // Guided departures (standard autopilot or rocket guidance) fly the takeoff themselves.
+      if (flags & Flags.AP_ENGAGED) done.current = true
       if (done.current || !spec || flags & (Flags.AWAITING_GROUND | Flags.CRASHED)) {
         setStep((p) => (p === null ? p : null))
         return

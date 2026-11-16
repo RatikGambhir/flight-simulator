@@ -1,9 +1,10 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
-import { X15_LAUNCH } from '../flight'
+import { isRocket, X15_LAUNCH } from '../flight'
 import { sim } from '../sim/simClient'
 import type { Airport, AirportDetail, RunwaySpawnKind, SearchResult, SpawnMode } from '../sim/protocol'
 import { useApp, type SpawnChoice } from '../state/store'
 import { readRocketFields, RocketFlightFields, RocketFlightPresets, rocketFields } from './RocketFlight'
+import { useAircraftSpec } from './useAircraftList'
 
 const FEATURED: { label: string; query: string }[] = [
   { label: "Chicago O'Hare", query: 'KORD' },
@@ -94,7 +95,8 @@ function ResultIcon({ kind }: { kind: string }) {
 
 export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { initial: SpawnChoice; onConfirm: (s: SpawnChoice) => void; onClose: () => void; confirmLabel: string }) {
   const blackbird = useApp((s) => s.aircraftId === 'sr71')
-  const rocket = useApp((s) => s.aircraftId === 'x15')
+  const aircraft = useAircraftSpec(useApp((s) => s.aircraftId))
+  const rocket = isRocket(aircraft)
   const [query, setQuery] = useState('')
   const deferredQuery = useDeferredValue(query)
   const [results, setResults] = useState<SearchResult[]>([])
@@ -107,7 +109,7 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
   const [agl, setAgl] = useState(initial.kind === 'coords' ? initial.aglFt : 2500)
   const [heading, setHeading] = useState(initial.kind === 'coords' ? initial.heading : 0)
   const [cruise, setCruise] = useState(blackbird && initial.kind === 'coords' && initial.cruise === true)
-  const [rocketRunway, setRocketRunway] = useState(rocket && initial.kind === 'runway' && initial.mode === 'takeoff')
+  const [rocketRunway, setRocketRunway] = useState(initial.kind === 'runway' && initial.mode === 'takeoff')
   const [flightFields, setFlightFields] = useState(() => rocketFields(initial.kind === 'rocket' ? initial : X15_LAUNCH))
   const [lat, setLat] = useState(initial.kind !== 'runway' ? initial.lat.toFixed(5) : '')
   const [lon, setLon] = useState(initial.kind !== 'runway' ? initial.lon.toFixed(5) : '')
@@ -219,7 +221,7 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
     if (lat === '' || lon === '' || !Number.isFinite(la) || !Number.isFinite(lo) || Math.abs(la) > 90 || Math.abs(lo) > 180) return
     const coordinateLabel = `${la.toFixed(3)}, ${lo.toFixed(3)}`
     if (rocket) {
-      const flight = readRocketFields(flightFields)
+      const flight = readRocketFields(flightFields, aircraft)
       const sameLocation = initial.kind === 'rocket' && la === Number(initial.lat.toFixed(5)) && lo === Number(initial.lon.toFixed(5))
       const sameSelection = selected && la === Number(selected.lat.toFixed(5)) && lo === Number(selected.lon.toFixed(5))
       const label = (sameSelection ? selected.title : null) ?? (sameLocation ? initial.label : coordinateLabel)
@@ -261,7 +263,7 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
           Cancel
         </button>
         <button className="btn primary" onClick={confirm}
-          disabled={rocket ? (rocketRunway ? !canStartOnRunway : !coordsValid || !readRocketFields(flightFields)) : !selected && !coordsValid}>
+          disabled={rocket ? (rocketRunway ? !canStartOnRunway : !coordsValid || !readRocketFields(flightFields, aircraft)) : !selected && !coordsValid}>
           {confirmLabel}
         </button>
       </div>
@@ -390,9 +392,9 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
                     <label>Heading: {heading}°</label>
                     <input type="range" min={0} max={359} step={1} value={heading} onChange={(e) => setHeading(Number(e.target.value))} />
                   </div>}
-                  {rocket && <RocketFlightFields fields={flightFields} setFields={setFlightFields} />}
+                  {rocket && <RocketFlightFields spec={aircraft} fields={flightFields} setFields={setFlightFields} />}
                 </div>
-                {rocket && <RocketFlightPresets fields={flightFields} setFields={setFlightFields} />}
+                {rocket && <RocketFlightPresets spec={aircraft} fields={flightFields} setFields={setFlightFields} />}
               </div>
             )}
           </div>

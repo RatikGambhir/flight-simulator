@@ -20,7 +20,7 @@ use crate::autopilot::{ApInputs, ApOutput, Autopilot, NavTarget};
 use crate::engine;
 use crate::geo::{self, ecef_to_geodetic, geodetic_to_ecef, EnuFrame, FT_TO_M, KT_TO_MS, MS_TO_KT, M_TO_FT};
 pub use crate::autopilot::nav::nosewheel_limit;
-use crate::protocol::{snap, ControlInput, FlightTargets, RunwaySpawnKind, SimCommand, SimEvent, SpawnMode, SpawnRequest, TargetSpeed};
+use crate::protocol::{snap, ControlInput, FlightTargets, RocketSpawnRequest, RunwaySpawnKind, SimCommand, SimEvent, SpawnMode, SpawnRequest, TargetSpeed};
 use crate::weather::{Weather, WeatherSettings};
 use crate::world;
 use rocket::RocketGuidance;
@@ -114,6 +114,7 @@ struct AwaitGround {
 enum AutopilotResume {
     Standard,
     Selected(FlightTargets),
+    Rocket(RocketGuidance),
 }
 
 pub struct Simulation {
@@ -292,8 +293,8 @@ impl Simulation {
                 self.last_spawn = Some(SimCommand::Spawn(req.clone()));
                 self.spawn(&req);
             }
-            SimCommand::SpawnRocket { lat, lon, heading, altitude_ft, mach, ground_elevation_ft } => {
-                if self.spawn_rocket(lat, lon, heading, altitude_ft, mach, ground_elevation_ft) {
+            SimCommand::SpawnRocket(ref req) => {
+                if self.spawn_rocket(req) {
                     self.last_spawn = Some(cmd);
                 }
             }
@@ -317,12 +318,10 @@ impl Simulation {
                     self.spec = &aircraft::catalog()[idx];
                     self.flaps_index = self.flaps_index.min(self.spec.flap_detents.len() - 1);
                     match self.last_spawn.clone() {
-                        Some(SimCommand::SpawnRocket { lat, lon, heading, ground_elevation_ft, .. })
-                            if self.spec.engine != EngineKind::Rocket =>
-                        {
+                        Some(SimCommand::SpawnRocket(r)) if self.spec.engine != EngineKind::Rocket => {
                             self.command(SimCommand::Spawn(SpawnRequest {
-                                lat, lon, heading, mode: SpawnMode::Air, agl_ft: None,
-                                speed_kt: None, cruise: false, ground_elevation_ft, keep_autopilot: false,
+                                lat: r.lat, lon: r.lon, heading: r.heading, mode: SpawnMode::Air, agl_ft: None,
+                                speed_kt: None, cruise: false, ground_elevation_ft: r.ground_elevation_ft, keep_autopilot: false,
                             }));
                         }
                         Some(c) => self.command(c),
@@ -468,7 +467,7 @@ impl Simulation {
             SpawnMode::Air => ground_h + aw.agl_m,
         };
         self.pos = geodetic_to_ecef(g.lat, g.lon, target);
-        if let Some(&SimCommand::SpawnRocket { heading, mach, .. }) = self.last_spawn.as_ref() {
+        if let Some(SimCommand::SpawnRocket(RocketSpawnRequest { heading, mach, .. })) = self.last_spawn {
             if target > g.height {
                 self.message("X-15 placed 150 m above the terrain");
             }
@@ -492,6 +491,7 @@ impl Simulation {
                 let inp = self.ap_inputs();
                 self.autopilot.engage_selected(&inp, self.spec, targets);
             }
+            Some(AutopilotResume::Rocket(guidance)) => self.resume_rocket_guidance(guidance),
             None => {}
         }
     }
@@ -627,15 +627,21 @@ impl Simulation {
         self.update_derived();
     }
 
-    fn spawn_rocket(
-        &mut self,
-        lat: f64,
-        lon: f64,
-        heading: f64,
-        altitude_ft: f64,
-        mach: f64,
-        ground_elevation_ft: Option<f64>,
-    ) -> bool {
+    /// What to re-engage after a move that keeps the autopilot flying.
+    fn autopilot_resume(&self, keep: bool) -> Option<AutopilotResume> {
+        if !keep {
+            None
+        } else if let Some(guidance) = self.rocket_guidance {
+            Some(AutopilotResume::Rocket(guidance))
+        } else {
+            self.autopilot.engaged.then(|| {
+                self.autopilot.selected_targets().map_or(AutopilotResume::Standard, AutopilotResume::Selected)
+            })
+        }
+    }
+
+    fn spawn_rocket(&mut self, req: &RocketSpawnRequest) -> bool {
+        let &RocketSpawnRequest { lat, lon, heading, altitude_ft, mach, ground_elevation_ft, keep_autopilot } = req;
         let spec = self.spec;
         if spec.engine != EngineKind::Rocket {
             self.message("Research flight placement is available for the X-15");
@@ -643,7 +649,7 @@ impl Simulation {
         }
         if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon)
             || !heading.is_finite() || !(0.0..=spec.max_alt_ft).contains(&altitude_ft)
-            || !(0.1..=aircraft::X15_MAX_MACH).contains(&mach)
+            || !spec.max_mach().is_some_and(|max| (0.1..=max).contains(&mach))
         {
             self.message("Enter valid coordinates, altitude, Mach and heading for the X-15");
             return false;
@@ -662,8 +668,10 @@ impl Simulation {
         let lon_rad = lon.to_radians();
         let enu = EnuFrame::at(lat_rad, lon_rad);
         let heading = heading.rem_euclid(360.0).to_radians();
+        let resume = self.autopilot_resume(keep_autopilot);
 
         self.reset_dynamic_state();
+        self.ap_resume = resume;
         self.autopilot.set_spawn_target(None);
         self.ground_fallback = ground;
         self.pos = geodetic_to_ecef(lat_rad, lon_rad, height);
@@ -683,6 +691,9 @@ impl Simulation {
             self.message("X-15 placed 150 m above the terrain");
         }
         self.update_derived();
+        if self.awaiting.is_none() {
+            self.resume_autopilot();
+        }
         true
     }
 
@@ -699,9 +710,7 @@ impl Simulation {
     }
 
     fn spawn(&mut self, req: &SpawnRequest) {
-        let resume = (req.keep_autopilot && self.autopilot.engaged).then(|| {
-            self.autopilot.selected_targets().map_or(AutopilotResume::Standard, AutopilotResume::Selected)
-        });
+        let resume = self.autopilot_resume(req.keep_autopilot);
         self.autopilot.set_spawn_target(None);
         let lat = req.lat.clamp(-89.9, 89.9);
         let lon = geo::wrap_deg_180(req.lon);
@@ -1426,12 +1435,16 @@ mod tests {
         assert_eq!(s[snap::FLAGS] as u32 & (snap::flags::CRASHED | snap::flags::STALL), 0);
     }
 
+    fn rocket_spawn(lat: f64, lon: f64, altitude_ft: f64, mach: f64, heading: f64, keep_autopilot: bool) -> SimCommand {
+        SimCommand::SpawnRocket(RocketSpawnRequest {
+            lat, lon, heading, altitude_ft, mach, ground_elevation_ft: Some(2300.0), keep_autopilot,
+        })
+    }
+
     fn x15_at(altitude_ft: f64, mach: f64, heading: f64) -> Simulation {
         let mut sim = Simulation::new();
         sim.command(SimCommand::SetAircraft { id: "x15".into() });
-        sim.command(SimCommand::SpawnRocket {
-            lat: 34.9, lon: -117.9, heading, altitude_ft, mach, ground_elevation_ft: Some(2300.0),
-        });
+        sim.command(rocket_spawn(34.9, -117.9, altitude_ft, mach, heading, false));
         sim
     }
 
@@ -1541,6 +1554,61 @@ mod tests {
             sim.step(1.0 / 120.0);
             assert!(sim.rocket_guidance.is_none(), "manual pitch takes over");
         }
+    }
+
+    #[test]
+    fn x15_guided_descent_captures_a_lower_altitude_and_respects_terrain() {
+        let mut sim = x15_at(354_200.0, 6.7, 303.0);
+        sim.command(SimCommand::ClimbRocket { altitude_ft: 3_000.0 });
+        assert!(sim.rocket_guidance.is_none(), "targets within 1,000 ft of the terrain are refused");
+        let target = 200_000.0;
+        sim.command(SimCommand::ClimbRocket { altitude_ft: target });
+        assert!(sim.rocket_guidance.is_some_and(|g| !g.holding));
+        let mut captured = false;
+        for _ in 0..(120 * 900) {
+            sim.step(1.0 / 120.0);
+            let alt = read(&sim, snap::ALT_MSL_FT);
+            assert!(!sim.crashed && !sim.stall, "descent at {alt:.0} ft");
+            if sim.rocket_guidance.is_some_and(|g| g.holding) {
+                captured = true;
+                break;
+            }
+        }
+        assert!(captured, "capture {target} ft (now {:.0} ft)", read(&sim, snap::ALT_MSL_FT));
+        for _ in 0..(120 * 120) {
+            sim.step(1.0 / 120.0);
+        }
+        let held = read(&sim, snap::ALT_MSL_FT);
+        assert!((held - target).abs() < 350.0, "held {held:.0} ft");
+    }
+
+    #[test]
+    fn x15_skip_to_keeps_rocket_guidance() {
+        // High altitude: the UI moves the X-15 with a rocket placement.
+        let mut sim = x15_at(310_000.0, 6.7, 303.0);
+        sim.command(SimCommand::ToggleAutopilot);
+        sim.command(rocket_spawn(36.0, -115.0, 310_000.0, 6.7, 90.0, true));
+        assert!(sim.awaiting.is_none());
+        let guidance = sim.rocket_guidance.expect("guidance survives the move");
+        assert!(guidance.holding && (guidance.target_ft - 310_000.0).abs() < 1.0);
+        assert!((guidance.heading.to_degrees() - 90.0).abs() < 0.5, "hold the new heading");
+
+        // Low altitude: the standard air spawn resumes guidance once terrain is known.
+        let mut sim = x15_at(20_000.0, 0.8, 270.0);
+        settle(&mut sim);
+        sim.command(SimCommand::ClimbRocket { altitude_ft: 60_000.0 });
+        sim.command(SimCommand::Spawn(SpawnRequest {
+            lat: 35.2, lon: -117.5, heading: 0.0, mode: SpawnMode::Air, agl_ft: Some(5_000.0),
+            speed_kt: None, cruise: false, ground_elevation_ft: Some(2300.0), keep_autopilot: true,
+        }));
+        assert!(sim.rocket_guidance.is_none());
+        settle(&mut sim);
+        let guidance = sim.rocket_guidance.expect("guidance resumes after placement");
+        assert!(!guidance.holding && guidance.target_ft == 60_000.0);
+
+        // Without keep_autopilot, a placement starts unguided.
+        sim.command(rocket_spawn(34.9, -117.9, 45_000.0, 0.75, 270.0, false));
+        assert!(sim.rocket_guidance.is_none());
     }
 
     #[test]

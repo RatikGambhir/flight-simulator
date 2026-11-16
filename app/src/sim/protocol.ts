@@ -157,7 +157,7 @@ export interface FlightTargets {
 
 export type SimCommand =
   | ({ type: 'spawn' } & SpawnRequest)
-  | ({ type: 'spawn_rocket'; lat: number; lon: number; ground_elevation_ft?: number | null } & RocketFlightState)
+  | ({ type: 'spawn_rocket'; lat: number; lon: number; ground_elevation_ft?: number | null; keep_autopilot?: boolean } & RocketFlightState)
   | { type: 'climb_rocket'; altitude_ft: number }
   | { type: 'cancel_rocket_climb' }
   | { type: 'spawn_runway'; airport: string; runway?: string | null; kind: RunwaySpawnKind }
@@ -284,5 +284,7 @@ export interface AircraftSpec {
   v_max_kt: number
   cruise_alt_ft: number
   max_alt_ft: number
+  /** Highest Mach number a flight-state placement may request (rocket aircraft only). */
+  max_mach?: number
   service_ceiling_note: string
 }

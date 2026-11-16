@@ -1,5 +1,7 @@
 import { BINDINGS } from '../input/controls'
+import { isRocket } from '../flight'
 import { useApp } from '../state/store'
+import { useAircraftSpec } from './useAircraftList'
 
 export function ControlsTable() {
   return (
@@ -20,7 +22,7 @@ export function ControlsTable() {
 }
 
 export function ControlsHelp({ onClose, full }: { onClose: () => void; full?: boolean }) {
-  const rocket = useApp((s) => s.aircraftId === 'x15')
+  const rocket = isRocket(useAircraftSpec(useApp((s) => s.aircraftId)))
   return (
     <div className={`sheet glass ${full ? 'full' : ''}`}>
       <div className="sheet-header">
@@ -40,7 +42,7 @@ export function ControlsHelp({ onClose, full }: { onClose: () => void; full?: bo
             <br />
             <b>Runway start.</b> In Departure, select an airport and choose On runway. For a manual takeoff, use full power and rotate at 250 kt. Raise the gear after liftoff.
             <br />
-            <b>Fly climb.</b> Enter an altitude to climb and hold it on your current heading. Press <span className="kbd">Z</span> in flight to hold your current altitude or disengage autopilot. Place now sets your altitude, Mach and true heading instantly.
+            <b>Fly climb.</b> Enter an altitude to climb or descend to and hold it on your current heading. Press <span className="kbd">Z</span> in flight to hold your current altitude or disengage autopilot. Place now sets your altitude, Mach and true heading instantly.
           </> : <>
           <b>Your first takeoff:</b> press <span className="kbd">⇧R</span> for full throttle, keep straight with <span className="kbd">Q</span>/<span className="kbd">E</span>,
           and at the rotate speed shown on the aircraft card gently hold <span className="kbd">S</span> to lift the nose. Once climbing, raise the gear with{' '}

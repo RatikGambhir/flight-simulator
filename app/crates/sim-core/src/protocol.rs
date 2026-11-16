@@ -63,6 +63,22 @@ pub struct SpawnRequest {
     pub keep_autopilot: bool,
 }
 
+/// Place a rocket aircraft at an altitude, Mach number and true heading.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RocketSpawnRequest {
+    pub lat: f64,
+    pub lon: f64,
+    pub heading: f64,
+    pub altitude_ft: f64,
+    pub mach: f64,
+    /// Known ground elevation in feet MSL, if any.
+    #[serde(default)]
+    pub ground_elevation_ft: Option<f64>,
+    /// Keep rocket guidance flying after the move (e.g. "skip to").
+    #[serde(default)]
+    pub keep_autopilot: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunwaySpawnKind {
@@ -76,15 +92,8 @@ pub enum RunwaySpawnKind {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SimCommand {
     Spawn(SpawnRequest),
-    SpawnRocket {
-        lat: f64,
-        lon: f64,
-        heading: f64,
-        altitude_ft: f64,
-        mach: f64,
-        ground_elevation_ft: Option<f64>,
-    },
-    /// Engage X-15 climb guidance and capture the selected altitude.
+    SpawnRocket(RocketSpawnRequest),
+    /// Engage X-15 guidance to climb or descend to and hold the selected altitude.
     ClimbRocket { altitude_ft: f64 },
     CancelRocketClimb,
     SpawnRunway {

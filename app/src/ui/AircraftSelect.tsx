@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { liveryOptions, type LiveryId } from '../aircraft/liveries'
-import { applySelection, x15Departure } from '../flight'
+import { applySelection, isRocket, x15Departure } from '../flight'
 import { useApp } from '../state/store'
 import { useAircraftList } from './useAircraftList'
 
@@ -37,7 +37,7 @@ export function AircraftSelect({ onClose }: { onClose: () => void }) {
 
   const choose = (id: string) => {
     const { spawn, setSpawn } = useApp.getState()
-    if (id === 'x15') {
+    if (isRocket(list.find((a) => a.id === id))) {
       if (id !== aircraftId) setSpawn(x15Departure(spawn))
     } else if (spawn.kind === 'rocket') setSpawn({
       kind: 'coords', label: spawn.label, lat: spawn.lat, lon: spawn.lon, elevationFt: spawn.elevationFt,
