@@ -1,52 +1,71 @@
-//! X-15 climb guidance. The controls fly a powered ascent followed by a
-//! ballistic coast, using the same thrust and aerodynamics as manual flight.
+//! X-15 autopilot for a powered climb and sustained altitude hold.
 
 use crate::aircraft::EngineKind;
 use crate::atmosphere::{isa, G0};
 use crate::autopilot::ApOutput;
 use crate::engine;
-use crate::geo::{EARTH_MEAN_RADIUS, M_TO_FT};
+use crate::geo::{EARTH_MEAN_RADIUS, FT_TO_M, M_TO_FT};
 
 use super::Simulation;
 
 #[derive(Clone, Copy)]
-pub(super) struct RocketClimb {
-    target_ft: f64,
-    coasting: bool,
-    predict_after_s: f64,
+pub(super) struct RocketGuidance {
+    pub(super) target_ft: f64,
+    pub(super) holding: bool,
+    heading: f64,
 }
 
 impl Simulation {
+    fn rocket_altitude_ft(&self) -> f64 {
+        (self.d.height - self.d.geoid - self.contact_height()) * M_TO_FT
+    }
+
     pub(super) fn start_rocket_climb(&mut self, altitude_ft: f64) {
         if self.spec.engine != EngineKind::Rocket {
             return;
         }
         if self.awaiting.is_some() || self.crashed {
-            self.message("X-15 climb is available once the aircraft is ready");
+            self.message("X-15 autopilot is available once the aircraft is ready");
             return;
         }
-        let altitude = (self.d.height - self.d.geoid - self.contact_height()) * M_TO_FT;
-        if !(0.0..=self.spec.max_alt_ft).contains(&altitude_ft) || altitude_ft <= altitude {
+        if !(0.0..=self.spec.max_alt_ft).contains(&altitude_ft) || altitude_ft <= self.rocket_altitude_ft() {
             self.message("Choose an altitude above the aircraft");
             return;
         }
-        self.rocket_climb = Some(RocketClimb { target_ft: altitude_ft, coasting: false, predict_after_s: 0.0 });
-        self.gamma_ref = None;
-        self.message(format!("X-15 guiding a climb toward {altitude_ft:.0} ft"));
+        self.set_rocket_guidance(altitude_ft, false);
+        self.message(format!("X-15 climbing to {altitude_ft:.0} ft"));
     }
 
-    pub(super) fn cancel_rocket_climb(&mut self) {
-        if self.rocket_climb.take().is_some() {
+    pub(super) fn hold_rocket_altitude(&mut self) {
+        if self.awaiting.is_some() || self.crashed || self.on_ground {
+            self.message("Use Fly climb to start the X-15 autopilot from the runway");
+            return;
+        }
+        let altitude_ft = self.rocket_altitude_ft();
+        self.set_rocket_guidance(altitude_ft, true);
+        self.message(format!("X-15 holding {altitude_ft:.0} ft"));
+    }
+
+    fn set_rocket_guidance(&mut self, target_ft: f64, holding: bool) {
+        self.rocket_guidance = Some(RocketGuidance { target_ft, holding, heading: self.d.heading });
+        self.gamma_ref = None;
+        self.bank_ref = None;
+    }
+
+    pub(super) fn cancel_rocket_guidance(&mut self) {
+        if self.rocket_guidance.take().is_some() {
             self.gamma_ref = None;
-            self.message("X-15 climb guidance released");
+            self.message("X-15 autopilot disengaged");
         }
     }
 
-    pub(super) fn update_rocket_climb(&mut self, dt: f64) -> Option<ApOutput> {
-        let mut climb = self.rocket_climb?;
+    pub(super) fn update_rocket_guidance(&mut self) -> Option<ApOutput> {
+        let mut guidance = self.rocket_guidance?;
         let input = &self.input;
-        if [input.pitch, input.roll, input.yaw, input.throttle_rate, input.brake].iter().any(|v| v.abs() > 0.15) {
-            self.cancel_rocket_climb();
+        if [input.pitch, input.roll, input.yaw, input.throttle_rate, input.brake]
+            .iter().any(|v| v.abs() > 0.15)
+        {
+            self.cancel_rocket_guidance();
             return None;
         }
         if self.on_ground {
@@ -54,73 +73,53 @@ impl Simulation {
                 throttle: Some(1.0),
                 pitch_stick: Some(if self.d.ias_kt >= self.spec.v_rotate_kt { 1.0 } else { 0.0 }),
                 parking_brake: Some(false),
+                speedbrake: Some(false),
                 ..ApOutput::default()
             });
         }
 
-        let altitude = (self.d.height - self.d.geoid - self.contact_height()) * M_TO_FT;
-        if !climb.coasting {
-            climb.predict_after_s -= dt;
-            if climb.predict_after_s <= 0.0 {
-                climb.coasting = self.rocket_coast_apogee() >= climb.target_ft;
-                climb.predict_after_s = 0.08;
-            }
-            self.rocket_climb = Some(climb);
-        }
-        if climb.coasting && self.d.vs <= 0.0 && self.engine < 0.02 {
-            self.rocket_climb = None;
-            self.gamma_ref = None;
-            self.message(format!("X-15 reached an apogee of {altitude:.0} ft. You have control."));
-            return None;
+        let altitude = self.rocket_altitude_ft();
+        let remaining = (guidance.target_ft - altitude) * FT_TO_M;
+        if !guidance.holding && remaining.abs() < 90.0 && self.d.vs.abs() < 6.0 {
+            guidance.holding = true;
+            self.rocket_guidance = Some(guidance);
+            self.message(format!("X-15 holding {:.0} ft", guidance.target_ft));
         }
 
-        let pitch_target = if climb.coasting {
-            self.d.fpa.to_degrees()
-        } else {
-            // Roll out of the runway climb gradually for nearby targets.
-            let remaining = (climb.target_ft - altitude).max(0.0);
-            20.0 + 25.0 * (remaining / 40_000.0).clamp(0.0, 1.0)
-        };
-        self.gamma_ref = None;
+        // Schedule airspeed through the climb and cap the flight-path angle.
+        // The altitude loop starts reducing vertical speed well before capture.
+        let air = isa(self.d.height - self.d.geoid);
+        let target_mach = (0.9 + (altitude - 40_000.0).max(0.0) / 58_000.0).min(5.5);
+        let path_speed = self.d.gs.hypot(self.d.vs).max(60.0);
+        let climb_limit = (path_speed * 0.33).min(210.0);
+        // Tighten the loop close to the target to reject steady disturbances.
+        let capture_time = 8.0 + 24.0 * (remaining.abs() / 1_800.0).min(1.0);
+        let target_vs = (remaining / capture_time).clamp(-climb_limit, climb_limit);
+        let target_fpa = (target_vs / path_speed).asin();
+        let gravity = G0 - self.d.gs.powi(2) / (EARTH_MEAN_RADIUS + self.d.height);
+        let bank = self.d.roll.cos().max(0.65);
+        let path_accel = (target_fpa - self.d.fpa) * path_speed / 4.5;
+        let normal_g = ((gravity * self.d.fpa.cos() + path_accel) / (G0 * bank))
+            .clamp(self.spec.min_load_factor, 2.0);
+
+        let q_area = 0.5 * air.density * self.d.tas.powi(2) * self.spec.wing_area_m2;
+        let cl = self.spec.cl0 + self.spec.cl_alpha * self.d.alpha.clamp(-0.28, 0.28);
+        let cd = self.spec.cd0
+            + engine::wave_drag(self.spec.wave_drag_cd, self.spec.drag_rise_mach, self.d.mach)
+            + self.spec.induced_k_at(self.d.mach) * cl * cl + self.spec.gear_cd * self.gear;
+        let drag = q_area * cd;
+        let speed_error = target_mach * air.speed_of_sound - self.d.tas;
+        let thrust = drag + self.spec.mass_kg * (speed_error / 11.0 + gravity * self.d.fpa.sin());
+        let heading_error = (guidance.heading - self.d.heading + std::f64::consts::PI)
+            .rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
+        let bank_target = (heading_error * 2.0).clamp(-0.32, 0.32);
         Some(ApOutput {
-            throttle: Some(if climb.coasting { 0.0 } else { 1.0 }),
-            pitch_stick: Some(((pitch_target - self.d.pitch.to_degrees()) * 0.08).clamp(-1.0, 1.0)),
-            roll_stick: Some((-self.d.roll.to_degrees() / 20.0).clamp(-1.0, 1.0)),
-            load_factor: climb.coasting.then_some(0.0),
+            throttle: Some((thrust / self.spec.max_thrust_n).clamp(0.0, 1.0)),
+            roll_stick: Some(((bank_target - self.d.roll) * 2.9).clamp(-1.0, 1.0)),
+            load_factor: Some(normal_g),
             gear_down: (self.d.agl > 12.0).then_some(false),
+            speedbrake: Some(false),
             ..ApOutput::default()
         })
-    }
-
-    /// Fly a lightweight prediction of the zero-lift coast to find engine cutoff.
-    fn rocket_coast_apogee(&self) -> f64 {
-        let spec = self.spec;
-        let mass = spec.mass_kg;
-        let mut height = self.d.height - self.d.geoid;
-        // The main simulation decays the engine exponentially after cutoff.
-        let spool_s = spec.spool_time_s * (0.8 / 3.0);
-        let impulse = spec.max_thrust_n * self.engine * spool_s / mass;
-        let (sin_pitch, cos_pitch) = self.d.pitch.sin_cos();
-        let mut horizontal_speed = self.d.gs + impulse * cos_pitch;
-        let mut up_speed = self.d.vs + impulse * sin_pitch;
-        for _ in 0..600 {
-            if up_speed <= 0.0 {
-                break;
-            }
-            let air = isa(height);
-            let speed = horizontal_speed.hypot(up_speed);
-            let cd = spec.cd0 + engine::wave_drag(spec.wave_drag_cd, spec.drag_rise_mach, speed / air.speed_of_sound);
-            let drag_per_speed = 0.5 * air.density * speed * spec.wing_area_m2 * cd / mass;
-            let gravity = G0 - horizontal_speed.powi(2) / (EARTH_MEAN_RADIUS + height);
-            let decel = (gravity + drag_per_speed * up_speed).max(0.1);
-            let step = (up_speed / decel).min(0.5);
-            height += (up_speed - 0.5 * decel * step) * step;
-            horizontal_speed /= 1.0 + drag_per_speed * step;
-            if step < 0.5 {
-                break;
-            }
-            up_speed -= decel * step;
-        }
-        (height - self.contact_height()) * M_TO_FT
     }
 }

@@ -1,6 +1,6 @@
 import { BoxGeometry, CylinderGeometry, Group, Mesh, ShaderMaterial, Vector3 } from 'three'
 import { tubeGeometry, wingPanelGeometry, type WingParams } from '../geometry'
-import { aircraftLivery, createMaterials, paintDarkFuselage, paintX15Tail } from '../materials'
+import { aircraftLivery, createMaterials, paintX15Canopy, paintX15Fuselage, paintX15Tail } from '../materials'
 import { buildWings, gearLeg, mesh, newModel, type AircraftModel } from './parts'
 
 const NOSE = -7.9
@@ -16,8 +16,13 @@ function addRocket(model: AircraftModel) {
   chamber.rotateX(Math.PI / 2).translate(0, -0.08, TAIL - 0.67)
   mesh(chamber, m.belly, root)
 
-  const plumeGeometry = new CylinderGeometry(0.75, 0.36, 6, 24, 1, true)
-  plumeGeometry.rotateX(Math.PI / 2).translate(0, 0, 3)
+  const plumeGeometry = tubeGeometry([
+    { z: 0, hw: 0.37, hh: 0.37, yc: 0 },
+    { z: 0.7, hw: 0.46, hh: 0.46, yc: 0 },
+    { z: 2.1, hw: 0.54, hh: 0.54, yc: 0 },
+    { z: 4.0, hw: 0.57, hh: 0.57, yc: 0 },
+    { z: 6.0, hw: 0.59, hh: 0.59, yc: 0 },
+  ], 24)
   const material = new ShaderMaterial({
     uniforms: { power: { value: 0 }, time: { value: 0 } },
     transparent: true,
@@ -26,23 +31,32 @@ function addRocket(model: AircraftModel) {
       #include <common>
       #include <logdepthbuf_pars_vertex>
       varying vec2 vUv;
+      varying vec3 vNormal;
+      varying vec3 vEye;
       void main() {
         vUv = uv;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+        vNormal = normalMatrix * normal;
+        vEye = -viewPosition.xyz;
+        gl_Position = projectionMatrix * viewPosition;
         #include <logdepthbuf_vertex>
       }
     `,
     fragmentShader: /* glsl */ `
       #include <logdepthbuf_pars_fragment>
       varying vec2 vUv;
+      varying vec3 vNormal;
+      varying vec3 vEye;
       uniform float power;
       uniform float time;
       void main() {
         #include <logdepthbuf_fragment>
-        float ripple = sin(vUv.y * 78.0 - time * 32.0 + 0.5 * sin(vUv.x * 25.13));
+        float ripple = sin(vUv.y * 65.0 - time * 28.0 + 0.5 * sin(vUv.x * 25.13));
         float core = pow(1.0 - vUv.y, 3.0);
-        vec3 color = mix(vec3(1.0, 0.13, 0.018), vec3(3.6, 2.0, 0.9), core + ripple * 0.07);
-        float alpha = (1.0 - smoothstep(0.1, 1.0, vUv.y)) * power * (0.85 + 0.1 * ripple);
+        float facing = max(0.0, dot(normalize(vNormal), normalize(vEye)));
+        float edge = smoothstep(0.0, 0.82, facing);
+        vec3 color = mix(vec3(0.92, 0.16, 0.035), vec3(4.0, 2.65, 1.45), core * (0.63 + 0.37 * edge));
+        float alpha = edge * (1.0 - smoothstep(0.03, 1.0, vUv.y)) * power * (0.88 + 0.06 * ripple);
         gl_FragColor = vec4(color, alpha);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
@@ -65,18 +79,22 @@ function addRocket(model: AircraftModel) {
 
 export function buildX15() {
   const livery = aircraftLivery('x15')
-  const m = createMaterials(livery, paintDarkFuselage(livery), paintX15Tail(livery))
-  m.fuselage.clearcoat = m.wing.clearcoat = m.tail.clearcoat = 0.12
-  m.fuselage.roughness = m.wing.roughness = m.tail.roughness = 0.64
+  const m = createMaterials(livery, paintX15Fuselage(livery), paintX15Tail(livery))
+  for (const skin of [m.fuselage, m.wing, m.tail, m.paint, m.belly]) {
+    skin.clearcoat = 0
+    skin.roughness = 0.75
+    skin.specularIntensity = 0.32
+  }
   m.wing.color.set(livery.base)
-  m.wingDark.color.set('#35353a')
+  m.wingDark.color.set('#2c2e33')
   m.glass.color.set('#1b242e')
   const model = newModel('x15', 'rocket', m)
   const { root } = model
 
   model.exteriorOnly.push(mesh(tubeGeometry([
-    { z: NOSE, hw: 0.03, hh: 0.03, yc: -0.12 },
-    { z: -7.58, hw: 0.20, hh: 0.18, yc: -0.09 },
+    { z: NOSE, hw: 0.016, hh: 0.016, yc: -0.12 },
+    { z: -7.82, hw: 0.10, hh: 0.085, yc: -0.11 },
+    { z: -7.52, hw: 0.23, hh: 0.19, yc: -0.09 },
     { z: -6.92, hw: 0.40, hh: 0.32, yc: -0.03 },
     { z: -5.90, hw: 0.57, hh: 0.48, yc: 0.02 },
     { z: -4.55, hw: 0.68, hh: 0.59, yc: 0.03 },
@@ -89,19 +107,18 @@ export function buildX15() {
 
   const canopy = tubeGeometry([
     { z: -6.53, hw: 0.05, hh: 0.015, yc: 0.41 },
-    { z: -5.73, hw: 0.35, hh: 0.27, yc: 0.52 },
-    { z: -5.26, hw: 0.43, hh: 0.36, yc: 0.57 },
-    { z: -4.53, hw: 0.44, hh: 0.37, yc: 0.56 },
-    { z: -3.70, hw: 0.41, hh: 0.21, yc: 0.57 },
-    { z: -2.90, hw: 0.23, hh: 0.04, yc: 0.62 },
-  ], 28, 2.65)
-  // The small left and right windshields sit in an otherwise opaque canopy.
-  model.exteriorOnly.push(mesh(canopy, m.paint, root, 'canopy'))
+    { z: -6.17, hw: 0.23, hh: 0.10, yc: 0.44 },
+    { z: -5.73, hw: 0.33, hh: 0.22, yc: 0.49 },
+    { z: -5.24, hw: 0.40, hh: 0.29, yc: 0.54 },
+    { z: -4.53, hw: 0.43, hh: 0.31, yc: 0.56 },
+    { z: -3.70, hw: 0.40, hh: 0.20, yc: 0.58 },
+    { z: -2.76, hw: 0.17, hh: 0.04, yc: 0.61 },
+  ], 32, 2.35)
+  const canopyMaterial = m.paint.clone()
+  canopyMaterial.color.set(0xffffff)
+  canopyMaterial.map = paintX15Canopy(livery)
+  model.exteriorOnly.push(mesh(canopy, canopyMaterial, root, 'canopy'))
   for (const side of [1, -1]) {
-    const glass = new BoxGeometry(0.25, 0.027, 0.63)
-    glass.rotateZ(-side * 0.82).rotateX(-0.32)
-    glass.translate(side * 0.28, 0.73, -5.65)
-    model.exteriorOnly.push(mesh(glass, m.glass, root, 'windshield'))
     const strake = tubeGeometry([
       { z: -2.5, hw: 0.01, hh: 0.02, yc: -0.34 },
       { z: -0.7, hw: 0.17, hh: 0.17, yc: -0.34 },

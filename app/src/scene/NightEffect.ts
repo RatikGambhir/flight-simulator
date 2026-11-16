@@ -3,12 +3,13 @@
 
 import { BlendFunction, CopyPass, Effect, EffectAttribute } from 'postprocessing'
 import {
-  Color, DataTexture, ImageLoader, LinearFilter, LinearMipmapLinearFilter, Matrix4,
+  Color, DataTexture, ImageLoader, LinearFilter, LinearMipmapLinearFilter, MathUtils, Matrix4,
   RedFormat, RepeatWrapping, Uniform, Vector2, Vector3, Vector4,
   type PerspectiveCamera, type Texture, type WebGLRenderer,
 } from 'three'
 
 export const MAX_LAMPS = 16
+const SKY_GLOW = new Color(0.0010, 0.00135, 0.00215)
 
 export interface Lamp {
   /** World position. */
@@ -296,7 +297,7 @@ export class NightEffect extends Effect {
         ['night', new Uniform(0)],
         ['moonlight', new Uniform(0.62)],
         ['ambient', new Uniform(new Color(0.013, 0.016, 0.022))],
-        ['skyGlow', new Uniform(new Color(0.0010, 0.00135, 0.00215))],
+        ['skyGlow', new Uniform(SKY_GLOW.clone())],
         ['aspect', new Uniform(1)],
         ['logFar', new Uniform(1)],
         ['horizonDip', new Uniform(0)],
@@ -413,6 +414,10 @@ export class NightEffect extends Effect {
     ;(u.get('worldUp')!.value as Vector3).copy(up)
     ;(u.get('eyePosition')!.value as Vector3).setFromMatrixPosition(camera.matrixWorld)
     u.get('night')!.value = night
+    // The local horizon haze approximates low-altitude airglow. Fade it out
+    // above the stratosphere so the sky shader alone draws the atmospheric limb.
+    const airglow = 1 - MathUtils.smoothstep(eyeHeight, 24_000, 46_000)
+    ;(u.get('skyGlow')!.value as Color).copy(SKY_GLOW).multiplyScalar(airglow)
     this.updateLightFrame()
     u.get('moonlight')!.value = 0.62 + 0.38 * moon
     // Sine of the angle below local horizontal at which the Earth falls away.

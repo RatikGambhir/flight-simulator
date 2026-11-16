@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -8,11 +8,17 @@ import { build } from 'vite'
 const destination = process.argv[2]
 const output = destination ?? await mkdtemp(join(tmpdir(), 'geoflight-graphics-'))
 try {
+  // The native fixture uses an opaque file:// origin. Inline the same JPEG so
+  // WebKit can upload it as a WebGL texture without a local server.
+  const lunarMap = await readFile(new URL('../public/atmosphere/moon-color.jpg', import.meta.url))
   await build({
     configFile: false,
     publicDir: false,
     logLevel: 'error',
-    define: { 'import.meta.url': 'document.baseURI' },
+    define: {
+      'import.meta.url': 'document.baseURI',
+      __LUNAR_TEST_MAP__: JSON.stringify(`data:image/jpeg;base64,${lunarMap.toString('base64')}`),
+    },
     build: {
       outDir: output,
       rollupOptions: {

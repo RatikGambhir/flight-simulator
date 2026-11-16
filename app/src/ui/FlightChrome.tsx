@@ -56,7 +56,7 @@ function TakeoffGuide() {
       else if ((s[S.FLAPS_INDEX] | 0) > 0) next = { key: '[', text: 'Flaps up, one notch at a time as speed builds' }
       else {
         done.current = true
-        next = rocket ? { key: pull, text: 'For a space climb, ease the nose up to about 45°' }
+        next = rocket ? { key: '', text: 'Enter an altitude and select Fly climb to climb and hold it' }
           : { key: 'Z', text: 'Airborne! Press Z and the autopilot flies you to your destination, or fly it yourself' }
         setTimeout(() => setStep(null), 6000)
       }

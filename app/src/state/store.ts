@@ -35,6 +35,9 @@ export interface Settings {
   liveWeather: boolean
   /** Local solar hour (0-24) when realTime is off. */
   timeOfDay: number
+  /** Local solar calendar date. Empty uses today's date. */
+  skyDate: string
+  advanceSkyTime: boolean
   invertPitch: boolean
   sensitivity: number
   assist: boolean
@@ -68,6 +71,8 @@ const DEFAULTS: Settings = {
   liveWeather: !!env.VITE_GOOGLE_MAPS_API_KEY,
   realTime: true,
   timeOfDay: 15.5,
+  skyDate: '',
+  advanceSkyTime: false,
   invertPitch: false,
   sensitivity: 0.75,
   assist: true,

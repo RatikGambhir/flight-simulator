@@ -35,7 +35,7 @@ export const LIVERIES: Record<string, Livery> = {
   // Two-tone air-superiority grey: medium sides, light underside, dark spine.
   f16: { base: '#5f676e', belly: '#7b838a', stripe: '#454c53', accent: '#1f2226', tail: '#5f676e', tailLogo: '#383e44', title: 'U.S. AIR FORCE', military: true },
   sr71: { base: '#282b30', belly: '#22252a', stripe: '#777c80', accent: '#a2483c', tail: '#25282d', tailLogo: '#aa5547', title: 'U.S. AIR FORCE', military: true },
-  x15: { base: '#303036', belly: '#25252b', stripe: '#dedcd5', accent: '#ac4036', tail: '#28292d', tailLogo: '#efc14e', title: 'U.S. AIR FORCE', military: true },
+  x15: { base: '#222428', belly: '#181a1e', stripe: '#dbdbd3', accent: '#ac4036', tail: '#222428', tailLogo: '#d7aa40', title: 'U.S. AIR FORCE', military: true },
   c5m: { base: '#777f86', belly: '#697177', stripe: '#333a41', accent: '#aab0b4', tail: '#737b82', tailLogo: '#353c43', title: 'U.S. AIR FORCE', military: true },
   c17: { base: '#858c91', belly: '#6d757b', stripe: '#3e474f', accent: '#a0a8ad', tail: '#7c848a', tailLogo: '#3e474f', title: 'U.S. AIR FORCE', military: true },
 }
@@ -201,6 +201,74 @@ export function paintBlackbirdAirfoil(livery: Livery): Texture {
   tex.anisotropy = 4
   tex.colorSpace = SRGBColorSpace
   return tex
+}
+
+/** Inconel panels and markings in the X-15 fuselage's wraparound UVs. */
+export function paintX15Fuselage(livery: Livery): Texture {
+  const canvas = document.createElement('canvas')
+  const width = canvas.width = 512
+  const height = canvas.height = 1024
+  const g = canvas.getContext('2d')!
+  const skin = g.createLinearGradient(0, 0, width, 0)
+  skin.addColorStop(0, livery.base)
+  skin.addColorStop(0.5, livery.belly)
+  skin.addColorStop(1, livery.base)
+  g.fillStyle = skin
+  g.fillRect(0, 0, width, height)
+  g.fillStyle = '#181a1d'
+  g.fillRect(0, 0, width, 72)
+  for (const [start, end] of [[197, 251], [318, 468], [555, 682], [789, 914]]) {
+    g.fillStyle = '#ffffff06'
+    g.fillRect(0, start, width, end - start)
+    g.fillStyle = '#00000040'
+    g.fillRect(0, start, width, 2)
+    g.fillRect(0, end, width, 2)
+  }
+  for (const u of [0.14, 0.36, 0.64, 0.86]) g.fillRect(width * u, 197, 1, 717)
+  paintSideTitles(g, livery, width, height, 0.23, 0.47, 25)
+  paintSideTitles(g, { ...livery, title: '66672' }, width, height, 0.23, 0.82, 24)
+  g.fillStyle = livery.accent
+  for (const u of [0.19, 0.81]) g.fillRect(width * u - 8, 226, 16, 5)
+  const texture = new CanvasTexture(canvas)
+  texture.flipY = false
+  texture.wrapS = RepeatWrapping
+  texture.colorSpace = SRGBColorSpace
+  texture.anisotropy = 4
+  return texture
+}
+
+/** Flush, narrow windshields on either side of the canopy's center frame. */
+export function paintX15Canopy(livery: Livery): Texture {
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = 256
+  const g = canvas.getContext('2d')!
+  g.fillStyle = livery.base
+  g.fillRect(0, 0, 256, 256)
+  g.scale(256, 256)
+  const glass = g.createLinearGradient(0, 0.18, 0, 0.52)
+  glass.addColorStop(0, '#455362')
+  glass.addColorStop(0.5, '#273746')
+  glass.addColorStop(1, '#111c26')
+  for (const side of [1, -1]) {
+    const u = (value: number) => side === 1 ? value : 1 - value
+    g.beginPath()
+    g.moveTo(u(0.064), 0.18)
+    g.lineTo(u(0.198), 0.29)
+    g.lineTo(u(0.169), 0.52)
+    g.lineTo(u(0.039), 0.49)
+    g.closePath()
+    g.fillStyle = glass
+    g.fill()
+    g.strokeStyle = '#17191d'
+    g.lineWidth = 0.014
+    g.stroke()
+  }
+  const texture = new CanvasTexture(canvas)
+  texture.flipY = false
+  texture.wrapS = RepeatWrapping
+  texture.colorSpace = SRGBColorSpace
+  texture.anisotropy = 4
+  return texture
 }
 
 /** X-15-3's yellow NASA fin marking and tail number, in chord/span UVs. */

@@ -84,7 +84,7 @@ pub enum SimCommand {
         mach: f64,
         ground_elevation_ft: Option<f64>,
     },
-    /// Guide a physical X-15 climb toward the requested apogee.
+    /// Engage X-15 climb guidance and capture the selected altitude.
     ClimbRocket { altitude_ft: f64 },
     CancelRocketClimb,
     SpawnRunway {
