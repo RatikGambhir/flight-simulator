@@ -202,12 +202,36 @@ async function renderChecks() {
   check(Math.max(...space) < 3 && limb[2] > 20,
     `Above the atmosphere, only rays intersecting its curved limb show blue (${space}; ${limb})`)
 
-  // Just inside the atmosphere's outer edge, the night gradient used to
-  // color empty sky blue and leave a dark stripe above the real limb.
+  // At the X-15 recording's altitude the old altitude fade removed all night
+  // haze, leaving a black band between the distant clouds and the star field.
+  camera.position.y = 172_000 * 0.3048
+  camera.updateMatrixWorld()
+  const dawnElevation = -15.14 * Math.PI / 180
+  const dawnAzimuth = 41.21 * Math.PI / 180
+  const dawnSun = new Vector3(Math.sin(dawnElevation),
+    Math.cos(dawnElevation) * Math.sin(dawnAzimuth), Math.cos(dawnElevation) * Math.cos(dawnAzimuth))
+  render(0, 0, false, dawnSun)
+  const darkHorizon = pixel(0.5, 0.38)
+  render(0, 1, false, dawnSun)
+  const litHorizon = pixel(0.5, 0.38)
+  check(delta(darkHorizon, litHorizon) > 5 && litHorizon[2] > 8,
+    `At 172,000 ft the true night horizon retains faint atmospheric glow (${darkHorizon}; ${litHorizon})`)
+  let largestStep = 0
+  let previous = litHorizon
+  for (let row = Math.floor(0.38 * HEIGHT) + 1; row < Math.floor(0.7 * HEIGHT); row++) {
+    const current = pixel(0.5, (row + 0.5) / HEIGHT)
+    largestStep = Math.max(largestStep, delta(previous, current))
+    previous = current
+  }
+  check(largestStep <= 8 && Math.max(...previous) < 4,
+    `The night limb grades smoothly into space (largest adjacent-pixel change ${largestStep})`)
+
+  // Above the haze shell, upward rays miss it and the atmosphere still fades
+  // into black space without a second haze band near the local horizontal.
   camera.position.y = 190_600 * 0.3048
   camera.updateMatrixWorld()
   render(-0.12, 0, true)
-  const twilightRows = [0.34, 0.4, 0.46, 0.55, 0.7]
+  const twilightRows = [0.49, 0.55, 0.7]
   const upperSky = twilightRows.map(y => pixel(0.5, y))
   render(-0.12, 0.8, true)
   check(upperSky.every((rgb, i) => delta(rgb, pixel(0.5, twilightRows[i])) < 3),
@@ -582,9 +606,11 @@ async function renderChecks() {
   aerial.lightingMask = { map: aircraftMask, channel: 'r' }
   coverage = 0.65
   night.setFrame(camera, 0, 0, up, [], rocketHeight)
-  const clearRocket = cloudFrame()
+  cloudFrame()
+  const clearRocketSky = pixel(0.5, 0.7)
   night.setFrame(camera, 0.8, 0, up, [], rocketHeight)
-  check(meanDifference(clearRocket, cloudFrame()) < 0.01, 'The X-15 sky stays free of the high-altitude haze band with default clouds')
+  const clearRocket = cloudFrame()
+  check(delta(clearRocketSky, pixel(0.5, 0.7)) < 3, 'The X-15 view with default clouds leaves the upper sky free of haze')
   rocket.exhaust(0.85, 0, 1, 4)
   check(meanDifference(clearRocket, cloudFrame()) > 0.015, 'The X-15 exhaust renders in its high-altitude exterior view')
   scene.remove(light, fill, rocket.root)

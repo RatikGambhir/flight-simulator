@@ -3,13 +3,14 @@
 
 import { BlendFunction, CopyPass, Effect, EffectAttribute } from 'postprocessing'
 import {
-  Color, DataTexture, ImageLoader, LinearFilter, LinearMipmapLinearFilter, MathUtils, Matrix4,
+  Color, DataTexture, ImageLoader, LinearFilter, LinearMipmapLinearFilter, Matrix4,
   RedFormat, RepeatWrapping, Uniform, Vector2, Vector3, Vector4,
   type PerspectiveCamera, type Texture, type WebGLRenderer,
 } from 'three'
 
 export const MAX_LAMPS = 16
 const SKY_GLOW = new Color(0.0010, 0.00135, 0.00215)
+const EARTH_RADIUS = 6_371_000
 
 export interface Lamp {
   /** World position. */
@@ -29,6 +30,7 @@ uniform vec3 skyGlow;
 uniform float aspect;
 uniform float logFar;
 uniform float horizonDip;
+uniform float eyeHeight;
 uniform vec3 viewRight;
 uniform vec3 viewUp;
 uniform vec3 viewForward;
@@ -155,6 +157,31 @@ vec3 cityRadiance(const vec3 worldPosition, const vec3 albedo, const float luma,
   return glow * terrain * (1.0 - smoothstep(180000.0, 300000.0, range)) / (1.0 + d * d);
 }
 
+float curvedHaze(const float rayUp, const bool surface, const float range) {
+  const float radius = ${EARTH_RADIUS.toFixed(1)};
+  const float ceiling = 56000.0;
+  float closest = -(radius + eyeHeight) * rayUp;
+  float shellDiscriminant = closest * closest + (ceiling - eyeHeight) * (2.0 * radius + ceiling + eyeHeight);
+  if (shellDiscriminant <= 0.0) return 0.0;
+  float halfChord = sqrt(shellDiscriminant);
+  float entry = max(0.0, closest - halfChord);
+  float exit = closest + halfChord;
+  // Use scene depth when scenery is present and the Earth itself as the fallback.
+  if (surface) {
+    exit = min(exit, range);
+  } else {
+    float groundDiscriminant = closest * closest - eyeHeight * (2.0 * radius + eyeHeight);
+    if (closest > 0.0 && groundDiscriminant >= 0.0) exit = closest - sqrt(groundDiscriminant);
+  }
+  float span = max(0.0, exit - entry);
+  // Density falls to zero at the outer radius. Integrate its quadratic profile
+  // along the visible chord so grazing rays fade out smoothly at the limb.
+  float midpoint = entry + 0.5 * span - closest;
+  float density = (shellDiscriminant - midpoint * midpoint - span * span / 12.0) /
+    (ceiling * (2.0 * radius + ceiling));
+  return 1.0 - exp(-span * max(0.0, density) / 52000.0);
+}
+
 void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
   vec3 c = inputColor.rgb;
   if (night > 0.001) {
@@ -162,21 +189,26 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
     bool surface = depth < 1.0;
     vec2 ndc = uv * 2.0 - 1.0;
     vec3 ray = viewForward + ndc.x * viewRight + ndc.y * viewUp;
-    float viewDepth = min(300000.0, exp2(depth * logFar) - 1.0);
-    float range = viewDepth * length(ray);
+    float viewDepth = exp2(depth * logFar) - 1.0;
+    float rayLength = length(ray);
+    float range = viewDepth * rayLength;
     float terrain = surface && hasLightingMask ? texture2D(lightingMask, uv).r : 0.0;
     vec3 raw = max(texture2D(sceneAlbedo, uv).rgb, 0.0);
     float luma = dot(raw, vec3(0.2126, 0.7152, 0.0722));
 
     // A continuous haze at the curved horizon blends distant terrain into the sky.
     // Close surfaces occlude the haze, including the aircraft and cockpit.
-    float h = dot(normalize(ray), worldUp) + horizonDip;
+    float rayUp = dot(ray, worldUp) / rayLength;
+    float h = rayUp + horizonDip;
     vec3 airglow = skyGlow * (0.40 + 1.1 * exp(-max(h, 0.0) * 7.0));
     float surfaceHaze = 1.0 - exp(-range / 52000.0);
     // The grazing band should have the same airglow on either side of the
     // skyline, even when distant terrain is still streaming in.
     float skyHaze = smoothstep(-0.075, -0.008, h);
     float haze = surface ? surfaceHaze : skyHaze;
+    if (eyeHeight > 24000.0) {
+      haze = mix(haze, curvedHaze(rayUp, surface, range), smoothstep(24000.0, 46000.0, eyeHeight));
+    }
     vec3 fill = (1.0 - haze) * terrain * ambient * mix(vec3(luma), raw, 0.25) * moonlight;
     vec3 emission = airglow * haze + fill;
     if (hasCityLights) {
@@ -301,6 +333,7 @@ export class NightEffect extends Effect {
         ['aspect', new Uniform(1)],
         ['logFar', new Uniform(1)],
         ['horizonDip', new Uniform(0)],
+        ['eyeHeight', new Uniform(0)],
         ['viewRight', new Uniform(new Vector3(1, 0, 0))],
         ['viewUp', new Uniform(new Vector3(0, 1, 0))],
         ['viewForward', new Uniform(new Vector3(0, 0, -1))],
@@ -414,14 +447,11 @@ export class NightEffect extends Effect {
     ;(u.get('worldUp')!.value as Vector3).copy(up)
     ;(u.get('eyePosition')!.value as Vector3).setFromMatrixPosition(camera.matrixWorld)
     u.get('night')!.value = night
-    // The local horizon haze approximates low-altitude airglow. Fade it out
-    // above the stratosphere so the sky shader alone draws the atmospheric limb.
-    const airglow = 1 - MathUtils.smoothstep(eyeHeight, 24_000, 46_000)
-    ;(u.get('skyGlow')!.value as Color).copy(SKY_GLOW).multiplyScalar(airglow)
+    u.get('eyeHeight')!.value = Math.max(0, eyeHeight)
     this.updateLightFrame()
     u.get('moonlight')!.value = 0.62 + 0.38 * moon
     // Sine of the angle below local horizontal at which the Earth falls away.
-    const heightRatio = Math.max(0, eyeHeight) / 6371000
+    const heightRatio = Math.max(0, eyeHeight) / EARTH_RADIUS
     u.get('horizonDip')!.value = Math.sqrt(heightRatio * (2 + heightRatio)) / (1 + heightRatio)
     u.get('aspect')!.value = camera.aspect
     const at = u.get('lampAt')!.value as Vector3[]

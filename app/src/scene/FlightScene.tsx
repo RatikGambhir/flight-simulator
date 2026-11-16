@@ -347,7 +347,8 @@ function SceneContents() {
         {/* Finish lighting before the flare samples the image. Precipitation only
             reads its own pixel, so it rides in the same pass after the grade. */}
         <EffectGroup>
-          <LensFlare />
+          {/* The displaced chromatic halo appears as a detached rainbow spot. */}
+          <LensFlare featuresMaterial-haloAmount={0} />
           <ToneMapping mode={ToneMappingMode.AGX} />
           <primitive object={grade} />
           <primitive object={precipitation} />
