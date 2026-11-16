@@ -1,0 +1,94 @@
+name: Deploy web simulator
+
+# Builds the simulator for the browser (Rust sim core -> WebAssembly, React/Three.js
+# front end -> Vite) and hosts it on the `web` service of the geoflight-site
+# Railway project, next to the marketing `site` service.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - '!app/src-tauri/**'
+      - '.github/workflows/deploy-web.yml'
+  workflow_dispatch:
+
+# A newer push supersedes an older one; only the latest commit needs to go live.
+concurrency:
+  group: deploy-web
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: app
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app -> target
+          key: wasm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run simulation tests
+        run: cargo test -p sim-core
+
+      - name: Build simulation core (WebAssembly)
+        run: npm run build:wasm
+
+      # No map keys are baked in: the browser build starts on the open imagery
+      # provider and players can paste their own Google / Cesium key in Settings.
+      - name: Build browser bundle
+        run: npm run build
+
+      - name: Stage Railway upload
+        run: |
+          mkdir -p web-upload
+          cp deploy/web/Dockerfile deploy/web/Caddyfile web-upload/
+          cp -R dist web-upload/site
+          test -f web-upload/site/sim/sim.wasm
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: geoflight-web
+          path: app/web-upload
+          include-hidden-files: true
+          retention-days: 7
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      # Project token for the geoflight-site Railway project (shared with deploy-site).
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_SERVICE_ID: 8f75c9fd-15c6-4bb5-9964-c163ed3151ca
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: geoflight-web
+          path: ${{ runner.temp }}/geoflight-web
+
+      # Railway builds the Caddy image from the staged Dockerfile and serves the
+      # prebuilt bundle. --ci waits and fails the job if the deploy fails.
+      - name: Deploy to Railway
+        working-directory: ${{ runner.temp }}
+        run: npx --yes @railway/cli@5.74.0 up geoflight-web --path-as-root --ci --service "$RAILWAY_SERVICE_ID"

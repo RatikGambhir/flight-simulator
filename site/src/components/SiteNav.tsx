@@ -4,7 +4,7 @@ import { ArrowDownToLine, Menu } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
-import { NAV_LINKS } from '@/lib/site'
+import { NAV_LINKS, WEB_APP_URL } from '@/lib/site'
 import { useDownloadUrl } from '@/lib/latest-release'
 import { EASE_OUT } from '@/lib/motion'
 
@@ -62,6 +62,11 @@ export function SiteNav() {
         </ul>
 
         <div className="flex items-center gap-2">
+          <Button asChild size="lg" variant="ghost" className="hidden rounded-full px-4 text-white/80 lg:inline-flex">
+            <a href={WEB_APP_URL} target="_blank" rel="noreferrer">
+              Fly in browser
+            </a>
+          </Button>
           <Button asChild size="lg" className="hidden rounded-full px-4 sm:inline-flex">
             <a href={downloadUrl} target="_blank" rel="noreferrer">
               <ArrowDownToLine data-icon="inline-start" aria-hidden />
@@ -94,7 +99,12 @@ export function SiteNav() {
                   </li>
                 ))}
               </ul>
-              <div className="mt-auto p-4">
+              <div className="mt-auto flex flex-col gap-2 p-4">
+                <Button asChild size="xl" variant="outline" className="w-full border-white/20 bg-white/5">
+                  <a href={WEB_APP_URL} target="_blank" rel="noreferrer">
+                    Fly in your browser
+                  </a>
+                </Button>
                 <Button asChild size="xl" className="w-full">
                   <a href={downloadUrl} target="_blank" rel="noreferrer">
                     <ArrowDownToLine data-icon="inline-start" aria-hidden />
