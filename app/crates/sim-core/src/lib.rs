@@ -29,10 +29,14 @@ pub struct AircraftInfo {
     pub index: usize,
     #[serde(flatten)]
     pub spec: &'static aircraft::AircraftSpec,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_mach: Option<f64>,
 }
 
 pub fn aircraft_list() -> Vec<AircraftInfo> {
-    aircraft::catalog().iter().enumerate().map(|(index, spec)| AircraftInfo { index, spec }).collect()
+    aircraft::catalog().iter().enumerate()
+        .map(|(index, spec)| AircraftInfo { index, spec, max_mach: spec.max_mach() })
+        .collect()
 }
 
 /// Request/response API shared by all hosts (JSON in, JSON out) so the

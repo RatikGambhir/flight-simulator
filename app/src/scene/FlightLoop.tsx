@@ -8,17 +8,19 @@ import { MathUtils, Raycaster, Vector2, Vector3, type DirectionalLight, type Hem
 import type { AircraftController } from '../aircraft/aircraftController'
 import { sound } from '../audio/sound'
 import { CameraRig, type AircraftPose } from '../camera/cameraRig'
+import { isRocket } from '../flight'
 import { controls } from '../input/controls'
 import { destinationPoint } from '../navigation/route'
 import { Flags, S, type SimCommand } from '../sim/protocol'
 import { sim } from '../sim/simClient'
 import { useApp } from '../state/store'
+import { useAircraftSpec } from '../ui/useAircraftList'
 import { CUMULUS, cloudProfileForWeather } from '../weather/cloudProfiles'
 import { CLEAR_HAZE, pollWeather, useWeather, visualTargets, type Conditions } from '../weather/liveWeather'
 import { enuBasis, frame } from '../world/frame'
 import type { WorldSystem } from '../world/worldSystem'
 import { setCloudNightLighting } from './cloudRendering'
-import { sceneDate, type CelestialState } from './celestial'
+import { SceneClock, type CelestialState } from './celestial'
 import type { LakeWater } from './LakeWater'
 import type { NightEffect } from './NightEffect'
 import type { Ocean } from './Ocean'
@@ -72,7 +74,8 @@ export function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, oc
   const camera = useThree((s) => s.camera) as PerspectiveCamera
   const gl = useThree((s) => s.gl)
   const rig = useMemo(() => new CameraRig(camera), [camera])
-  const state = useRef({ gen: -1, spawnAt: 0, lastProbe: 0, lastCollision: 0, lastTerrain: 0, geoid: 0, lastGeoid: 0, groundSamples: 0, lastSun: -1e9, realTime: false, timeOfDay: -1, phase: '' as string, dark: 0, moon: 0 })
+  const skyClock = useMemo(() => new SceneClock(), [])
+  const state = useRef({ gen: -1, spawnAt: 0, lastProbe: 0, lastCollision: 0, lastTerrain: 0, geoid: 0, lastGeoid: 0, groundSamples: 0, lastSun: -1e9, phase: '' as string, dark: 0, moon: 0 })
   // Live weather as currently drawn; eased towards each new report.
   const weather = useRef({
     lastPoll: -1e9,
@@ -92,6 +95,7 @@ export function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, oc
   useEffect(() => {
     rig.cockpitLookPitch = aircraft.model.cockpitLookPitch ?? -0.2
   }, [rig, aircraft])
+  const spaceFlight = isRocket(useAircraftSpec(aircraft.id))
   // Reused every frame (no per-frame allocation).
   const pose = useMemo<AircraftPose>(
     () => ({
@@ -104,10 +108,11 @@ export function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, oc
       wingTip: aircraft.model.wingTipRight,
       specificForce: new Vector3(0, 1, 0),
       heightAboveGround: 0,
+      spaceFlight,
       onGround: true,
       groundSpeed: 0,
     }),
-    [aircraft],
+    [aircraft, spaceFlight],
   )
 
   // Mouse: drag to orbit / look, wheel to zoom, double-click to reset.
@@ -207,14 +212,16 @@ export function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, oc
 
     // Atmosphere / sun. The sun barely moves, so the ephemeris runs at 4 Hz.
     const atm = atmosphere.current
-    const settings = useApp.getState().settings
+    const app = useApp.getState()
+    const { settings } = app
+    const flags = s[S.FLAGS] | 0
+    const advancing = app.phase === 'flying' && !(flags & (Flags.PAUSED | Flags.CRASHED | Flags.AWAITING_GROUND))
+    const clockChanged = skyClock.tick(settings, s[S.LON], s[S.TIME], advancing ? s[S.TIME_SCALE] : 0)
     let sunWorld: Vector3 | null = null
     if (atm) {
-      if (now - st.lastSun > 250 || settings.realTime !== st.realTime || (!settings.realTime && settings.timeOfDay !== st.timeOfDay)) {
+      if (now - st.lastSun > 250 || clockChanged) {
         st.lastSun = now
-        st.realTime = settings.realTime
-        st.timeOfDay = settings.timeOfDay
-        celestial.update(sceneDate(settings.realTime, settings.timeOfDay, s[S.LON]), _observer.set(r.x, r.y, r.z))
+        celestial.update(skyClock.date(settings, s[S.LON]), _observer.set(r.x, r.y, r.z))
         atm.inertialToECEFMatrix.copy(celestial.inertialToECEF)
         atm.sunDirection.copy(celestial.sunDirection)
         atm.moonDirection.copy(celestial.moonDirection)
@@ -224,7 +231,6 @@ export function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, oc
     }
 
     // Aircraft and lights.
-    const app = useApp.getState()
     // Behind the menu, slowly orbit the parked aircraft as a live preview.
     const mode = app.phase === 'menu' ? 'free' : app.camera
     if (app.phase === 'menu') rig.yaw += dt * 0.05
@@ -276,7 +282,6 @@ export function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, oc
     if (controls.look.x || controls.look.y) rig.drag(controls.look.x * 600 * dt, controls.look.y * 600 * dt)
     frame.enuInWorld(s[S.LAT], s[S.LON], _e, _n, _u)
     _vel.set(0, 0, 0).addScaledVector(_e, s[S.VEL_E]).addScaledVector(_n, s[S.VEL_N]).addScaledVector(_u, s[S.VEL_U])
-    const flags = s[S.FLAGS] | 0
     const awaiting = (flags & Flags.AWAITING_GROUND) !== 0
     const onGround = (flags & Flags.ON_GROUND) !== 0
     pose.velocity.copy(_vel)
@@ -328,6 +333,7 @@ export function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, oc
     wx.eye.copy(camera.position)
     wx.eyeOrigin = frame.version
     const eyeHeight = s[S.HEIGHT] - st.geoid + _probe.copy(camera.position).sub(aircraft.position).dot(_u)
+    celestial.geoidHeight = st.geoid
     night.setFrame(camera, st.dark, st.moon, frame.upAt(camera.position, _eyeUp), aircraft.lamps, eyeHeight)
     precipitation.setFrame(camera, dt, wx.precip, wx.snow, _air, wx.eyeVelocity, _u, daylight * (1 - 0.3 * wx.coverage), gl.domElement.height)
 
@@ -373,11 +379,11 @@ export function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, oc
     sunThrough.current += (through - sunThrough.current) * Math.min(1, dt * 1.5)
 
     if (ocean) {
-      ocean.update(camera.position, st.geoid, now / 1000)
-      // Don't flood the view with water before the terrain around us has streamed in.
-      // ...and not at all well inland, where the sea shell sits far below the terrain.
+      // The local wave mesh has a finite radius. At suborbital altitudes the
+      // distant imagery already covers the ocean, including beyond that edge.
       const nearSeaLevel = s[S.GROUND_HEIGHT] - st.geoid < 80
-      ocean.mesh.visible = nearSeaLevel && (st.groundSamples > 0 || world.loadProgress > 0.95)
+      ocean.mesh.visible = eyeHeight < 40_000 && nearSeaLevel && (st.groundSamples > 0 || world.loadProgress > 0.95)
+      if (ocean.mesh.visible) ocean.update(camera.position, st.geoid, now / 1000)
     }
     lakes?.update(s[S.LAT], s[S.LON], now / 1000)
 
@@ -436,7 +442,7 @@ export function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, oc
     // Terrain awareness for the autopilot (2 Hz while it flies): the highest
     // surface or structure along the ground track out to ~10 km. Coarse tiles
     // are fine here; the autopilot keeps a generous margin above them.
-    if (!awaiting && !onGround && flags & Flags.AP_ENGAGED && now - st.lastTerrain > 500) {
+    if (!awaiting && !onGround && !pose.spaceFlight && flags & Flags.AP_ENGAGED && now - st.lastTerrain > 500) {
       st.lastTerrain = now
       const from = { lat: s[S.LAT], lon: s[S.LON] }
       const top = Math.max(s[S.HEIGHT] + 3000, 9500)

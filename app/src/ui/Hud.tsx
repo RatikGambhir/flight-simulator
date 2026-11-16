@@ -8,6 +8,7 @@ import { sim } from '../sim/simClient'
 import { useAircraftList } from './useAircraftList'
 import { useApp } from '../state/store'
 import { AutopilotTargets } from './AutopilotTargets'
+import { RocketFlight } from './RocketFlight'
 import { angleDelta, navigationTo } from '../navigation/route'
 import { landingRunway, lineupHeading } from '../navigation/runwayGuide'
 import { useWeather } from '../weather/liveWeather'
@@ -116,9 +117,10 @@ export function Hud() {
       const flags = s[S.FLAGS] | 0
       const spec = listRef.current[s[S.AIRCRAFT_INDEX] | 0]
       const mph = app.settings.groundSpeedMph
-      text(nodes.speed, fmt(mph ? s[S.GS_KT] * KT_TO_MPH : s[S.IAS_KT]))
-      text(nodes.gs, mph ? `AIRSPEED ${fmt(s[S.IAS_KT])} KT` : `GS ${fmt(s[S.GS_KT])}  TAS ${fmt(s[S.TAS_KT])}`)
-      text(nodes.mach, s[S.MACH] > 0.4 ? `M ${s[S.MACH].toFixed(2)}` : `G ${s[S.G_LOAD].toFixed(1)}`)
+      const rocket = spec?.engine === 'rocket'
+      text(nodes.speed, mph ? fmt(s[S.GS_KT] * KT_TO_MPH) : rocket ? s[S.MACH].toFixed(2) : fmt(s[S.IAS_KT]))
+      text(nodes.gs, rocket ? `TAS ${fmt(s[S.TAS_KT])} KT` : mph ? `AIRSPEED ${fmt(s[S.IAS_KT])} KT` : `GS ${fmt(s[S.GS_KT])}  TAS ${fmt(s[S.TAS_KT])}`)
+      text(nodes.mach, (rocket ? mph : s[S.MACH] > 0.4) ? `M ${s[S.MACH].toFixed(2)}` : `G ${s[S.G_LOAD].toFixed(1)}`)
       text(nodes.alt, fmt(Math.round(s[S.ALT_MSL_FT] / 10) * 10))
       const agl = s[S.AGL_FT]
       text(nodes.agl, agl < 2500 ? `RA ${fmt(agl)}` : '')
@@ -185,7 +187,7 @@ export function Hud() {
         color(nodes.gear, gear > 0.99 ? '#55e08a' : gear < 0.01 ? '#e9fbff' : '#ffb547')
       }
       const fi = s[S.FLAPS_INDEX] | 0
-      text(nodes.flaps, spec ? spec.flap_detents[fi] ?? String(fi) : String(fi))
+      text(nodes.flaps, rocket ? `${Math.round(s[S.ENGINE] * 100)}%` : spec ? spec.flap_detents[fi] ?? String(fi) : String(fi))
       text(nodes.spd, s[S.SPOILERS] > 0.05 ? 'EXT' : '—')
       color(nodes.spd, s[S.SPOILERS] > 0.05 ? '#ffb547' : '')
       text(nodes.brake, flags & Flags.PARKING_BRAKE ? 'PARK' : s[S.BRAKE] > 0 ? 'ON' : '—')
@@ -250,7 +252,7 @@ export function Hud() {
       <div className="hud-status" data-k="status" />
       <div className={`hud-side left box${groundSpeedMph ? ' ground-speed-mph' : ''}`}>
         <div className="hud-speed-header">
-          <div className="hud-unit">{groundSpeedMph ? 'GROUND SPEED' : 'AIRSPEED KT'}</div>
+          <div className="hud-unit">{groundSpeedMph ? 'GROUND SPEED' : aircraft?.engine === 'rocket' ? 'MACH' : 'AIRSPEED KT'}</div>
           <button type="button" className="btn hud-mph-toggle" aria-pressed={groundSpeedMph}
             aria-label="Show ground speed in MPH" title="Show ground speed in miles per hour"
             onKeyDown={(event) => {
@@ -288,7 +290,7 @@ export function Hud() {
             <b data-k="gear" />
           </div>
           <div className="cell">
-            <span className="hud-unit">FLAPS</span>
+            <span className="hud-unit">{aircraft?.engine === 'rocket' ? 'XLR99' : 'FLAPS'}</span>
             <b data-k="flaps" />
           </div>
           <div className="cell">
@@ -304,14 +306,15 @@ export function Hud() {
             <b data-k="gload" />
           </div>
         </div>
-        {aircraft && <AutopilotTargets key={aircraft.id} spec={aircraft} />}
+        {aircraft && (aircraft.engine === 'rocket' ? <RocketFlight spec={aircraft} /> : <AutopilotTargets key={aircraft.id} spec={aircraft} />)}
       </div>
       <div className="hud-coords box">
         <div data-k="wx" style={{ display: 'none' }} />
         <div data-k="coords" />
         <div className="faint" data-k="assist" />
       </div>
-      <div className="hud-ap box" data-k="apBox" data-tone="off" role="status" aria-live="polite" aria-label="Autopilot">
+      <div className="hud-ap box" data-k="apBox" data-tone="off" role="status" aria-live="polite" aria-label="Autopilot"
+        style={aircraft?.engine === 'rocket' ? { display: 'none' } : undefined}>
         <div className="ap-head">
           <b data-k="ap" />
           <span className="ap-phase" data-k="apPhase" />

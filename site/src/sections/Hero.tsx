@@ -6,6 +6,7 @@ import { Picture } from '@/components/Picture'
 import { EASE_OUT } from '@/lib/motion'
 import { PHOTOS } from '@/content/images'
 import { useDownloadUrl } from '@/lib/latest-release'
+import { WEB_APP_URL } from '@/lib/site'
 
 const HEADLINE = ['The world', 'is yours', 'to explore.']
 
@@ -54,7 +55,7 @@ export function Hero() {
       <motion.div style={{ y: copyY, opacity: copyOpacity }} className="mx-auto w-full max-w-6xl px-5 pb-10 sm:px-8 sm:pb-14">
         <motion.p {...intro(0.25)} className="label-mono mb-5 flex items-center gap-2 text-white/80">
           <span className="inline-block size-1.5 rounded-full bg-sun" aria-hidden />
-          Flight simulator for macOS
+          Flight simulator for macOS and the web
         </motion.p>
 
         <h1 id="hero-title" className="text-[clamp(3rem,7.2vw,6.25rem)] leading-[0.94] font-semibold tracking-[-0.045em]">
@@ -85,8 +86,8 @@ export function Hero() {
             </a>
           </Button>
           <Button asChild size="xl" variant="outline" className="border-white/20 bg-white/5 backdrop-blur-md hover:bg-white/10">
-            <a href="#features">
-              Explore Features
+            <a href={WEB_APP_URL} target="_blank" rel="noreferrer">
+              Fly in your browser
               <ArrowRight data-icon="inline-end" aria-hidden className="transition-transform duration-300 ease-out-expo group-hover/button:translate-x-0.5" />
             </a>
           </Button>

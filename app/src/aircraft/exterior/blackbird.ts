@@ -4,7 +4,7 @@ import {
 } from 'three'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { hingeFrame, revolveZ, toHingeLocal, tubeGeometry, wingPanelGeometry, wingPoint, type Station, type WingParams } from '../geometry'
-import { aircraftLivery, createMaterials, paintBlackbird, paintBlackbirdAirfoil } from '../materials'
+import { aircraftLivery, createMaterials, paintBlackbirdAirfoil, paintDarkFuselage } from '../materials'
 import type { LiveryId } from '../liveries'
 import { gearLeg, mesh, navLights, newModel, type AircraftModel } from './parts'
 
@@ -207,7 +207,7 @@ function addEngines(model: AircraftModel) {
 /** Procedural SR-71A, using the NASA three-view and production airframe dimensions. */
 export function buildBlackbird(theme?: LiveryId): AircraftModel {
   const livery = aircraftLivery('sr71', theme)
-  const materials = createMaterials(livery, paintBlackbird(livery), paintBlackbirdAirfoil(livery))
+  const materials = createMaterials(livery, paintDarkFuselage(livery), paintBlackbirdAirfoil(livery))
   materials.fuselage.emissive.set(0x000000)
   for (const material of [materials.fuselage, materials.paint, materials.belly, materials.tail, materials.accent]) {
     material.roughness = 0.68

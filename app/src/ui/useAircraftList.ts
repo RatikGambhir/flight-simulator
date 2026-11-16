@@ -18,3 +18,8 @@ export function useAircraftList(): AircraftSpec[] {
   }, [])
   return list
 }
+
+/** The spec for an aircraft id, once the list has loaded. */
+export function useAircraftSpec(id: string): AircraftSpec | undefined {
+  return useAircraftList().find((spec) => spec.id === id)
+}

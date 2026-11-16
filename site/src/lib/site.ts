@@ -6,6 +6,8 @@ export const DOWNLOAD_URL = `${REPO_URL}/releases/latest`
 export const LATEST_RELEASE_API_URL = 'https://api.github.com/repos/RatikGambhir/flight-simulator/releases/latest'
 export const RELEASES_URL = `${REPO_URL}/releases`
 export const SOURCE_README_URL = `${REPO_URL}/tree/main/app#readme`
+/** Browser build of the simulator: the `web` service of the geoflight-site Railway project (deploy-web workflow). */
+export const WEB_APP_URL = 'https://web-production-55c4131e.up.railway.app'
 
 export const NAV_LINKS = [
   { href: '#features', label: 'Features' },
@@ -17,11 +19,9 @@ export const NAV_LINKS = [
 export type Platform = {
   name: string
   detail: string
-  available: boolean
 }
 
 export const PLATFORMS: readonly Platform[] = [
-  { name: 'macOS', detail: 'macOS 13 Ventura or later · Universal (Apple Silicon + Intel)', available: true },
-  { name: 'Windows', detail: 'No release yet', available: false },
-  { name: 'Linux', detail: 'No release yet', available: false },
+  { name: 'macOS', detail: 'macOS 13 Ventura or later · Universal (Apple Silicon + Intel)' },
+  { name: 'Browser', detail: 'Chrome, Edge or Safari 16+ with WebGL 2 · nothing to install' },
 ]

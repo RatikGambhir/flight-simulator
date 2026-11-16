@@ -85,6 +85,7 @@ export const Flags = {
   AP_ENGAGED: 128,
   OVERSPEED: 256,
   TAILSTRIKE: 512,
+  ROCKET_CLIMB: 1024,
 } as const
 
 export const ApModes = { HEADING: 1, ALTITUDE: 2, AUTOTHROTTLE: 4, MANAGED: 8, SELECTED: 16, MACH: 32, MPH: 64 } as const
@@ -128,6 +129,12 @@ export interface SpawnRequest {
   keep_autopilot?: boolean
 }
 
+export interface RocketFlightState {
+  altitude_ft: number
+  mach: number
+  heading: number
+}
+
 export interface AutopilotCommand {
   engaged?: boolean
   heading_hold?: boolean
@@ -150,6 +157,9 @@ export interface FlightTargets {
 
 export type SimCommand =
   | ({ type: 'spawn' } & SpawnRequest)
+  | ({ type: 'spawn_rocket'; lat: number; lon: number; ground_elevation_ft?: number | null; keep_autopilot?: boolean } & RocketFlightState)
+  | { type: 'climb_rocket'; altitude_ft: number }
+  | { type: 'cancel_rocket_climb' }
   | { type: 'spawn_runway'; airport: string; runway?: string | null; kind: RunwaySpawnKind }
   | { type: 'reset' }
   | { type: 'set_aircraft'; id: string }
@@ -260,7 +270,7 @@ export interface AircraftSpec {
   length_m: number
   gear_height_m: number
   retractable_gear: boolean
-  engine: 'jet' | 'propeller'
+  engine: 'jet' | 'propeller' | 'rocket'
   engine_count: number
   max_thrust_n: number
   afterburner_thrust_n: number
@@ -274,5 +284,7 @@ export interface AircraftSpec {
   v_max_kt: number
   cruise_alt_ft: number
   max_alt_ft: number
+  /** Highest Mach number a flight-state placement may request (rocket aircraft only). */
+  max_mach?: number
   service_ceiling_note: string
 }

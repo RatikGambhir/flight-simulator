@@ -10,9 +10,11 @@ Original asset: https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/lroc_color
 
 The renderer treats the image as sRGB and uses Moon-fixed coordinates from
 Astronomy Engine to account for lunar rotation and libration. Orbital position,
-phase, distance-dependent angular size and observer parallax use the actual
-calendar date, time and aircraft ECEF location. Manual time changes the solar
-hour on today's local solar date. Stars use the bundled Yale Bright Star Catalog
+phase, distance-dependent angular size and observer parallax use the sky clock
+and camera's ECEF location. The Moon shares the existing atmosphere and cloud
+passes. Its horizon uses the WGS84 ellipsoid with a geoid offset and a
+standard-air refraction approximation. Manual time supports a local solar date
+and hour and can run at simulation speed. Stars use the bundled Yale Bright Star Catalog
 with the same inertial-to-Earth-to-local-frame transformation.
 
 # City lights

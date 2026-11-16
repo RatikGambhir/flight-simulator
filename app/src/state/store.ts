@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { liveryOptions, type LiveryId } from '../aircraft/liveries'
-import type { AirportDetail, RunwaySpawnKind, SpawnMode } from '../sim/protocol'
+import type { AirportDetail, RocketFlightState, RunwaySpawnKind, SpawnMode } from '../sim/protocol'
 
 export type Provider = 'google' | 'cesium' | 'open'
 export type CesiumMode = 'photorealistic' | 'terrain'
@@ -35,6 +35,9 @@ export interface Settings {
   liveWeather: boolean
   /** Local solar hour (0-24) when realTime is off. */
   timeOfDay: number
+  /** Local solar calendar date. Empty uses today's date. */
+  skyDate: string
+  advanceSkyTime: boolean
   invertPitch: boolean
   sensitivity: number
   assist: boolean
@@ -68,6 +71,8 @@ const DEFAULTS: Settings = {
   liveWeather: !!env.VITE_GOOGLE_MAPS_API_KEY,
   realTime: true,
   timeOfDay: 15.5,
+  skyDate: '',
+  advanceSkyTime: false,
   invertPitch: false,
   sensitivity: 0.75,
   assist: true,
@@ -127,6 +132,7 @@ function loadLiveries(): Record<string, LiveryId> {
 export type SpawnChoice =
   | { kind: 'runway'; airport: string; airportName: string; runway: string | null; mode: RunwaySpawnKind }
   | { kind: 'coords'; label: string; lat: number; lon: number; mode: SpawnMode; aglFt: number; heading: number; elevationFt: number | null; cruise?: boolean }
+  | ({ kind: 'rocket'; label: string; lat: number; lon: number; elevationFt: number | null } & RocketFlightState)
 
 /** The landing runway the autopilot chose (reported by the simulation). */
 export interface AutopilotRunway {

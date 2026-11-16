@@ -6,12 +6,14 @@
 use serde::Serialize;
 
 pub const BLACKBIRD_CRUISE_MACH: f64 = 3.2;
+pub const X15_MAX_MACH: f64 = 6.7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EngineKind {
     Jet,
     Propeller,
+    Rocket,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,6 +118,11 @@ pub struct AircraftSpec {
 }
 
 impl AircraftSpec {
+    /// Highest Mach number a flight-state placement may request (rocket aircraft only).
+    pub fn max_mach(&self) -> Option<f64> {
+        (self.engine == EngineKind::Rocket).then_some(X15_MAX_MACH)
+    }
+
     pub fn aspect_ratio(&self) -> f64 {
         self.wingspan_m * self.wingspan_m / self.wing_area_m2
     }
@@ -736,6 +743,63 @@ static CATALOG: &[AircraftSpec] = &[
         max_alt_ft: 45_000.0,
         autoland_max_gust_ms: 1.4,
         service_ceiling_note: "FL450",
+    },
+    AircraftSpec {
+        id: "x15",
+        name: "North American X-15",
+        manufacturer_style: "North American Aviation",
+        category: "NASA rocket research aircraft",
+        description: "Air-launched XLR99 rocket plane. Climb under rocket power, coast above the atmosphere and glide back to Earth.",
+        // Keep launch mass throughout the unlimited-fuel flight.
+        mass_kg: 14_186.0,
+        wing_area_m2: 18.6,
+        wingspan_m: 6.71,
+        length_m: 15.24,
+        gear_height_m: 1.53,
+        belly_height_m: 1.42,
+        wheelbase_m: 7.9,
+        retractable_gear: true,
+        rest_pitch_deg: 0.0,
+        tailstrike_pitch_deg: 7.0,
+        engine: EngineKind::Rocket,
+        engine_count: 1,
+        max_thrust_n: 253_550.0,
+        spool_time_s: 1.2,
+        idle_thrust: 0.0,
+        prop_power_w: 0.0,
+        afterburner_thrust_n: 0.0,
+        afterburner_detent: 0.0,
+        thrust_reversers: false,
+        cd0: 0.023,
+        oswald: 0.82,
+        cl0: 0.07,
+        cl_alpha: 3.9,
+        alpha_stall_deg: 22.0,
+        flap_cl: 0.0,
+        flap_cd: 0.0,
+        gear_cd: 0.035,
+        spoiler_cd: 0.16,
+        spoiler_cl: -0.06,
+        flap_detents: &["—"],
+        auto_flaps: false,
+        wave_drag_cd: 0.027,
+        drag_rise_mach: 0.85,
+        max_roll_rate: 45.0,
+        max_pitch_rate: 18.0,
+        max_yaw_rate: 9.0,
+        response_time_s: 0.6,
+        max_load_factor: 4.0,
+        min_load_factor: -1.0,
+        aerobatic: true,
+        full_authority_q: 5_000.0,
+        v_rotate_kt: 250.0,
+        v_approach_kt: 176.0,
+        v_cruise_kt: 235.0,
+        v_max_kt: 650.0,
+        cruise_alt_ft: 45_000.0,
+        max_alt_ft: 354_200.0,
+        autoland_max_gust_ms: 1.0,
+        service_ceiling_note: "354,200 ft (record)",
     },
 ];
 

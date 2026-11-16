@@ -1,13 +1,12 @@
 import { useRef } from 'react'
 import { motion, useReducedMotion, useScroll, useTransform } from 'motion/react'
-import { ArrowDownToLine, ArrowUpRight, Check, Laptop, Minus } from 'lucide-react'
+import { ArrowDownToLine, ArrowRight, ArrowUpRight, Check, Globe, Laptop } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Picture } from '@/components/Picture'
 import { Reveal } from '@/components/Reveal'
 import { PHOTOS } from '@/content/images'
-import { PLATFORMS, REPO_URL } from '@/lib/site'
+import { PLATFORMS, REPO_URL, WEB_APP_URL } from '@/lib/site'
 import { useDownloadUrl } from '@/lib/latest-release'
-import { cn } from '@/lib/utils'
 
 export function FinalCta() {
   const downloadUrl = useDownloadUrl()
@@ -35,7 +34,7 @@ export function FinalCta() {
         </Reveal>
         <Reveal delay={0.12}>
           <p className="mt-6 max-w-[44ch] text-base leading-relaxed text-white/75 sm:text-lg">
-            GeoFlight is free and open source. Download it, pick an airport, and see where the afternoon takes you.
+            GeoFlight is free and open source. Download it or fly right here in your browser, pick an airport, and see where the afternoon takes you.
           </p>
         </Reveal>
 
@@ -47,6 +46,12 @@ export function FinalCta() {
             </a>
           </Button>
           <Button asChild size="xl" variant="outline" className="w-full border-white/20 bg-white/5 backdrop-blur-md hover:bg-white/10 sm:w-auto">
+            <a href={WEB_APP_URL} target="_blank" rel="noreferrer">
+              Fly in your browser
+              <ArrowRight data-icon="inline-end" aria-hidden />
+            </a>
+          </Button>
+          <Button asChild size="xl" variant="ghost" className="w-full text-white/80 hover:bg-white/10 sm:w-auto">
             <a href={REPO_URL} target="_blank" rel="noreferrer">
               View source on GitHub
               <ArrowUpRight data-icon="inline-end" aria-hidden />
@@ -55,18 +60,18 @@ export function FinalCta() {
         </Reveal>
 
         <Reveal delay={0.24} className="mt-14 w-full max-w-2xl">
-          <ul className="grid overflow-hidden rounded-2xl border border-white/10 bg-black/30 text-left backdrop-blur-xl sm:grid-cols-3">
+          <ul className="grid overflow-hidden rounded-2xl border border-white/10 bg-black/30 text-left backdrop-blur-xl sm:grid-cols-2">
             {PLATFORMS.map((p) => (
-              <li key={p.name} className={cn('flex items-start gap-3 border-white/10 p-4 not-last:border-b sm:not-last:border-r sm:not-last:border-b-0', !p.available && 'opacity-60')}>
-                <Laptop className="mt-0.5 size-4 shrink-0 text-white/70" strokeWidth={1.75} aria-hidden />
+              <li key={p.name} className="flex items-start gap-3 border-white/10 p-4 not-last:border-b sm:odd:border-r sm:nth-last-[-n+2]:border-b-0">
+                {p.name === 'Browser' ? (
+                  <Globe className="mt-0.5 size-4 shrink-0 text-white/70" strokeWidth={1.75} aria-hidden />
+                ) : (
+                  <Laptop className="mt-0.5 size-4 shrink-0 text-white/70" strokeWidth={1.75} aria-hidden />
+                )}
                 <div className="flex flex-col gap-1">
                   <span className="flex items-center gap-1.5 text-sm font-medium">
                     {p.name}
-                    {p.available ? (
-                      <Check className="size-3.5 text-sun" aria-label="Available" />
-                    ) : (
-                      <Minus className="size-3.5 text-white/50" aria-label="Not available" />
-                    )}
+                    <Check className="size-3.5 text-sun" aria-label="Available" />
                   </span>
                   <span className="text-xs leading-relaxed text-white/55">{p.detail}</span>
                 </div>

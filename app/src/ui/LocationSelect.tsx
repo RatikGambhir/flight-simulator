@@ -1,7 +1,10 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { isRocket, X15_LAUNCH } from '../flight'
 import { sim } from '../sim/simClient'
 import type { Airport, AirportDetail, RunwaySpawnKind, SearchResult, SpawnMode } from '../sim/protocol'
 import { useApp, type SpawnChoice } from '../state/store'
+import { readRocketFields, RocketFlightFields, RocketFlightPresets, rocketFields } from './RocketFlight'
+import { useAircraftSpec } from './useAircraftList'
 
 const FEATURED: { label: string; query: string }[] = [
   { label: "Chicago O'Hare", query: 'KORD' },
@@ -92,6 +95,8 @@ function ResultIcon({ kind }: { kind: string }) {
 
 export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { initial: SpawnChoice; onConfirm: (s: SpawnChoice) => void; onClose: () => void; confirmLabel: string }) {
   const blackbird = useApp((s) => s.aircraftId === 'sr71')
+  const aircraft = useAircraftSpec(useApp((s) => s.aircraftId))
+  const rocket = isRocket(aircraft)
   const [query, setQuery] = useState('')
   const deferredQuery = useDeferredValue(query)
   const [results, setResults] = useState<SearchResult[]>([])
@@ -104,8 +109,10 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
   const [agl, setAgl] = useState(initial.kind === 'coords' ? initial.aglFt : 2500)
   const [heading, setHeading] = useState(initial.kind === 'coords' ? initial.heading : 0)
   const [cruise, setCruise] = useState(blackbird && initial.kind === 'coords' && initial.cruise === true)
-  const [lat, setLat] = useState(initial.kind === 'coords' ? initial.lat.toFixed(5) : '')
-  const [lon, setLon] = useState(initial.kind === 'coords' ? initial.lon.toFixed(5) : '')
+  const [rocketRunway, setRocketRunway] = useState(initial.kind === 'runway' && initial.mode === 'takeoff')
+  const [flightFields, setFlightFields] = useState(() => rocketFields(initial.kind === 'rocket' ? initial : X15_LAUNCH))
+  const [lat, setLat] = useState(initial.kind !== 'runway' ? initial.lat.toFixed(5) : '')
+  const [lon, setLon] = useState(initial.kind !== 'runway' ? initial.lon.toFixed(5) : '')
   const [online, setOnline] = useState<SearchResult[]>([])
 
   // Initial selection reflects the current spawn.
@@ -143,6 +150,7 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
         }
       })
     } else {
+      setRocketRunway(false)
       setAgl(r.suggested_agl_ft)
       setHeading(r.suggested_heading)
       setPlaceMode('air')
@@ -180,6 +188,7 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
   }
 
   const pickOnMap = (la: number, lo: number) => {
+    setRocketRunway(false)
     setLat(la.toFixed(5))
     setLon(lo.toFixed(5))
     setSelected({ kind: 'city', title: 'Map location', subtitle: `${la.toFixed(3)}, ${lo.toFixed(3)}`, code: null, lat: la, lon: lo, elevation_ft: null, suggested_agl_ft: 3000, suggested_heading: 0, score: 0 })
@@ -203,16 +212,26 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
   }
 
   const confirm = () => {
-    if (!cruise && selected?.kind === 'airport' && detail) {
-      onConfirm({ kind: 'runway', airport: detail.airport.ident, airportName: detail.airport.name, runway, mode: rwMode })
+    if (!cruise && selected?.kind === 'airport' && detail && (!rocket || rocketRunway)) {
+      onConfirm({ kind: 'runway', airport: detail.airport.ident, airportName: detail.airport.name, runway, mode: rocket ? 'takeoff' : rwMode })
       return
     }
     const la = Number(lat)
     const lo = Number(lon)
     if (lat === '' || lon === '' || !Number.isFinite(la) || !Number.isFinite(lo) || Math.abs(la) > 90 || Math.abs(lo) > 180) return
+    const coordinateLabel = `${la.toFixed(3)}, ${lo.toFixed(3)}`
+    if (rocket) {
+      const flight = readRocketFields(flightFields, aircraft)
+      const sameLocation = initial.kind === 'rocket' && la === Number(initial.lat.toFixed(5)) && lo === Number(initial.lon.toFixed(5))
+      const sameSelection = selected && la === Number(selected.lat.toFixed(5)) && lo === Number(selected.lon.toFixed(5))
+      const label = (sameSelection ? selected.title : null) ?? (sameLocation ? initial.label : coordinateLabel)
+      const elevationFt = (sameSelection ? selected.elevation_ft : null) ?? (sameLocation ? initial.elevationFt : null)
+      if (flight) onConfirm({ kind: 'rocket', label, lat: la, lon: lo, elevationFt, ...flight })
+      return
+    }
     onConfirm({
       kind: 'coords',
-      label: selected?.title ?? `${la.toFixed(3)}, ${lo.toFixed(3)}`,
+      label: selected?.title ?? coordinateLabel,
       lat: la,
       lon: lo,
       mode: cruise ? 'air' : placeMode,
@@ -224,8 +243,15 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
   }
 
   const list = query.trim().length >= 2 ? [...results, ...online] : (nearby ?? [])
-  const coordsValid = Number.isFinite(Number(lat)) && Number.isFinite(Number(lon)) && lat !== '' && lon !== ''
+  const coordsValid = lat !== '' && lon !== '' && Math.abs(Number(lat)) <= 90 && Math.abs(Number(lon)) <= 180
   const mapSel = coordsValid ? { lat: Number(lat), lon: Number(lon) } : null
+  const canStartOnRunway = selected?.kind === 'airport' && !!detail?.runways.length
+  const rocketStartChoice = rocket && selected?.kind === 'airport' ? (
+    <div className="segmented" aria-label="X-15 departure type">
+      <button className={!rocketRunway ? 'on' : ''} aria-pressed={!rocketRunway} onClick={() => setRocketRunway(false)}>Air start</button>
+      <button className={rocketRunway ? 'on' : ''} aria-pressed={rocketRunway} disabled={!canStartOnRunway} onClick={() => setRocketRunway(true)}>On runway</button>
+    </div>
+  ) : null
 
   return (
     <div className="sheet glass">
@@ -236,7 +262,8 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
         <button className="btn ghost" onClick={onClose}>
           Cancel
         </button>
-        <button className="btn primary" onClick={confirm} disabled={!selected && !coordsValid}>
+        <button className="btn primary" onClick={confirm}
+          disabled={rocket ? (rocketRunway ? !canStartOnRunway : !coordsValid || !readRocketFields(flightFields, aircraft)) : !selected && !coordsValid}>
           {confirmLabel}
         </button>
       </div>
@@ -253,6 +280,7 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
             />
             {query.trim().length < 2 && !nearby ? (
               <div className="featured">
+                {rocket && <button className="btn" onClick={() => setQuery('KEDW')}>Edwards Air Force Base</button>}
                 {FEATURED.map((f) => (
                   <button key={f.query} className="btn" style={{ padding: '6px 10px', fontSize: 12 }} onClick={() => setQuery(f.query)}>
                     {f.label}
@@ -281,7 +309,7 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
           </div>
           <div className="loc-col scroll">
             <WorldMap selected={mapSel} onPick={pickOnMap} />
-            {selected?.kind === 'airport' && detail ? (
+            {(!rocket || rocketRunway) && selected?.kind === 'airport' && detail ? (
               <div className="detail glass">
                 <div className="row">
                   <div>
@@ -292,7 +320,7 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
                     </div>
                   </div>
                   <div className="spacer" />
-                  <div className="segmented">
+                  {rocket ? rocketStartChoice : <div className="segmented">
                     <button className={!cruise && rwMode === 'takeoff' ? 'on' : ''} onClick={() => { setCruise(false); setRwMode('takeoff') }}>
                       On runway
                     </button>
@@ -300,7 +328,7 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
                       Final approach
                     </button>
                     {blackbird && <button className={cruise ? 'on' : ''} aria-pressed={cruise} onClick={() => setCruise(true)}>Cruise · 85,000 ft</button>}
-                  </div>
+                  </div>}
                 </div>
                 {cruise ? <div className="field" style={{ marginTop: 12 }}>
                   <label>Mach 3.2 · Heading {heading}°</label>
@@ -328,13 +356,14 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
               <div className="detail glass">
                 <div className="row" style={{ marginBottom: 12 }}>
                   <div>
-                    <div style={{ fontWeight: 700, fontSize: 16 }}>{selected?.title ?? 'Coordinates'}</div>
+                    <div style={{ fontWeight: 700, fontSize: 16 }}>{selected?.title ?? (rocket ? 'X-15 flight state' : 'Coordinates')}</div>
                     <div className="muted" style={{ fontSize: 12 }}>
-                      {selected?.subtitle ?? 'Enter latitude and longitude in decimal degrees'}
+                      {selected?.subtitle ?? (rocket ? 'Choose a location and enter your starting flight conditions.' : 'Enter latitude and longitude in decimal degrees')}
                     </div>
                   </div>
                   <div className="spacer" />
-                  <div className="segmented">
+                  {rocketStartChoice}
+                  {!rocket && <div className="segmented">
                     <button className={!cruise && placeMode === 'air' ? 'on' : ''} onClick={() => { setCruise(false); setPlaceMode('air') }}>
                       In flight
                     </button>
@@ -342,7 +371,7 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
                       On ground
                     </button>
                     {blackbird && <button className={cruise ? 'on' : ''} aria-pressed={cruise} onClick={() => setCruise(true)}>Cruise · 85,000 ft</button>}
-                  </div>
+                  </div>}
                 </div>
                 <div className="coords-grid">
                   <div className="field">
@@ -353,17 +382,19 @@ export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { 
                     <label>Longitude</label>
                     <input className="input" value={lon} onChange={(e) => setLon(e.target.value)} placeholder="-87.6298" />
                   </div>
-                  <div className="field">
+                  {!rocket && <div className="field">
                     {cruise ? <label>Mach 3.2 at 85,000 ft MSL</label> : <>
                       <label>Height above ground: {agl.toLocaleString()} ft</label>
                       <input type="range" min={500} max={20000} step={100} value={agl} disabled={placeMode === 'ground'} onChange={(e) => setAgl(Number(e.target.value))} />
                     </>}
-                  </div>
-                  <div className="field">
+                  </div>}
+                  {!rocket && <div className="field">
                     <label>Heading: {heading}°</label>
                     <input type="range" min={0} max={359} step={1} value={heading} onChange={(e) => setHeading(Number(e.target.value))} />
-                  </div>
+                  </div>}
+                  {rocket && <RocketFlightFields spec={aircraft} fields={flightFields} setFields={setFlightFields} />}
                 </div>
+                {rocket && <RocketFlightPresets spec={aircraft} fields={flightFields} setFields={setFlightFields} />}
               </div>
             )}
           </div>

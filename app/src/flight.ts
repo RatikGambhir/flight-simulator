@@ -2,7 +2,7 @@
 
 import { sound } from './audio/sound'
 import { sim } from './sim/simClient'
-import type { AirportDetail, SimCommand } from './sim/protocol'
+import type { AircraftSpec, AirportDetail, RocketFlightState, SimCommand } from './sim/protocol'
 import { useApp, type Settings, type SpawnChoice } from './state/store'
 import { simWeather, useWeather } from './weather/liveWeather'
 
@@ -35,8 +35,28 @@ export function syncDestination() {
   })
 }
 
+export const X15_LAUNCH: RocketFlightState = { altitude_ft: 45_000, mach: 0.75, heading: 270 }
+
+/** Rocket aircraft are placed by flight state and flown by rocket guidance, not the standard autopilot. */
+export function isRocket(spec: AircraftSpec | undefined): spec is AircraftSpec {
+  return spec?.engine === 'rocket'
+}
+
+export function x15Departure(spawn: SpawnChoice): SpawnChoice {
+  if (spawn.kind === 'rocket') return spawn
+  const location = spawn.kind === 'coords' ? spawn : {
+    label: 'Edwards flight test area', lat: 34.9054, lon: -117.8837, elevationFt: null,
+  }
+  return { kind: 'rocket', label: location.label, lat: location.lat, lon: location.lon, elevationFt: location.elevationFt,
+    ...X15_LAUNCH, heading: spawn.kind === 'coords' ? spawn.heading : X15_LAUNCH.heading }
+}
+
 export function spawnCommand(s: SpawnChoice): SimCommand {
   if (s.kind === 'runway') return { type: 'spawn_runway', airport: s.airport, runway: s.runway, kind: s.mode }
+  if (s.kind === 'rocket') return {
+    type: 'spawn_rocket', lat: s.lat, lon: s.lon, altitude_ft: s.altitude_ft,
+    heading: s.heading, mach: s.mach, ground_elevation_ft: s.elevationFt,
+  }
   return {
     type: 'spawn',
     lat: s.lat,
@@ -103,6 +123,10 @@ export function describeSpawn(s: SpawnChoice): { title: string; subtitle: string
       title: s.airportName,
       subtitle: `${s.airport}${s.runway ? ` · Runway ${s.runway}` : ''} · ${s.mode === 'takeoff' ? 'Ready for takeoff' : 'Final approach (6 nm)'}`,
     }
+  }
+  if (s.kind === 'rocket') return {
+    title: s.label,
+    subtitle: `${s.altitude_ft.toLocaleString()} ft MSL · Mach ${s.mach.toFixed(2)} · ${s.heading % 360}° true`,
   }
   return {
     title: s.label,

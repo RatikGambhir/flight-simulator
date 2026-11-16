@@ -101,8 +101,10 @@ impl Simulation {
         if let Some(why) = self.autopilot.pilot_override(&self.input, self.on_ground) {
             self.autopilot.disengage(Some(why));
         }
-        let ap_inp = self.ap_inputs();
-        let ap = self.autopilot.update(&ap_inp, self.spec, dt);
+        let ap = self.update_rocket_guidance().unwrap_or_else(|| {
+            let ap_inp = self.ap_inputs();
+            self.autopilot.update(&ap_inp, self.spec, dt)
+        });
         self.apply_autopilot_config(&ap);
         self.ap_out = ap;
         self.update_systems(dt, ap.throttle);
@@ -123,6 +125,7 @@ impl Simulation {
         let geoid = world::geoid_undulation(geo0.lat_deg(), geo0.lon_deg());
         let air = isa(geo0.height - geoid);
         let rho = air.density;
+        let rocket = s.engine == EngineKind::Rocket;
         let mass = s.mass_kg;
         let area = s.wing_area_m2;
 
@@ -183,11 +186,23 @@ impl Simulation {
         // Reversers redirect the fan stream forward (about 45 % of forward thrust).
         let thrust = self.thrust_at(self.engine, speed, rho, mach, geo0.height - geoid) * (1.0 - 1.45 * self.reverser);
         force += xb * thrust;
+        let rocket_load = if self.rocket_guidance.is_some() { ap.load_factor } else { None };
+        let mut thin_air_assist = 0.0;
+        if let Some(load) = rocket_load {
+            // Simulator altitude hold adds normal acceleration as the wings
+            // lose authority. Manual flight still follows thrust and gravity.
+            let altitude_blend = smoothstep((geo0.height - geoid - 20_000.0) / 6_000.0);
+            thin_air_assist = altitude_blend * (1.0 - smoothstep((qbar - 3_000.0) / 4_000.0));
+            let requested_force = load * mass * G0;
+            force += lift_dir * (requested_force - force.dot(lift_dir)) * thin_air_assist;
+        }
         let accel_aero = force / mass;
         let accel = accel_aero - up * G0;
 
         let was_stalled = self.stall;
-        self.stall = airborne && speed > 15.0 && alpha > alpha_stall;
+        // The rocket can rotate on reaction jets where the wing has little
+        // aerodynamic load and an angle of attack warning is meaningless.
+        self.stall = airborne && speed > 15.0 && (!rocket || qbar > 500.0) && alpha > alpha_stall;
         if self.stall && !was_stalled {
             self.events.push(SimEvent::Stall);
         }
@@ -197,7 +212,7 @@ impl Simulation {
         let q_max = s.max_pitch_rate.to_radians();
         let r_max = s.max_yaw_rate.to_radians();
         let tau = s.response_time_s;
-        let assisted = self.assist || self.autopilot.engaged;
+        let assisted = self.assist || self.autopilot.engaged || self.rocket_guidance.is_some();
         let q_path = if speed > 5.0 { accel.dot(lift_dir) / speed } else { 0.0 };
         let flying_speed = speed > 0.55 * s.v_rotate_kt * KT_TO_MS;
 
@@ -219,7 +234,7 @@ impl Simulation {
                 p_des = -(roll - bank_max.copysign(roll)) * 2.0;
             }
         }
-        if assisted && airborne && !self.autopilot.engaged && s.aerobatic {
+        if assisted && airborne && !self.autopilot.engaged && self.rocket_guidance.is_none() && s.aerobatic {
             // Attitude hold: with the stick centred, keep the bank the pilot set
             // (including inverted). Bank is meaningless near the vertical, so the
             // hold only engages once the nose is within 60° of the horizon.
@@ -244,7 +259,16 @@ impl Simulation {
         }
 
         // Pitch
-        let q_des = if airborne && flying_speed {
+        let q_des = if let Some(load) = rocket_load {
+            // Solve for the angle that produces the requested normal force
+            // with both the wing and the normal component of rocket thrust.
+            let q_area = qbar * area;
+            let alpha_lift = ((load * mass * G0 - q_area * cl_base)
+                / (q_area * cl_alpha + thrust).max(1.0)).clamp(-0.18, 0.28);
+            let alpha_cmd = alpha_lift * (1.0 - thin_air_assist) + 0.035 * thin_air_assist;
+            self.alpha_trim = alpha;
+            (q_path + (alpha_cmd - alpha) * 2.4).clamp(-q_max, q_max)
+        } else if airborne && flying_speed {
             // Path hold uses the inertial flight path so gusts don't drag the reference around.
             let gamma = self.vel.try_normalize().map_or(0.0, |vi| vi.dot(up).clamp(-1.0, 1.0).asin());
             if assisted {
@@ -310,6 +334,10 @@ impl Simulation {
             }
         } else if airborne {
             self.surfaces.y * q_max * eff + q_path * 0.8
+        } else if rocket {
+            // The runway launch uses a limited rotation to clear the ventral fin.
+            let target_pitch = self.surfaces.y.max(0.0) * (s.tailstrike_pitch_deg - 1.0).to_radians();
+            (target_pitch - pitch) * 1.8 * eff
         } else {
             // On the ground: elevator authority vs. weight on the nose gear.
             let lift_ratio = ((accel_aero.dot(up)) / G0).clamp(0.0, 1.0);
@@ -319,7 +347,11 @@ impl Simulation {
 
         // Yaw: rudder + weathervane stability + automatic turn coordination.
         let mut r_des = self.surfaces.z * r_max * eff - beta * 2.5 * eff.max(0.2);
-        if assisted && airborne && speed > 20.0 {
+        if rocket_load.is_some() && speed > 20.0 {
+            // Follow the turning flight path even when the aerodynamic rudder
+            // has given way to reaction control.
+            r_des = (-accel.dot(yb) / speed - beta * 1.5).clamp(-r_max, r_max);
+        } else if assisted && airborne && speed > 20.0 {
             if s.aerobatic {
                 // Cancel the sideways pull of gravity at any attitude.
                 r_des += G0 * roll.sin() * pitch.cos() / speed;
@@ -329,7 +361,16 @@ impl Simulation {
             }
         }
 
-        let omega_des = DVec3::new(p_des, -q_des, -r_des);
+        let mut omega_des = DVec3::new(p_des, -q_des, -r_des);
+        if rocket && airborne {
+            // Peroxide reaction jets rotate the airframe when aerodynamic
+            // controls fade out. Translation still follows thrust and gravity.
+            let reaction = 1.0 - smoothstep(qbar / s.full_authority_q);
+            let reaction_pitch = if rocket_load.is_some() { q_des } else { self.surfaces.y * 0.30 };
+            let reaction_yaw = if rocket_load.is_some() { r_des } else { self.surfaces.z * 0.30 };
+            let reaction_rates = DVec3::new(self.surfaces.x * 0.30, -reaction_pitch, -reaction_yaw);
+            omega_des = omega_des.lerp(reaction_rates, reaction);
+        }
         self.omega += (omega_des - self.omega) * (dt / tau).min(1.0);
         if airborne {
             // Rotational gusts nudge the airframe; the control law then works against them.
@@ -392,6 +433,7 @@ impl Simulation {
                 self.omega = DVec3::ZERO;
                 self.pos += up * (-clearance.max(-50.0));
                 self.autopilot.disengage(None);
+                self.rocket_guidance = None;
                 self.events.push(SimEvent::Crashed { reason: reason.into() });
                 return;
             }

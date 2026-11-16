@@ -1,4 +1,7 @@
 import { BINDINGS } from '../input/controls'
+import { isRocket } from '../flight'
+import { useApp } from '../state/store'
+import { useAircraftSpec } from './useAircraftList'
 
 export function ControlsTable() {
   return (
@@ -19,11 +22,12 @@ export function ControlsTable() {
 }
 
 export function ControlsHelp({ onClose, full }: { onClose: () => void; full?: boolean }) {
+  const rocket = isRocket(useAircraftSpec(useApp((s) => s.aircraftId)))
   return (
     <div className={`sheet glass ${full ? 'full' : ''}`}>
       <div className="sheet-header">
         <h2>Flight controls</h2>
-        <span className="muted">Identical for every aircraft. Gamepads (standard layout) work too.</span>
+        <span className="muted">Standard gamepads work too.</span>
         <div className="spacer" />
         <button className="btn primary" onClick={onClose}>
           Close
@@ -32,6 +36,14 @@ export function ControlsHelp({ onClose, full }: { onClose: () => void; full?: bo
       <div className="sheet-body">
         <ControlsTable />
         <div className="notice info" style={{ marginTop: 18 }}>
+          {rocket ? <>
+            <b>X-15 air launch.</b> Start at 45,000 ft, then press <span className="kbd">⇧R</span> to power up the XLR99.
+            The XLR99 has unlimited fuel. Use <span className="kbd">⇧F</span> to cut power and coast, and <span className="kbd">G</span> to lower the gear for a glide landing.
+            <br />
+            <b>Runway start.</b> In Departure, select an airport and choose On runway. For a manual takeoff, use full power and rotate at 250 kt. Raise the gear after liftoff.
+            <br />
+            <b>Fly climb.</b> Enter an altitude to climb or descend to and hold it on your current heading. Press <span className="kbd">Z</span> in flight to hold your current altitude or disengage autopilot. Place now sets your altitude, Mach and true heading instantly.
+          </> : <>
           <b>Your first takeoff:</b> press <span className="kbd">⇧R</span> for full throttle, keep straight with <span className="kbd">Q</span>/<span className="kbd">E</span>,
           and at the rotate speed shown on the aircraft card gently hold <span className="kbd">S</span> to lift the nose. Once climbing, raise the gear with{' '}
           <span className="kbd">G</span> and flaps with <span className="kbd">[</span>.
@@ -42,6 +54,7 @@ export function ControlsHelp({ onClose, full }: { onClose: () => void; full?: bo
           <br />
           <b>Landing:</b> start from “Final approach”, keep the runway centred, reduce power with <span className="kbd">F</span> just above the runway, flare gently with{' '}
           <span className="kbd">S</span> and hold <span className="kbd">Space</span> to brake.
+          </>}
         </div>
       </div>
     </div>

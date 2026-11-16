@@ -167,7 +167,9 @@ export function Settings({ onClose, full }: { onClose: () => void; full?: boolea
               <input type="checkbox" checked={s.realTime} onChange={(e) => update({ realTime: e.target.checked })} />
             </div>
             <div className="field">
-              <div className="faint" style={{ fontSize: 12 }}>Manual time uses today’s date at the aircraft. Moon phase and daylight follow the season.</div>
+              <label htmlFor="sky-date">Local solar date</label>
+              <input id="sky-date" className="input" type="date" value={s.skyDate} disabled={s.realTime} onChange={(e) => update({ skyDate: e.target.value })} />
+              <div className="faint" style={{ fontSize: 12 }}>Leave the date blank to use today at the aircraft’s location.</div>
               <label>Local solar time: {formatHour(s.timeOfDay)}</label>
               <input type="range" min={0} max={23.99} step={0.05} value={s.timeOfDay} disabled={s.realTime} onChange={(e) => update({ timeOfDay: Number(e.target.value) })} />
             </div>
@@ -185,6 +187,10 @@ export function Settings({ onClose, full }: { onClose: () => void; full?: boolea
                 </button>
               ))}
             </div>
+            <label className="toggle-row">
+              <span>Advance sky time at simulation speed</span>
+              <input type="checkbox" checked={s.advanceSkyTime} disabled={s.realTime} onChange={(e) => update({ advanceSkyTime: e.target.checked })} />
+            </label>
           </section>
 
           <section className="settings-section glass">

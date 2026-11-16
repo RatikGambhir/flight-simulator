@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { DOWNLOAD_URL, NAV_LINKS } from '@/lib/site'
+import { DOWNLOAD_URL, NAV_LINKS, WEB_APP_URL } from '@/lib/site'
 
 // The release lookup is cached per page load, so each test gets a fresh module graph.
 beforeEach(() => {
@@ -36,12 +36,14 @@ describe('landing page', () => {
     }
   })
 
-  it('lists macOS as the available platform', async () => {
+  it('lists only macOS and the browser as platforms', async () => {
     stubLatestRelease({ assets: [] })
     await renderApp()
 
     const download = document.getElementById('download')!
     expect(within(download).getByText('macOS')).toBeInTheDocument()
+    expect(within(download).getByText('Browser')).toBeInTheDocument()
+    expect(download).not.toHaveTextContent(/\b(windows|linux)\b/i)
   })
 
   it('points every download button at the newest .dmg from GitHub Releases', async () => {
@@ -61,5 +63,13 @@ describe('landing page', () => {
       for (const link of downloadLinks()) expect(link).toHaveAttribute('href', DMG_URL)
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('links to the browser version of the simulator from the nav, hero and download section', async () => {
+    stubLatestRelease({ assets: [] })
+    await renderApp()
+    const links = screen.getAllByRole('link', { name: /fly in (your )?browser/i })
+    expect(links).toHaveLength(3)
+    for (const link of links) expect(link).toHaveAttribute('href', WEB_APP_URL)
   })
 })

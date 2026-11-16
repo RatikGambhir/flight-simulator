@@ -28,6 +28,33 @@ const { build737Cockpit } = await import('../src/aircraft/cockpit737.ts')
 const { S, Flags } = await import('../src/sim/protocol.ts')
 const eye = new Vector3(-0.52, 0.78, -16)
 
+test('X-15 builds the NASA fin, rocket plume, skids and a lit instrument panel', async () => {
+  const { buildAircraft, disposeAircraftMeshes } = await import('../src/aircraft/models.ts')
+  const { buildCockpit } = await import('../src/aircraft/cockpit.ts')
+  const model = buildAircraft('x15', 3)
+  const cockpit = buildCockpit(model)
+  try {
+    assert.equal(model.root.getObjectByName('NASA · 66672 dorsal fin')?.material.map.colorSpace, 'srgb')
+    assert.equal(model.gear.length, 3)
+    assert.equal(model.spinners.length, 0)
+    const plume = model.root.getObjectByName('XLR99 exhaust')
+    model.exhaust(0, 0, 0, 6.7)
+    assert.equal(plume.visible, false)
+    model.exhaust(1, 0, 1, 6.7)
+    assert.equal(plume.visible, true)
+    const panel = cockpit.root.getObjectByName('x15-flight-instruments')
+    assert.equal(panel.layers.isEnabled(3), true, 'panel must be excluded from scenery aerial lighting')
+    cockpit.update(new Float64Array(S.LEN), { pitch: 0.5, roll: 0.5, throttle: 1 })
+    assert.ok(cockpit.stick.rotation.x < 0)
+    const handle = cockpit.throttles[0].children.find((object) => object.userData.cockpitCommand)
+    assert.equal(handle.userData.cockpitCommand.value, 1)
+  } finally {
+    cockpit.dispose()
+    disposeAircraftMeshes(cockpit.root, false)
+    disposeAircraftMeshes(model.root)
+  }
+})
+
 test('A380 builds its widebody exterior, four engines, five gear legs and Airbus-style cockpit', async () => {
   const { buildAircraft, disposeAircraftMeshes } = await import('../src/aircraft/models.ts')
   const { buildCockpit } = await import('../src/aircraft/cockpit.ts')

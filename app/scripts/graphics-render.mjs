@@ -1,14 +1,16 @@
 import {
-  Color, Data3DTexture, DataTexture, HalfFloatType, Mesh, MeshBasicMaterial,
-  PerspectiveCamera, PlaneGeometry, RedFormat, Scene, Texture, Vector3, WebGLRenderer,
+  BufferGeometry, Color, Data3DTexture, DataTexture, DirectionalLight, Float32BufferAttribute, HalfFloatType,
+  HemisphereLight, Mesh, MeshBasicMaterial, PerspectiveCamera, PlaneGeometry, Points, RedFormat,
+  RepeatWrapping, Scene, SRGBColorSpace, TextureLoader, Vector3, WebGLRenderer,
 } from 'three'
 import { EffectComposer, EffectPass, RenderPass, ToneMappingEffect, ToneMappingMode } from 'postprocessing'
-import { AerialPerspectiveEffect, PrecomputedTexturesGenerator, SkyMaterial } from '@takram/three-atmosphere'
+import { AerialPerspectiveEffect, PrecomputedTexturesGenerator, SkyMaterial, StarsMaterial } from '@takram/three-atmosphere'
 import { CloudsEffect } from '@takram/three-clouds'
 import {
   CloudHistory, setCloudNightLighting, stabilizeAerialPerspective, stabilizeClouds, stabilizeNightClouds,
 } from '../src/scene/cloudRendering.ts'
-import { prepareSky } from '../src/scene/celestialRendering.ts'
+import { CelestialState, LunarView } from '../src/scene/celestial.ts'
+import { prepareSky, prepareStars, setSkyMoon, setStarMoon } from '../src/scene/celestialRendering.ts'
 import { NightEffect } from '../src/scene/NightEffect.ts'
 import { VolumetricCloudPass } from '../src/scene/VolumetricCloudPass.ts'
 import { bindCloudGroundLighting } from '../src/scene/cloudGroundLighting.ts'
@@ -18,6 +20,8 @@ import { WorldSystem } from '../src/world/worldSystem.ts'
 import { createLayers } from '../src/world/providers.ts'
 import { CUMULUS, cloudProfileForWeather } from '../src/weather/cloudProfiles.ts'
 import { CLEAR_HAZE, parseConditions, visualTargets } from '../src/weather/liveWeather.ts'
+import { buildX15 } from '../src/aircraft/exterior/x15.ts'
+import { disposeAircraftMeshes } from '../src/aircraft/models.ts'
 
 const WIDTH = 256
 const HEIGHT = 160
@@ -71,7 +75,10 @@ async function renderChecks() {
 
   const sky = new SkyMaterial(atmosphere)
   sky.worldToECEFMatrix.copy(frame.ecefFromWorld)
-  prepareSky(sky, new Texture())
+  const lunarMap = await new TextureLoader().loadAsync(__LUNAR_TEST_MAP__)
+  lunarMap.colorSpace = SRGBColorSpace
+  lunarMap.wrapS = RepeatWrapping
+  prepareSky(sky, lunarMap)
   const skyQuad = new Mesh(new PlaneGeometry(2, 2), sky)
   skyQuad.frustumCulled = false
   skyQuad.renderOrder = -100
@@ -137,8 +144,9 @@ async function renderChecks() {
   const up = new Vector3(0, 1, 0)
   const sun = new Vector3()
 
-  function render(elevation, darkness, weather = false) {
-    sun.set(Math.sin(elevation), 0, Math.cos(elevation))
+  function render(elevation, darkness, weather = false, ephemerisSun = null) {
+    if (ephemerisSun) sun.copy(ephemerisSun)
+    else sun.set(Math.sin(elevation), 0, Math.cos(elevation))
     sky.sunDirection.copy(sun)
     clouds.sunDirection.copy(sun)
     aerial.sunDirection.copy(sun)
@@ -186,6 +194,29 @@ async function renderChecks() {
   check(delta(sunset, pixel(0.5, 0.56)) < 14, 'Small sunset time changes keep horizon color continuous')
 
   terrain.visible = false
+  camera.position.y = 107_960
+  camera.updateMatrixWorld()
+  render(0.65, 0)
+  const space = pixel(0.5, 0.43)
+  const limb = pixel(0.5, 0.35)
+  check(Math.max(...space) < 3 && limb[2] > 20,
+    `Above the atmosphere, only rays intersecting its curved limb show blue (${space}; ${limb})`)
+
+  // Just inside the atmosphere's outer edge, the night gradient used to
+  // color empty sky blue and leave a dark stripe above the real limb.
+  camera.position.y = 190_600 * 0.3048
+  camera.updateMatrixWorld()
+  render(-0.12, 0, true)
+  const twilightRows = [0.34, 0.4, 0.46, 0.55, 0.7]
+  const upperSky = twilightRows.map(y => pixel(0.5, y))
+  render(-0.12, 0.8, true)
+  check(upperSky.every((rgb, i) => delta(rgb, pixel(0.5, twilightRows[i])) < 3),
+    'At 190,600 ft the night haze cannot paint a second horizon above the atmospheric limb')
+  const upperTwilight = pixel(0.5, 0.8)
+  const twilightLimb = Math.max(...[0.32, 0.34, 0.36, 0.38, 0.40].map(y => brightness(pixel(0.5, y))))
+  check(Math.max(...upperTwilight) < 5 && twilightLimb > 10,
+    `At the edge of the atmosphere, high skyward rays stay dark while the limb stays visible (${upperTwilight}; ${Math.round(twilightLimb)})`)
+
   camera.position.y = 8500
   camera.updateMatrixWorld()
   render(-0.55, 1)
@@ -201,6 +232,118 @@ async function renderChecks() {
   // Exercise all shader combinations on the same WebGL context as the desktop app.
   render(0.01, 0, true)
   check(brightness(pixel(0.5, 0.56)) > 20, 'Sunset with clouds and cloud shadows renders a visible sky')
+
+  const lunarView = new LunarView()
+  const lunarState = new CelestialState()
+  function aimMoon(height, elevation) {
+    camera.position.set(0, height, 0)
+    camera.lookAt(0, height + Math.sin(elevation), -Math.cos(elevation))
+    camera.updateMatrixWorld()
+    const eye = frame.worldToEcef(camera.position)
+    const direction = camera.getWorldDirection(new Vector3()).transformDirection(frame.ecefFromWorld)
+    lunarView.update(eye.clone().addScaledVector(direction, 380_000_000), eye)
+    lunarState.moonSunDirection.copy(direction).negate()
+    setSkyMoon(sky, lunarView, lunarState)
+  }
+
+  camera.fov = 4
+  camera.updateProjectionMatrix()
+  aimMoon(108_000, 0.2)
+  render(-0.55, 1)
+  const nearLimb = brightness(pixel(0.532, 0.5))
+  check(brightness(pixel(0.5, 0.5)) > 35 && nearLimb > 20 && brightness(pixel(0.55, 0.5)) < 5,
+    'A full Moon above the atmosphere has the expected angular diameter')
+  camera.fov = 8
+  camera.updateProjectionMatrix()
+  render(-0.55, 1)
+  check(brightness(pixel(0.515, 0.5)) > 20 && brightness(pixel(0.53, 0.5)) < 5,
+    'Doubling camera FOV reduces the Moon’s screen diameter as expected')
+
+  lunarState.moonSunDirection.set(0, 1, 0)
+  render(-0.55, 1)
+  check(brightness(pixel(0.512, 0.5)) > brightness(pixel(0.488, 0.5)) + 25,
+    'A quarter Moon is illuminated on the Sun-facing side')
+  camera.rotateZ(Math.PI)
+  camera.updateMatrixWorld()
+  render(-0.55, 1)
+  check(brightness(pixel(0.488, 0.5)) > brightness(pixel(0.512, 0.5)) + 25,
+    'Camera roll rotates the apparent phase without moving its light source')
+
+  const starMaterial = new StarsMaterial({ ...atmosphere, pointSize: 5 })
+  starMaterial.worldToECEFMatrix.copy(frame.ecefFromWorld)
+  prepareStars(starMaterial)
+  const starGeometry = new BufferGeometry()
+  starGeometry.setAttribute('position', new Float32BufferAttribute(camera.getWorldDirection(new Vector3()).toArray(), 3))
+  starGeometry.setAttribute('magnitude', new Float32BufferAttribute([0], 1))
+  starGeometry.setAttribute('color', new Float32BufferAttribute([1, 1, 1], 3))
+  const star = new Points(starGeometry, starMaterial)
+  star.frustumCulled = false
+  scene.add(star)
+  lunarState.moonSunDirection.copy(lunarView.direction)
+  render(-0.55, 1)
+  const unobscuredStar = brightness(pixel(0.5, 0.5))
+  setStarMoon(starMaterial, lunarView)
+  render(-0.55, 1)
+  check(unobscuredStar > 40 && brightness(pixel(0.5, 0.5)) < 5, 'The unlit Moon blocks background stars')
+  scene.remove(star)
+  starMaterial.dispose()
+  starGeometry.dispose()
+
+  const dip = -Math.acos(6378137 / (6378137 + 108_000))
+  aimMoon(108_000, dip)
+  render(-0.55, 0)
+  const upperMoon = pixel(0.5, 0.52), lowerMoon = pixel(0.5, 0.48)
+  sky.moonAngularRadius = 0
+  render(-0.55, 0)
+  check(delta(upperMoon, pixel(0.5, 0.52)) > 10 && delta(lowerMoon, pixel(0.5, 0.48)) < 2,
+    'The curved Earth can hide the lower half of the lunar disk')
+
+  camera.position.set(0, 100, 0)
+  const daylightEye = frame.worldToEcef(camera.position)
+  lunarState.update(new Date('2026-11-17T17:00:00Z'), daylightEye)
+  lunarState.observeMoon(daylightEye, lunarView)
+  camera.lookAt(camera.position.clone().add(lunarView.apparentDirection.clone().applyQuaternion(frame.worldFromEcefRot)))
+  camera.updateMatrixWorld()
+  setSkyMoon(sky, lunarView, lunarState)
+  render(0, 0, false, lunarState.sunDirection)
+  const dayMoon = [0.48, 0.49, 0.5, 0.51, 0.52].map(x => pixel(x, 0.5))
+  sky.moonAngularRadius = 0
+  render(0, 0, false, lunarState.sunDirection)
+  check(dayMoon.some((rgb, i) => delta(rgb, pixel(0.48 + i * 0.01, 0.5)) > 7),
+    'The first-quarter Moon is visible through daylight scattering')
+
+  const opaqueWeather = texture(new Uint8Array([255, 255, 255, 255]))
+  clouds.localWeatherTexture = opaqueWeather
+  clouds.coverage = 1
+  render(0, 0, true, lunarState.sunDirection)
+  const cloudSky = [0.49, 0.5, 0.51].map(x => pixel(x, 0.5))
+  setSkyMoon(sky, lunarView, lunarState)
+  render(0, 0, true, lunarState.sunDirection)
+  check(cloudSky.every((rgb, i) => delta(rgb, pixel(0.49 + i * 0.01, 0.5)) < 3),
+    'Dense cloud cover hides the Moon')
+  clouds.localWeatherTexture = emptyWeather
+  clouds.coverage = 0
+  opaqueWeather.dispose()
+  sky.moonAngularRadius = 0
+
+  // Put an opaque scenery surface along the same sightline. Sky depth stays at
+  // infinity even when the Moon is large in the frame.
+  const blocker = new Mesh(new PlaneGeometry(40, 40), new MeshBasicMaterial({ color: 0x333333 }))
+  blocker.position.copy(camera.position).addScaledVector(camera.getWorldDirection(new Vector3()), 100)
+  blocker.quaternion.copy(camera.quaternion)
+  scene.add(blocker)
+  render(0, 0, false, lunarState.sunDirection)
+  const blocked = pixel(0.51, 0.5)
+  setSkyMoon(sky, lunarView, lunarState)
+  render(0, 0, false, lunarState.sunDirection)
+  check(delta(blocked, pixel(0.51, 0.5)) < 2, 'Opaque foreground scenery occludes the Moon')
+  scene.remove(blocker)
+  blocker.geometry.dispose()
+  blocker.material.dispose()
+  sky.moonAngularRadius = 0
+  camera.fov = 58
+  camera.rotation.set(0, 0, 0)
+  camera.updateProjectionMatrix()
 
   // March a uniform deck with both render paths at an odd target size. Its
   // silhouette and color should agree when looking away from depth boundaries.
@@ -417,6 +560,38 @@ async function renderChecks() {
   moveOrigin(6378137, 0, 0)
   coverage = 0
   check(meanDifference(aboveTemperateClouds, cloudFrame(180)) === 0, 'A clear report leaves all three cloud levels empty')
+
+  // The default cloud renderer and the X-15's exhaust share the main scene at
+  // high altitude. The plume should change the picture without restoring the band.
+  const rocket = buildX15()
+  for (const gear of rocket.gear) gear.pivot.rotation[gear.axis] = gear.retracted
+  const light = new DirectionalLight(0xffe2c5, 2.5)
+  light.position.set(-5, 3, 5)
+  const fill = new HemisphereLight(0xbacbdf, 0x191419, 1)
+  scene.add(light, fill, rocket.root)
+  const rocketHeight = 190_600 * 0.3048
+  rocket.root.position.set(0, rocketHeight, 0)
+  rocket.root.rotation.set(0.30, -0.55, -0.14)
+  camera.position.set(12, rocketHeight + 1.8, 16)
+  camera.lookAt(0, rocketHeight, 0)
+  camera.updateMatrixWorld()
+  const twilight = new Vector3(-0.12, 0, 0.993).normalize()
+  sky.sunDirection.copy(twilight)
+  aerial.sunDirection.copy(twilight)
+  const aircraftMask = texture(new Uint8Array([0, 0, 0, 255]))
+  aerial.lightingMask = { map: aircraftMask, channel: 'r' }
+  coverage = 0.65
+  night.setFrame(camera, 0, 0, up, [], rocketHeight)
+  const clearRocket = cloudFrame()
+  night.setFrame(camera, 0.8, 0, up, [], rocketHeight)
+  check(meanDifference(clearRocket, cloudFrame()) < 0.01, 'The X-15 sky stays free of the high-altitude haze band with default clouds')
+  rocket.exhaust(0.85, 0, 1, 4)
+  check(meanDifference(clearRocket, cloudFrame()) > 0.015, 'The X-15 exhaust renders in its high-altitude exterior view')
+  scene.remove(light, fill, rocket.root)
+  disposeAircraftMeshes(rocket.root)
+  aerial.lightingMask = { map: lightingMask, channel: 'r' }
+  aircraftMask.dispose()
+
   // Fixture for the meshes a photogrammetry tileset provides at an airport.
   // Feed the same mesh to the renderer and the streaming raycast boundary.
   frame.setOrigin(6378137, 0, 0)
@@ -455,6 +630,7 @@ async function renderChecks() {
   pavement.material.dispose()
   composer.dispose()
   cloudPass.dispose()
+  lunarMap.dispose()
 }
 
 renderChecks().then(() => {

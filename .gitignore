@@ -10,6 +10,7 @@ target
 /app/bench-results/
 /app/public/sim/
 /app/src-tauri/gen
+/app/web-upload/
 
 # Website (site/)
 /site/.vite/

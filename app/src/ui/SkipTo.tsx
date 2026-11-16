@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
+import { isRocket } from '../flight'
 import { MAX_SKIP_MILES, METERS_PER_MILE, MIN_SKIP_MILES, runSkipTransition, skipToPosition } from '../navigation/skipTo'
 import { navigationTo } from '../navigation/route'
 import { Flags, S } from '../sim/protocol'
 import { sim } from '../sim/simClient'
 import { useApp } from '../state/store'
+import { rocketMaxMach } from './RocketFlight'
+import { useAircraftSpec } from './useAircraftList'
 
 function delay(ms: number, signal: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
@@ -17,6 +20,7 @@ function delay(ms: number, signal: AbortSignal) {
 /** Native modal traps focus and sits above every HUD/scene overlay. */
 export function SkipTo() {
   const destination = useApp((s) => s.destination)
+  const aircraft = useAircraftSpec(useApp((s) => s.aircraftId))
   const dialog = useRef<HTMLDialogElement>(null)
   const input = useRef<HTMLInputElement>(null)
   const controller = useRef<AbortController | null>(null)
@@ -63,7 +67,19 @@ export function SkipTo() {
         wait: (ms) => delay(ms, signal),
         spawn: () => {
           useApp.getState().setCrashed(null)
-          sim.command({ type: 'spawn', ...target, mode: 'air', agl_ft: agl, speed_kt: null, ground_elevation_ft: null, keep_autopilot: true })
+          const s = sim.latest
+          if (isRocket(aircraft) && !(s[S.FLAGS] & Flags.ON_GROUND)) {
+            // Keep a rocket flight's altitude and Mach (and its guidance) instead
+            // of dropping it to a low trimmed air spawn.
+            sim.command({
+              type: 'spawn_rocket', lat: target.lat, lon: target.lon, heading: target.heading,
+              altitude_ft: Math.min(aircraft.max_alt_ft, Math.max(0, Math.round(s[S.ALT_MSL_FT]))),
+              mach: Math.min(rocketMaxMach(aircraft), Math.max(0.1, s[S.MACH])),
+              ground_elevation_ft: null, keep_autopilot: true,
+            })
+          } else {
+            sim.command({ type: 'spawn', ...target, mode: 'air', agl_ft: agl, speed_kt: null, ground_elevation_ft: null, keep_autopilot: true })
+          }
         },
         ready: () => {
           const s = sim.latest

@@ -1,4 +1,5 @@
-//! International Standard Atmosphere (ISA) through the lower stratosphere.
+//! International Standard Atmosphere through the mesosphere, with an
+//! isothermal extension for the simulator's suborbital flights.
 
 pub const RHO_SL: f64 = 1.225;
 pub const G0: f64 = 9.806_65;
@@ -9,6 +10,13 @@ const LAPSE: f64 = 0.0065;
 const TROPOPAUSE: f64 = 11_000.0;
 const STRATOSPHERE: f64 = 20_000.0;
 const STRATOSPHERE_LAPSE: f64 = 0.001;
+const UPPER_LAYERS: [(f64, f64); 5] = [
+    (47_000.0, 0.0028),
+    (51_000.0, 0.0),
+    (71_000.0, -0.0028),
+    (84_852.0, -0.002),
+    (f64::INFINITY, 0.0),
+];
 
 #[derive(Debug, Clone, Copy)]
 pub struct AirState {
@@ -18,10 +26,10 @@ pub struct AirState {
     pub speed_of_sound: f64,
 }
 
-/// ISA conditions at a geopotential altitude in meters (clamped to -500..32000 m).
+/// Air conditions at an approximate geopotential altitude in meters.
 pub fn isa(alt_m: f64) -> AirState {
-    let h = alt_m.clamp(-500.0, 32_000.0);
-    let (t, p) = if h <= TROPOPAUSE {
+    let h = alt_m.clamp(-500.0, 500_000.0);
+    let (mut t, mut p) = if h <= TROPOPAUSE {
         let t = T_SL - LAPSE * h;
         (t, P_SL * (t / T_SL).powf(G0 / (LAPSE * R_AIR)))
     } else {
@@ -29,9 +37,26 @@ pub fn isa(alt_m: f64) -> AirState {
         let p11 = P_SL * (t11 / T_SL).powf(G0 / (LAPSE * R_AIR));
         let isothermal_height = h.min(STRATOSPHERE) - TROPOPAUSE;
         let p = p11 * (-G0 * isothermal_height / (R_AIR * t11)).exp();
-        let t = t11 + STRATOSPHERE_LAPSE * (h - STRATOSPHERE).max(0.0);
+        let t = t11 + STRATOSPHERE_LAPSE * (h.min(32_000.0) - STRATOSPHERE).max(0.0);
         (t, p * (t / t11).powf(-G0 / (STRATOSPHERE_LAPSE * R_AIR)))
     };
+    if h > 32_000.0 {
+        let mut base = 32_000.0;
+        for (top, lapse) in UPPER_LAYERS {
+            let thickness = h.min(top) - base;
+            let next_t = t + lapse * thickness;
+            p *= if lapse == 0.0 {
+                (-G0 * thickness / (R_AIR * t)).exp()
+            } else {
+                (next_t / t).powf(-G0 / (lapse * R_AIR))
+            };
+            t = next_t;
+            if h <= top {
+                break;
+            }
+            base = top;
+        }
+    }
     AirState {
         temperature_k: t,
         pressure_pa: p,
