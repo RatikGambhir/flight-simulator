@@ -69,22 +69,45 @@ jobs:
           chmod 600 "$KEY_PATH"
           echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
 
-      # Tauri signs and notarizes the app automatically.
-      - name: Build signed and notarized universal app
+      - name: Build universal app
+        run: npm run tauri build -- --target universal-apple-darwin --no-bundle
+
+      # Tauri signs and notarizes the app during packaging.
+      - name: Package signed and notarized universal app
+        shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
-          npm run tauri build -- \
-            --target universal-apple-darwin \
-            --bundles app,dmg
+          export LC_ALL=C
+          log=$(mktemp)
+          trap 'rm -f "$log"' EXIT
+
+          for attempt in 1 2 3; do
+            if npm run tauri bundle -- --target universal-apple-darwin --bundles app,dmg 2>&1 | tee "$log"; then
+              exit 0
+            else
+              status=$?
+            fi
+
+            if [[ "$attempt" == 3 ]] || ! grep -Eiq 'A timestamp was expected but was not found|timestamp service is not available' "$log"; then
+              exit "$status"
+            fi
+
+            delay=$((30 * attempt))
+            echo "::warning::Apple signing timestamp unavailable. Retrying packaging in ${delay}s (attempt $((attempt + 1))/3)."
+            sleep "$delay"
+          done
 
       - name: Verify Apple signature and notarization
         run: |
           APP="target/universal-apple-darwin/release/bundle/macos/GeoFlight.app"
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          DMG="target/universal-apple-darwin/release/bundle/dmg/GeoFlight_${VERSION}_universal.dmg"
 
+          codesign --verify --verbose=2 "$DMG"
           codesign --verify --deep --strict --verbose=2 "$APP"
           xcrun stapler validate "$APP"
           spctl --assess --type execute --verbose=4 "$APP"
