@@ -15,7 +15,7 @@ import { NightEffect } from '../src/scene/NightEffect.ts'
 import { VolumetricCloudPass } from '../src/scene/VolumetricCloudPass.ts'
 import { bindCloudGroundLighting } from '../src/scene/cloudGroundLighting.ts'
 import { WaterMask } from '../src/scene/WaterMask.ts'
-import { frame } from '../src/world/frame.ts'
+import { enuBasis, frame, geodeticToEcef } from '../src/world/frame.ts'
 import { WorldSystem } from '../src/world/worldSystem.ts'
 import { createLayers } from '../src/world/providers.ts'
 import { CUMULUS, cloudProfileForWeather } from '../src/weather/cloudProfiles.ts'
@@ -584,6 +584,111 @@ async function renderChecks() {
   moveOrigin(6378137, 0, 0)
   coverage = 0
   check(meanDifference(aboveTemperateClouds, cloudFrame(180)) === 0, 'A clear report leaves all three cloud levels empty')
+
+  // The recording showed a westbound climb near Chicago at sunset. Measure
+  // the extra contrast from the upper decks above the low clouds' horizon.
+  const chicagoLatitude = 41.913
+  const chicagoLongitude = -88.298
+  const origin = geodeticToEcef(chicagoLatitude, chicagoLongitude, 0)
+  const { e: east, n: north, u: localUp } = enuBasis(chicagoLatitude, chicagoLongitude)
+  frame.setOrigin(...origin.toArray())
+  sky.worldToECEFMatrix.copy(frame.ecefFromWorld)
+  aerial.worldToECEFMatrix.copy(frame.ecefFromWorld)
+  const daylightSun = day.clone()
+  const heading = 276 * Math.PI / 180
+  const azimuth = 252 * Math.PI / 180
+  day.copy(localUp).multiplyScalar(Math.sin(-0.038))
+    .addScaledVector(east, Math.cos(-0.038) * Math.sin(azimuth))
+    .addScaledVector(north, Math.cos(-0.038) * Math.cos(azimuth))
+  sky.sunDirection.copy(day)
+  aerial.sunDirection.copy(day)
+  const chicagoHeight = 7050 * 0.3048
+  camera.position.set(0, chicagoHeight, 0)
+  camera.lookAt(1000 * Math.sin(heading), chicagoHeight - 150, -1000 * Math.cos(heading))
+  latitude = chicagoLatitude
+  groundHeight = 220
+  coverage = 0.66
+  for (const quality of ['medium', 'high']) {
+    volume.setQuality(quality)
+    upperClouds = false
+    const lowOnly = cloudFrame(180)
+    upperClouds = true
+    const allLayers = cloudFrame(180)
+    const upperContrast = (x, y) => {
+      const i = (y * WIDTH + x) * 4
+      return 0.213 * (allLayers[i] - lowOnly[i]) + 0.715 * (allLayers[i + 1] - lowOnly[i + 1]) +
+        0.072 * (allLayers[i + 2] - lowOnly[i + 2])
+    }
+    let contrast = 0, banding = 0, samples = 0
+    for (let y = Math.ceil(0.64 * HEIGHT); y < 0.85 * HEIGHT; y++) {
+      for (let x = 1; x < WIDTH - 1; x++) {
+        const center = upperContrast(x, y)
+        contrast += Math.abs(center)
+        banding += Math.abs(upperContrast(x, y - 1) + upperContrast(x, y + 1) - 2 * center)
+        samples++
+      }
+    }
+    check(contrast / samples > 1 && banding / samples < 0.96,
+      `Sunset upper clouds remain visible without scanlines at ${quality} (${(contrast / samples).toFixed(2)} contrast, ${(banding / samples).toFixed(2)} banding)`)
+  }
+  frame.setOrigin(6378137, 0, 0)
+  sky.worldToECEFMatrix.copy(frame.ecefFromWorld)
+  aerial.worldToECEFMatrix.copy(frame.ecefFromWorld)
+  day.copy(daylightSun)
+  groundHeight = 0
+  latitude = 45
+
+  // The X-15 recording climbs west from San Diego at roughly 730 m/s and
+  // 10,000 ft/min. A stationary-camera check misses the boiling as moving
+  // rays cross integration/LOD boundaries. Measure changes in the frame
+  // differences as well as motion, so normal parallax remains allowed.
+  const sanDiego = geodeticToEcef(32.7636, -117.597, 0)
+  const basis = enuBasis(32.7636, -117.597)
+  frame.setOrigin(...sanDiego.toArray())
+  sky.worldToECEFMatrix.copy(frame.ecefFromWorld)
+  aerial.worldToECEFMatrix.copy(frame.ecefFromWorld)
+  day.copy(basis.u).multiplyScalar(0.28).addScaledVector(basis.e, -0.90).addScaledVector(basis.n, -0.32).normalize()
+  sky.sunDirection.copy(day)
+  aerial.sunDirection.copy(day)
+  latitude = 32.7636
+  coverage = 0.57
+  profile = CUMULUS
+  upperClouds = false
+  const flightStart = new Vector3(0, 8980 * 0.3048, 0)
+  const flightHeading = 269 * Math.PI / 180
+  const flightDirection = new Vector3(Math.sin(flightHeading), 0, -Math.cos(flightHeading))
+  camera.position.copy(flightStart)
+  camera.lookAt(flightStart.clone().addScaledVector(flightDirection, 1000).add(new Vector3(0, -240, 0)))
+  const savedCoverage = coverage
+  coverage = 0
+  const clearClimb = cloudFrame(180)
+  coverage = savedCoverage
+  for (const quality of ['low', 'medium', 'high', 'ultra']) {
+    volume.setQuality(quality)
+    const frames = []
+    for (let i = 0; i < 32; i++) {
+      camera.position.copy(flightStart).addScaledVector(flightDirection, 730 * i / 50)
+      camera.position.y += 51 * i / 50
+      frames.push(cloudFrame(i === 0 ? 180 : 1 / 50))
+    }
+    let curvature = 0, motion = 0
+    for (let i = 1; i < frames.length - 1; i++) {
+      for (let p = 0; p < frames[i].length; p++) {
+        curvature += Math.abs(frames[i - 1][p] + frames[i + 1][p] - 2 * frames[i][p])
+        motion += Math.abs(frames[i + 1][p] - frames[i - 1][p]) / 2
+      }
+    }
+    check(meanDifference(clearClimb, frames[0]) > 2 && meanDifference(frames[0], frames.at(-1)) > 1,
+      `The ${quality} climb retains visible cloud formations and flight parallax`)
+    check(curvature / motion < 0.62,
+      `The ${quality} climb keeps cloud motion continuous (${(curvature / motion).toFixed(2)} flicker/motion)`)
+  }
+  frame.setOrigin(6378137, 0, 0)
+  sky.worldToECEFMatrix.copy(frame.ecefFromWorld)
+  aerial.worldToECEFMatrix.copy(frame.ecefFromWorld)
+  day.copy(daylightSun)
+  latitude = 45
+  volume.setQuality('high')
 
   // The default cloud renderer and the X-15's exhaust share the main scene at
   // high altitude. The plume should change the picture without restoring the band.

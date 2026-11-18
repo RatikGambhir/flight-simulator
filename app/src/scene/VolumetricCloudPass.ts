@@ -34,9 +34,8 @@ interface CloudWeather {
   snap?: boolean
 }
 
-function phase(out: Vector3, position: Vector3, displacement: Vector3, period: number, extra?: Vector3) {
+function phase(out: Vector3, position: Vector3, displacement: Vector3, period: number) {
   out.subVectors(position, displacement)
-  if (extra) out.sub(extra)
   out.divideScalar(period)
   out.x -= Math.floor(out.x)
   out.y -= Math.floor(out.y)
@@ -72,7 +71,6 @@ export class VolumetricCloudPass extends Pass {
   private readonly sun = new Vector3()
   private readonly shadowAnchor = new Vector3()
   private readonly drift = new Vector3()
-  private readonly detailDrift = new Vector3()
   private resolution = RESOLUTION.high
   private width = 1
   private height = 1
@@ -92,7 +90,6 @@ export class VolumetricCloudPass extends Pass {
     lightDirection: { value: new Vector3(0, 1, 0) },
     directLight: { value: new Vector3() },
     skyLight: { value: new Vector3() },
-    hazeColor: { value: new Vector3() },
     coverage: { value: 0 },
     cloudProfile: this.profile,
     middleCloud: this.middleCloud,
@@ -173,10 +170,8 @@ export class VolumetricCloudPass extends Pass {
     high.y = highTop + geoid
     high.z += ((dry ? smooth(0.07, 0.60, coverage) : 0) - high.z) * upperBlend
     this.weatherInitialized = true
+    // Advect every scale together so a puff retains its outline in the wind.
     this.drift.addScaledVector(wind, dt)
-    // At most 4 cm/s of extra translation. This changes erosion at the edge
-    // of a billow while the weather and main shape share exactly one wind.
-    this.detailDrift.addScaledVector(wind, dt * 0.04 / Math.max(1, wind.length()))
     this.eye.copy(this.view.position).applyMatrix4(this.ecefFromWorld)
     this.up.copy(this.eye)
     this.up.z *= POLAR_SCALE ** 2
@@ -191,13 +186,11 @@ export class VolumetricCloudPass extends Pass {
     const moonVisible = moonPhase ** 1.7 * smooth(0, 0.22, this.up.dot(moon))
     u.lightDirection.value.copy(sunVisible > 0 ? sun : moon)
     u.directLight.value.set(
-      0.49 * sunVisible * stormDarkness + 0.005 * moonVisible,
-      (0.47 - 0.27 * warm) * sunVisible * stormDarkness + 0.006 * moonVisible,
-      (0.44 - 0.34 * warm) * sunVisible * stormDarkness + 0.008 * moonVisible,
+      0.36 * sunVisible * stormDarkness + 0.005 * moonVisible,
+      (0.35 - 0.19 * warm) * sunVisible * stormDarkness + 0.006 * moonVisible,
+      (0.34 - 0.25 * warm) * sunVisible * stormDarkness + 0.008 * moonVisible,
     )
     u.skyLight.value.set(0.003 + 0.11 * daylight, 0.004 + 0.14 * daylight, 0.006 + 0.20 * daylight)
-    u.hazeColor.value.set(0.0012 + (0.24 - 0.03 * warm) * daylight,
-      0.0016 + (0.34 - 0.17 * warm) * daylight, 0.00235 + (0.46 - 0.32 * warm) * daylight)
   }
 
   setQuality(quality: Quality) {
@@ -243,7 +236,7 @@ export class VolumetricCloudPass extends Pass {
     phase(u.weatherPhase.value, this.eye, this.drift, WEATHER_PERIOD)
     phase(u.spacingPhase.value, this.eye, this.drift, SPACING_PERIOD)
     phase(u.shapePhase.value, this.eye, this.drift, SHAPE_PERIOD)
-    phase(u.detailPhase.value, this.eye, this.drift, DETAIL_PERIOD, this.detailDrift)
+    phase(u.detailPhase.value, this.eye, this.drift, DETAIL_PERIOD)
     const cirrus = u.cirrusPhase.value.subVectors(this.eye, this.drift).divideScalar(SPACING_PERIOD)
     cirrus.addScaledVector(CIRRUS_AXIS, -0.86 * cirrus.dot(CIRRUS_AXIS))
     cirrus.set(cirrus.x - Math.floor(cirrus.x), cirrus.y - Math.floor(cirrus.y), cirrus.z - Math.floor(cirrus.z))
