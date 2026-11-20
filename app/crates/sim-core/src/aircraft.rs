@@ -120,7 +120,7 @@ pub struct AircraftSpec {
 impl AircraftSpec {
     /// Highest Mach number a flight-state placement may request (rocket aircraft only).
     pub fn max_mach(&self) -> Option<f64> {
-        (self.engine == EngineKind::Rocket).then_some(X15_MAX_MACH)
+        (self.engine == EngineKind::Rocket).then_some(if self.id == "endeavour" { 30.0 } else { X15_MAX_MACH })
     }
 
     pub fn aspect_ratio(&self) -> f64 {
@@ -800,6 +800,64 @@ static CATALOG: &[AircraftSpec] = &[
         max_alt_ft: 354_200.0,
         autoland_max_gust_ms: 1.0,
         service_ceiling_note: "354,200 ft (record)",
+    },
+    AircraftSpec {
+        id: "endeavour",
+        name: "Space Shuttle Endeavour (OV-105)",
+        manufacturer_style: "Rockwell / NASA",
+        category: "Orbital spacecraft",
+        description: "25 missions. Retired to the California Science Center in Los Angeles, California. Choose a launch site, separate the rocket stack, and explore orbit beside the ISS.",
+        // Orbiter mass; launch stack follows a separate guided mission profile.
+        mass_kg: 100_000.0,
+        wing_area_m2: 249.9,
+        wingspan_m: 23.79,
+        length_m: 37.24,
+        gear_height_m: 4.0,
+        belly_height_m: 1.9,
+        wheelbase_m: 22.0,
+        retractable_gear: true,
+        rest_pitch_deg: 0.0,
+        tailstrike_pitch_deg: 12.0,
+        engine: EngineKind::Rocket,
+        engine_count: 3,
+        // Fictional atmospheric landing-assist thrust; orbit uses the separate OMS/RCS model.
+        max_thrust_n: 350_000.0,
+        spool_time_s: 1.2,
+        idle_thrust: 0.0,
+        prop_power_w: 0.0,
+        afterburner_thrust_n: 0.0,
+        afterburner_detent: 0.0,
+        thrust_reversers: false,
+        cd0: 0.045,
+        oswald: 0.82,
+        cl0: 0.2,
+        cl_alpha: 4.5,
+        alpha_stall_deg: 22.0,
+        flap_cl: 0.0,
+        flap_cd: 0.0,
+        gear_cd: 0.035,
+        spoiler_cd: 0.16,
+        spoiler_cl: -0.06,
+        flap_detents: &["—"],
+        auto_flaps: false,
+        wave_drag_cd: 0.027,
+        drag_rise_mach: 0.85,
+        max_roll_rate: 30.0,
+        max_pitch_rate: 12.0,
+        max_yaw_rate: 7.0,
+        response_time_s: 0.6,
+        max_load_factor: 4.0,
+        min_load_factor: -1.0,
+        aerobatic: false,
+        full_authority_q: 5_000.0,
+        v_rotate_kt: 250.0,
+        v_approach_kt: 205.0,
+        v_cruise_kt: 235.0,
+        v_max_kt: 650.0,
+        cruise_alt_ft: 1_377_953.0,
+        max_alt_ft: 3_280_840.0,
+        autoland_max_gust_ms: 2.5,
+        service_ceiling_note: "420 km mission orbit",
     },
 ];
 

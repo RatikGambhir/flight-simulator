@@ -27,7 +27,8 @@ fn rwy(airport: &str, end: &str) -> RunwayGeom {
 
 #[test]
 fn every_aircraft_gets_a_consistent_speed_schedule() {
-    for s in catalog() {
+    // Endeavour uses launch/orbit guidance, not runway takeoff and landing schedules.
+    for s in catalog().iter().filter(|s| s.id != "endeavour") {
         let p = Perf::from_spec(s);
         assert!(p.v_ref < p.v_clean, "{}: vref {} clean {}", s.id, p.v_ref, p.v_clean);
         assert!(p.v_app >= p.v_ref && p.v_app < p.v_clean, "{}", s.id);

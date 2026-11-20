@@ -1338,3 +1338,11 @@ input[type='checkbox'] {
     left: 24px;
   }
 }
+
+.shuttle-departure { max-width: 760px; line-height: 1.65; padding: 32px; }
+.shuttle-departure h3 { font-size: 28px; letter-spacing: -0.6px; }
+.shuttle-controls { width: min(580px, calc(100vw - 48px)); padding: 10px 14px 14px; display: grid; gap: 9px; font-size: 12px; }
+.shuttle-controls output { color: #a4e8dc; font-size: 13px; }
+.shuttle-controls .row { gap: 12px; flex-wrap: wrap; }
+.shuttle-controls select { background: #172a38; color: #eef6fa; border: 1px solid #4b626e; border-radius: 5px; padding: 5px; margin-left: 6px; }
+.shuttle-controls .faint { font-size: 10px; line-height: 1.5; }

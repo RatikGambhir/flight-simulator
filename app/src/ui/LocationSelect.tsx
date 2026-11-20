@@ -1,4 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { ShuttleDeparture } from './ShuttleMission'
 import { isRocket, X15_LAUNCH } from '../flight'
 import { sim } from '../sim/simClient'
 import type { Airport, AirportDetail, RunwaySpawnKind, SearchResult, SpawnMode } from '../sim/protocol'
@@ -93,7 +94,14 @@ function ResultIcon({ kind }: { kind: string }) {
   return <div className="icon">{ICON[kind] ?? '•'}</div>
 }
 
-export function LocationSelect({ initial, onConfirm, onClose, confirmLabel }: { initial: SpawnChoice; onConfirm: (s: SpawnChoice) => void; onClose: () => void; confirmLabel: string }) {
+type LocationProps = { initial: SpawnChoice; onConfirm: (s: SpawnChoice) => void; onClose: () => void; confirmLabel: string }
+
+export function LocationSelect(props: LocationProps) {
+  const shuttle = useApp((s) => s.aircraftId === 'endeavour')
+  return shuttle ? <ShuttleDeparture {...props} /> : <OrdinaryLocationSelect {...props} />
+}
+
+function OrdinaryLocationSelect({ initial, onConfirm, onClose, confirmLabel }: { initial: SpawnChoice; onConfirm: (s: SpawnChoice) => void; onClose: () => void; confirmLabel: string }) {
   const blackbird = useApp((s) => s.aircraftId === 'sr71')
   const aircraft = useAircraftSpec(useApp((s) => s.aircraftId))
   const rocket = isRocket(aircraft)

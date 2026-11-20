@@ -9,6 +9,7 @@ import { build737Cockpit } from './cockpit737'
 import { buildFighterCockpit } from './cockpitFighter'
 import { buildAirlifterCockpit } from './cockpitAirlifters'
 import { buildBlackbirdCockpit } from './cockpitBlackbird'
+import { buildEndeavourCockpit } from './cockpitEndeavour'
 import { buildX15Cockpit } from './cockpitX15'
 
 export interface Cockpit {
@@ -58,6 +59,7 @@ function windowFrame(parent: Object3D, mat: Material, eye: Vector3, width: numbe
 
 export function buildCockpit(model: AircraftModel): Cockpit {
   if (model.id === 'c5m' || model.id === 'c17') return buildAirlifterCockpit(model)
+  if (model.id === 'endeavour') return buildEndeavourCockpit(model)
   if (model.id === 'b737') return build737Cockpit(model)
   if (model.cockpit === 'ga') return build172Cockpit(model)
   if (model.cockpit === 'fighter') return buildFighterCockpit(model)

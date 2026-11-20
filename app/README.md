@@ -408,3 +408,67 @@ You can drop the original `stbn.bin` in its place.
   daylight hours therefore follow the season.
 * **Aircraft** are original procedural models in the style of each type — not licensed
   replicas of manufacturer designs or liveries.
+
+## Endeavour orbital mission
+
+Choose **Space Shuttle Endeavour (OV-105)** in the aircraft picker. Its flight
+path defaults to Houston's Johnson Space Center near Rocket Park. **Change departure**
+also offers Kennedy LC-39A, Tanegashima (Japan), Sriharikota (India), a **Daylight
+launch** setting (local noon), and **Start beside the ISS**. Houston's platform
+is fictional: Johnson hosts Mission Control; historical Shuttle launches took
+place at Kennedy. The Asian sites are alternate simulated Shuttle departures.
+The aircraft card records Endeavour's 25 missions and
+retirement to the California Science Center in Los Angeles, California.
+
+Launch surroundings use the same terrain/imagery provider and bounded tile
+streamer as ordinary flights, including Google photogrammetry when configured.
+The open-data option supplies satellite imagery and terrain without a key;
+3D buildings require a provider that includes them. Ground probes align the pad
+and stack to the streamed surface before liftoff. Pad floodlights and terrain
+night shading keep night departures visible. **Daylight view** switches the pad
+to local noon in flight. Local tiles give way to the true-scale globe by 120 km.
+
+- **L / Launch** starts the guided rocket ascent. Two solid boosters separate
+  automatically at T+2:05. The mission condenses ascent and the orbital transfer
+  to roughly 420 km into 8½ simulated minutes; the mission speed selector offers
+  up to 8×. This is an educational profile, not a historical Shuttle trajectory.
+- **B / Release tank** becomes available after insertion. Separation adds only a
+  0.3 m/s spring impulse; the orbiter retains its orbital velocity.
+- **W/S, A/D, J/E** command RCS pitch, roll and yaw. **R/F** adjusts OMS thrust;
+  **Shift-F** cuts it. Hold **X** for aft RCS, **U/O** for left/right translation,
+  and **I/K** for up/down translation. Rates damp when controls are released;
+  translational velocity persists. Propellant is unlimited for exploration.
+- The ISS is a 109 m × 72.8 m simplified model on an ideal 51.6° circular mission
+  orbit, phased 600 m ahead at insertion. This is not live ISS tracking. Keep
+  clear of the station's 38 m safety boundary. Docking is outside this mission.
+- **Landing airport** chooses a destination (default **KTTS**, the Space Florida
+  Launch and Landing Facility). After separating, choose **Skip re-entry &
+  autoland**. This intentionally skips the atmospheric return and places Endeavour
+  on a stable 6 nm approach. The existing autopilot then flies the approach,
+  extends the three wheel assemblies, flares, touches down and brakes to a stop.
+  **Z** disconnects or re-engages it; **G** operates the landing gear. The airport
+  must have a sufficiently long paved runway. Manual orbital descent below 80 km
+  still ends the spaceflight; use the assisted return for landing.
+
+Spaceflight runs in the same Rust core on native and WASM hosts, through an
+isolated Shuttle integrator. A velocity-Verlet central-gravity calculation uses
+Earth's gravitational parameter 3.986004418e14 m³/s² and accounts for Earth
+rotation when converting between inertial motion and ECEF snapshots. Gravity
+near the station is about 8.6 m/s²: the zero felt load comes from orbital free
+fall. The cockpit and HUD show inertial speed, altitude, ISS distance and gravity.
+The rendered WGS84 Earth uses metres without planet or spacecraft size inflation.
+The existing date-based lunar phase, distance, parallax, Earth occultation and
+star field are shared; the Sun also uses its distance-dependent angular size.
+Gravity omits J2, lunar/solar perturbations and residual atmospheric drag.
+The user-requested atmospheric landing assist supplies fictional 350 kN thrust
+for speed control and go-arounds; orbital OMS thrust remains 53.4 kN. This keeps
+landing forgiving rather than enforcing the real Shuttle's unpowered-only return.
+
+`npm run test:space` builds and exercises the actual WASM command/snapshot ABI,
+launch stages and all RCS translation inputs. It is included in the root
+`npm run app:test` suite. Rust tests also verify orbital energy conservation over
+one revolution, weightlessness, staging guards, pause/restart and aircraft changes.
+Return/landing tests cover Kennedy, O’Hare and Edwards, including wind, touchdown,
+wheel deployment and a full stop; the browser WASM test also completes an autoland.
+`npm run test:graphics:gpu` includes the Shuttle, ISS and globe shaders in native
+WebKit along with the existing scenery and cloud checks.

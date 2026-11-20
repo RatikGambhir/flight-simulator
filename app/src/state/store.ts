@@ -1,3 +1,4 @@
+import type { ShuttleSite } from '../sim/shuttleSites'
 import { create } from 'zustand'
 import { liveryOptions, type LiveryId } from '../aircraft/liveries'
 import type { AirportDetail, RocketFlightState, RunwaySpawnKind, SpawnMode } from '../sim/protocol'
@@ -130,6 +131,7 @@ function loadLiveries(): Record<string, LiveryId> {
 }
 
 export type SpawnChoice =
+  | { kind: 'shuttle'; label: string; lat: number; lon: number; elevationFt: number | null; heading: number; orbit: boolean; site: ShuttleSite }
   | { kind: 'runway'; airport: string; airportName: string; runway: string | null; mode: RunwaySpawnKind }
   | { kind: 'coords'; label: string; lat: number; lon: number; mode: SpawnMode; aglFt: number; heading: number; elevationFt: number | null; cruise?: boolean }
   | ({ kind: 'rocket'; label: string; lat: number; lon: number; elevationFt: number | null } & RocketFlightState)

@@ -329,3 +329,55 @@ src/
 
 Commands (from `site/`): `npm run dev` (port 5180), `npm run build` (type-check, then `dist/`),
 `npm run lint` (oxlint), `npm run preview`.
+
+### Endeavour mission extension
+
+`app/crates/sim-core/src/sim/shuttle.rs` owns the Shuttle mission phases and
+inertial orbital integration. Only Endeavour takes this stepping path; airplane
+and X-15 dynamics remain in their existing modules. Native and WASM use the
+same commands (`spawn_shuttle`, `launch_shuttle`, `separate_shuttle`) and appended
+snapshot fields for mission time, staging, ISS ECEF position, inertial speed and
+local gravity. The original 64 snapshot indices retain their meanings. The WASM
+input ABI adds strafe/vertical RCS axes after the original six axes.
+
+`SpaceScene.tsx` owns the globe, assisted launch platform, ISS and mission camera.
+Both flight scenes use `useWorld.ts` and `WorldSystem` for real terrain, imagery,
+provider errors and attribution. Shuttle snapshots identify Houston, Kennedy,
+Tanegashima or Sriharikota and the pad's ellipsoid height; stationary ground
+samples refine the stack and ascent origin together. The launch view uses the
+ordinary flight pipeline's sun and sky lights, lighting mask and aerial
+perspective (with `stabilizeAerialPerspective`), so streamed scenery is lit and
+hazed exactly as in normal flight. The ISS and pad are forward-lit (masked)
+objects that only receive haze; the globe outputs graded albedo plus procedural
+clouds and is lit by the same pass as the tiles, so the 120 km hand-over matches,
+with city lights added afterwards by an additive overlay. The globe stays 1 km
+inset until the tiles are hidden (ocean tiles lie below the ellipsoid and would
+otherwise fight it for depth). Exposure eases from the flight value of 10 to
+about half by 220 km, like an orbital camera exposing for the sunlit planet.
+The lens flare only takes ghosts from the sun (threshold 200), not the exhaust.
+Performance: the launch light set never changes (the firelight stays at zero
+intensity, far pad meshes hide but its floodlights stay) and the exhaust shaders
+are compiled against a linear render target at load, so liftoff compiles no
+programs. The globe's cloud field is baked once into a 4096x2048 R8 map.
+`WorldSystem` is released above 140 km, freeing the tile cache, and recreated
+below 120 km. Smoke keeps a live-index list and reuses last frame's draw order
+(insertion sort, no per-frame allocation); `npm run bench:launch` measures it.
+Aircraft ground-shadow silhouettes are rendered on first `attachShadow` and kept
+as a resolved, depth-less 1024² texture. `launchEffects.ts` draws the
+exhaust in a composer pass after aerial perspective (so it is never relit as
+terrain), reading the composer's stable log depth for occlusion and soft edges:
+shader plumes on anchors in the Endeavour model, a sorted, sun-lit smoke column
+and pad exhaust cloud anchored in ECEF and deflected along the flame trench,
+firelight, bloom and launch camera shake. Cinematic and Flyby become long-lens
+site and pad tracking cameras during the ascent. Tile updates stop and groups hide above
+120 km; the coarse globe sits below local terrain until it reaches its exact
+WGS84 size at that altitude. The scene shares the floating origin, aircraft
+controller, inputs and celestial sky, without atmospheric collision probes.
+All tile resources and pointer listeners end when switching flight scenes.
+
+`land_shuttle` validates a long paved runway, skips re-entry and uses the shared
+approach placement and autopilot. It clears orbital mission state and publishes
+Shuttle phase 6, which `useShuttlePhase` observes through snapshot subscriptions.
+The renderer swaps to the ordinary streamed-terrain flight scene; standard flight
+dynamics, weather, ground probing, landing gear contact, flare and rollout take
+over. The landing assist is deliberately fictional; orbital dynamics stay isolated.

@@ -1,7 +1,7 @@
 import {
   BufferGeometry, Color, Data3DTexture, DataTexture, DirectionalLight, Float32BufferAttribute, HalfFloatType,
   HemisphereLight, Mesh, MeshBasicMaterial, PerspectiveCamera, PlaneGeometry, Points, RedFormat,
-  RepeatWrapping, Scene, SRGBColorSpace, TextureLoader, Vector3, WebGLRenderer,
+  RepeatWrapping, Scene, ShaderMaterial, SphereGeometry, SRGBColorSpace, TextureLoader, Vector3, WebGLRenderer,
 } from 'three'
 import { EffectComposer, EffectPass, RenderPass, ToneMappingEffect, ToneMappingMode } from 'postprocessing'
 import { AerialPerspectiveEffect, PrecomputedTexturesGenerator, SkyMaterial, StarsMaterial } from '@takram/three-atmosphere'
@@ -20,6 +20,11 @@ import { WorldSystem } from '../src/world/worldSystem.ts'
 import { createLayers } from '../src/world/providers.ts'
 import { CUMULUS, cloudProfileForWeather } from '../src/weather/cloudProfiles.ts'
 import { CLEAR_HAZE, parseConditions, visualTargets } from '../src/weather/liveWeather.ts'
+import { buildEndeavour } from '../src/aircraft/exterior/endeavour.ts'
+import { buildISS } from '../src/scene/spaceModels.ts'
+import { EARTH_SPACE_VERTEX, EARTH_SPACE_FRAGMENT } from '../src/scene/spaceRendering.ts'
+import { TerrainBasicMaterial } from '../node_modules/3d-tiles-renderer/src/three/plugins/images/terrain-rgb/TerrainBasicMaterial.js'
+import { S } from '../src/sim/protocol.ts'
 import { buildX15 } from '../src/aircraft/exterior/x15.ts'
 import { disposeAircraftMeshes } from '../src/aircraft/models.ts'
 
@@ -729,7 +734,7 @@ async function renderChecks() {
   const airportScene = new Scene()
   const world = new WorldSystem(google, renderer, camera, airportScene)
   const { tiles } = world.layers[0]
-  const pavement = new Mesh(new PlaneGeometry(46, 120), new MeshBasicMaterial({ color: '#ff0000' }))
+  const pavement = new Mesh(new PlaneGeometry(46, 120), new TerrainBasicMaterial({ color: '#ff0000' }))
   pavement.rotation.x = -Math.PI / 2
   pavement.position.z = -64
   pavement.updateMatrix()
@@ -759,6 +764,36 @@ async function renderChecks() {
   world.dispose()
   pavement.geometry.dispose()
   pavement.material.dispose()
+  // Exercise the new models and globe with the same native WebKit renderer.
+  const orbitScene = new Scene()
+  const shuttle = buildEndeavour()
+  const station = buildISS()
+  const shuttleSnap = new Float64Array(S.LEN)
+  shuttleSnap[S.SHUTTLE_PHASE] = 5; shuttleSnap[S.MISSION_TIME] = 600
+  shuttleSnap[S.BOOSTER_SEP_TIME] = 125; shuttleSnap[S.TANK_SEP_TIME] = 510
+  shuttle.flightState(shuttleSnap)
+  station.position.set(60, 0, -70)
+  orbitScene.add(shuttle.root, station, new HemisphereLight(0xffffff, 0x242a33, 1.5))
+  const orbitSun = new DirectionalLight(0xffffff, 3); orbitSun.position.set(20, 80, 20); orbitScene.add(orbitSun)
+  camera.position.set(100, 65, 120); camera.lookAt(20, 0, -20); camera.updateMatrixWorld()
+  renderer.toneMappingExposure = 1
+  renderer.render(orbitScene, camera)
+  check(renderer.info.render.calls < 180 && renderer.info.render.triangles > 5000,
+    'Endeavour and the ISS render with bounded draw calls and no shader errors')
+  orbitScene.remove(shuttle.root, station)
+  const earthMap = texture(new Uint8Array([20, 70, 180, 255]))
+  earthMap.colorSpace = SRGBColorSpace
+  const planet = new Mesh(new SphereGeometry(6378137, 64, 32), new ShaderMaterial({
+    vertexShader: EARTH_SPACE_VERTEX, fragmentShader: EARTH_SPACE_FRAGMENT,
+    uniforms: { dayMap: { value: earthMap }, nightMap: { value: earthMap }, sunECEF: { value: new Vector3(0, 1, 0) }, brightness: { value: 1 } },
+  }))
+  planet.position.y = -6378137 - 420000; orbitScene.add(planet)
+  camera.position.set(0, 0, 0); camera.lookAt(0, -1000000, -1000000); camera.updateMatrixWorld()
+  renderer.render(orbitScene, camera)
+  check(pixel(0.5, 0.8)[2] > pixel(0.5, 0.8)[0] && !errors.length && gl.getError() === gl.NO_ERROR,
+    'The Earth globe shades correctly at 420 km with logarithmic depth')
+  disposeAircraftMeshes(shuttle.root); disposeAircraftMeshes(station); disposeAircraftMeshes(planet)
+  station.traverse((o) => { if (o.isLine) { o.geometry.dispose(); o.material.dispose() }; if (o.isInstancedMesh) o.dispose() })
   composer.dispose()
   cloudPass.dispose()
   lunarMap.dispose()

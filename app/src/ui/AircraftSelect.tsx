@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { liveryOptions, type LiveryId } from '../aircraft/liveries'
 import { applySelection, isRocket, x15Departure } from '../flight'
 import { useApp } from '../state/store'
+import { endeavourDeparture } from './ShuttleMission'
 import { useAircraftList } from './useAircraftList'
 
 const thumbnailKey = (id: string, livery: LiveryId) => `${id}/${livery}`
@@ -37,9 +38,12 @@ export function AircraftSelect({ onClose }: { onClose: () => void }) {
 
   const choose = (id: string) => {
     const { spawn, setSpawn } = useApp.getState()
-    if (isRocket(list.find((a) => a.id === id))) {
+    if (id === 'endeavour') {
+      if (id !== aircraftId) { setSpawn(endeavourDeparture(false)); useApp.getState().setDestination(null) }
+    } else if (isRocket(list.find((a) => a.id === id))) {
       if (id !== aircraftId) setSpawn(x15Departure(spawn))
-    } else if (spawn.kind === 'rocket') setSpawn({
+    } else if (spawn.kind === 'shuttle') setSpawn({ kind: 'runway', airport: 'KORD', airportName: "Chicago O'Hare International Airport", runway: '28R', mode: 'takeoff' })
+    else if (spawn.kind === 'rocket') setSpawn({
       kind: 'coords', label: spawn.label, lat: spawn.lat, lon: spawn.lon, elevationFt: spawn.elevationFt,
       mode: 'air', aglFt: 3000, heading: spawn.heading,
     })
@@ -62,6 +66,7 @@ export function AircraftSelect({ onClose }: { onClose: () => void }) {
         <div className="aircraft-grid">
           {list.map((a) => {
             const blackbird = a.id === 'sr71'
+            const shuttle = a.id === 'endeavour'
             const rocket = a.engine === 'rocket'
             const selected = a.id === aircraftId
             const livery = liveries[a.id] ?? 'default'
@@ -81,18 +86,18 @@ export function AircraftSelect({ onClose }: { onClose: () => void }) {
                       {a.description}
                     </p>
                     <div className="stats">
-                      <span>{rocket ? 'Record speed' : 'Cruise'}</span>
-                      <span>{rocket ? 'Mach 6.7' : blackbird ? 'Mach 3.2' : `${a.v_cruise_kt} kt`}</span>
+                      <span>{shuttle ? 'Orbital speed' : rocket ? 'Record speed' : 'Cruise'}</span>
+                      <span>{shuttle ? '7.67 km/s' : rocket ? 'Mach 6.7' : blackbird ? 'Mach 3.2' : `${a.v_cruise_kt} kt`}</span>
                       <span>{rocket ? 'Peak altitude' : 'Ceiling'}</span>
                       <span>{a.service_ceiling_note}</span>
                       <span>Length / span</span>
                       <span>{a.length_m.toFixed(1)} / {a.wingspan_m.toFixed(1)} m</span>
                       <span>Engines</span>
                       <span>
-                        {a.engine_count} × {rocket ? 'XLR99 rocket' : blackbird ? 'J58 turbojet' : a.engine === 'propeller' ? 'piston/prop' : a.afterburner_thrust_n > 0 ? 'afterburning turbofan' : 'turbofan'}
+                        {a.engine_count} × {shuttle ? 'Shuttle main engine + OMS/RCS' : rocket ? 'XLR99 rocket' : blackbird ? 'J58 turbojet' : a.engine === 'propeller' ? 'piston/prop' : a.afterburner_thrust_n > 0 ? 'afterburning turbofan' : 'turbofan'}
                       </span>
-                      <span>{rocket ? 'Air launch' : 'Rotate / approach'}</span>
-                      <span>{rocket ? '45,000 ft · Mach 0.75' : `${a.v_rotate_kt} / ${a.v_approach_kt} kt`}</span>
+                      <span>{shuttle ? 'Flight path' : rocket ? 'Air launch' : 'Rotate / approach'}</span>
+                      <span>{shuttle ? 'Launch site → ISS' : rocket ? '45,000 ft · Mach 0.75' : `${a.v_rotate_kt} / ${a.v_approach_kt} kt`}</span>
                     </div>
                   </div>
                 </button>

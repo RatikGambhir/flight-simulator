@@ -11,16 +11,16 @@ import { SMAAPreset, ToneMappingMode, type Effect } from 'postprocessing'
 import { Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { NoToneMapping, PCFShadowMap, Vector2, type DirectionalLight, type HemisphereLight, type PerspectiveCamera } from 'three'
 import type { LightingMaskPass, SunDirectionalLight, SkyLightProbe } from '@takram/three-atmosphere'
-import type { ShaderMaterial } from 'three'
 import { AircraftController, LIGHTING_MASK_LAYER } from '../aircraft/aircraftController'
 import { sound } from '../audio/sound'
 import { weatherCommand } from '../flight'
+import { useShuttlePhase } from '../sim/useShuttlePhase'
 import { S } from '../sim/protocol'
 import { sim } from '../sim/simClient'
 import { useApp, type Quality } from '../state/store'
 import { frame } from '../world/frame'
-import { WorldSystem } from '../world/worldSystem'
-import { worldStatus } from './worldStatus'
+import { useWorld } from './useWorld'
+import { SpaceScene } from './SpaceScene'
 import { SkyEnvironment } from './SkyEnvironment'
 import { FlightLoop } from './FlightLoop'
 import { GradeEffect } from './Grade'
@@ -35,6 +35,7 @@ import { useAtmosphereTextures } from './useAtmosphereTextures'
 import { DestinationMarker } from './DestinationMarker'
 import { PrecipitationEffect } from './Precipitation'
 import { useLandingRunway } from './useLandingRunway'
+import { patchLightingMask } from './lightingMask'
 import { CelestialSky } from './CelestialSky'
 import { CelestialState } from './celestial'
 import { useWeather } from '../weather/liveWeather'
@@ -73,36 +74,6 @@ const ADAPTIVE_STEPS = [1, 0.85, 0.72, 0.6]
  */
 const MAX_DPR: Record<Quality, number> = { low: 1, medium: 1.25, high: 1.5, ultra: 2 }
 
-/**
- * The stock lighting-mask shader decodes depth as if the buffer were linear
- * perspective depth. With the logarithmic depth buffer every sample collapses
- * to nearly the same value, so a masked object counts as visible even when
- * terrain hides it. Require a match with the visible depth, since the opaque
- * override can also draw windows and other surfaces that never wrote scene depth.
- */
-const LIGHTING_MASK_FRAG = /* glsl */ `
-#include <common>
-#include <packing>
-uniform highp sampler2D depthBuffer0;
-uniform highp sampler2D depthBuffer1;
-uniform bool inverted;
-varying vec2 vUv;
-void main() {
-  float scene = unpackRGBAToDepth(texture2D(depthBuffer0, vUv));
-  float selected = unpackRGBAToDepth(texture2D(depthBuffer1, vUv));
-  bool keep = scene < 1.0 && selected < 1.0 && abs(selected - scene) <= 2e-7;
-  if (inverted) keep = !keep;
-  if (!keep) discard;
-  gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-}`
-
-function patchLightingMask(pass: LightingMaskPass | null) {
-  const material = (pass as unknown as { depthMaskMaterial?: ShaderMaterial } | null)?.depthMaskMaterial
-  if (!material || material.fragmentShader === LIGHTING_MASK_FRAG) return
-  material.fragmentShader = LIGHTING_MASK_FRAG
-  material.needsUpdate = true
-}
-
 const CUSTOM_CLOUDS = new URLSearchParams(window.location.search).get('clouds') !== 'legacy'
 
 function CustomCloudOverlay({ pass }: { pass: VolumetricCloudPass }) {
@@ -115,27 +86,6 @@ function CustomCloudOverlay({ pass }: { pass: VolumetricCloudPass }) {
   return <primitive object={pass} />
 }
 
-function useWorld(): WorldSystem | null {
-  const { gl, camera, scene } = useThree()
-  const provider = useApp((s) => s.settings.provider)
-  const googleApiKey = useApp((s) => s.settings.googleApiKey)
-  const cesiumToken = useApp((s) => s.settings.cesiumToken)
-  const cesiumMode = useApp((s) => s.settings.cesiumMode)
-  const openImagery = useApp((s) => s.settings.openImagery)
-  const quality = useApp((s) => s.settings.quality)
-  const [world, setWorld] = useState<WorldSystem | null>(null)
-  useEffect(() => {
-    const settings = useApp.getState().settings
-    const w = new WorldSystem(settings, gl, camera as PerspectiveCamera, scene)
-    setWorld(w)
-    worldStatus.set({ world: w })
-    return () => {
-      worldStatus.set({ world: null })
-      w.dispose()
-    }
-  }, [gl, camera, scene, provider, googleApiKey, cesiumToken, cesiumMode, openImagery, quality])
-  return world
-}
 
 function useAircraft(): AircraftController | null {
   const { gl, scene } = useThree()
@@ -420,6 +370,8 @@ function AdaptiveResolution({ step, onStep }: { step: number; onStep: (step: num
 }
 
 export default function FlightScene() {
+  const shuttlePhase = useShuttlePhase()
+  const shuttle = useApp((s) => s.aircraftId === 'endeavour') && shuttlePhase !== 6
   const renderScale = useApp((s) => s.settings.renderScale)
   const shadows = useApp((s) => s.settings.shadows)
   const quality = useApp((s) => s.settings.quality)
@@ -439,8 +391,8 @@ export default function FlightScene() {
         gl.setClearColor('#000000')
       }}
     >
-      <SceneContents />
-      <DestinationMarker />
+      {shuttle ? <SpaceScene /> : <SceneContents />}
+      {!shuttle ? <DestinationMarker /> : null}
       {adaptive ? <AdaptiveResolution step={step} onStep={setStep} /> : null}
     </Canvas>
   )

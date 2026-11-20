@@ -289,3 +289,51 @@ test('Blackbird builds its twin inlets, moving elevons and readable cruise instr
     disposeAircraftMeshes(model.root)
   }
 })
+
+test('Endeavour stages its launch stack and owns live orbital instruments', async () => {
+  const { buildAircraft, disposeAircraftMeshes } = await import('../src/aircraft/models.ts')
+  const { buildCockpit } = await import('../src/aircraft/cockpit.ts')
+  const model = buildAircraft('endeavour', 3)
+  const cockpit = buildCockpit(model)
+  const s = new Float64Array(S.LEN)
+  s[S.SHUTTLE_PHASE] = 2; s[S.MISSION_TIME] = 60
+  s[S.BOOSTER_SEP_TIME] = s[S.TANK_SEP_TIME] = -1
+  model.flightState(s)
+  assert.equal(model.span, 23.79)
+  assert.equal(model.gear.length, 3, 'nose and two main wheel assemblies')
+  assert.equal(model.root.getObjectByName('external tank').visible, true)
+  assert.equal(model.root.getObjectByName('left solid booster').visible, true)
+  s[S.SHUTTLE_PHASE] = 3; s[S.MISSION_TIME] = 146; s[S.BOOSTER_SEP_TIME] = 125
+  model.flightState(s)
+  assert.equal(model.root.getObjectByName('left solid booster').visible, false)
+  assert.equal(model.root.getObjectByName('external tank').visible, true)
+  s[S.SHUTTLE_PHASE] = 5; s[S.MISSION_TIME] = 550; s[S.TANK_SEP_TIME] = 510
+  model.flightState(s)
+  assert.equal(model.root.getObjectByName('external tank').visible, false)
+  s[S.SHUTTLE_PHASE] = 6; s[S.MISSION_TIME] = 0
+  model.flightState(s)
+  assert.equal(model.root.getObjectByName('external tank').visible, false, 'runway flight never restores the launch stack')
+  assert.equal(model.root.getObjectByName('left solid booster').visible, false)
+  assert.ok(cockpit.root.getObjectByName('endeavour-orbital-instruments'))
+  cockpit.update(s, { pitch: 1, roll: 1, throttle: 0 })
+  assert.ok(cockpit.stick.rotation.x < 0)
+  model.root.traverse((o) => {
+    if (o.isMesh) assert.ok(o.geometry.attributes.position.array.every(Number.isFinite), o.name)
+  })
+  cockpit.dispose(); disposeAircraftMeshes(cockpit.root, false); disposeAircraftMeshes(model.root)
+})
+
+test('ISS model retains its real 109 m span and batches its solar arrays', async () => {
+  const { Box3 } = await import('three')
+  const { buildISS } = await import('../src/scene/spaceModels.ts')
+  const { disposeAircraftMeshes } = await import('../src/aircraft/models.ts')
+  const station = buildISS()
+  const bounds = new Box3().setFromObject(station)
+  assert.ok(Math.abs(bounds.max.x - bounds.min.x - 109) < 0.01)
+  assert.ok(Math.abs(bounds.max.z - bounds.min.z - 72.8) < 0.01)
+  const arrays = station.children.find((o) => o.isInstancedMesh && o.count === 8)
+  assert.ok(arrays)
+  assert.equal(arrays.material.map.colorSpace, 'srgb')
+  disposeAircraftMeshes(station)
+  station.traverse((o) => { if (o.isLine) { o.geometry.dispose(); o.material.dispose() }; if (o.isInstancedMesh) o.dispose() })
+})

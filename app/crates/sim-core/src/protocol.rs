@@ -25,6 +25,9 @@ pub struct ControlInput {
     pub brake: f64,
     /// Hold for reverse thrust (jets, on the ground, throttle at idle); 0 or 1.
     pub reverse: f64,
+    /// Shuttle RCS translation: right and up, in [-1, 1].
+    pub strafe: f64,
+    pub vertical: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -88,11 +91,48 @@ pub enum RunwaySpawnKind {
     Approach,
 }
 
+/// Houston is an assisted, fictional Shuttle departure; the other sites are
+/// real launch facilities, although only Kennedy historically launched Shuttles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ShuttleSite {
+    #[default]
+    Houston,
+    Kennedy,
+    Tanegashima,
+    Sriharikota,
+}
+
+impl ShuttleSite {
+    pub fn coordinates(self) -> (f64, f64) {
+        match self {
+            Self::Houston => (29.5547, -95.0939),
+            Self::Kennedy => (28.6084, -80.6043),
+            Self::Tanegashima => (30.4009, 130.9773),
+            Self::Sriharikota => (13.7199, 80.2304),
+        }
+    }
+
+    pub fn code(self) -> f64 {
+        match self { Self::Houston => 0.0, Self::Kennedy => 1.0, Self::Tanegashima => 2.0, Self::Sriharikota => 3.0 }
+    }
+
+    /// Approximate ellipsoid height until streamed terrain supplies the surface.
+    pub fn fallback_height(self) -> f64 {
+        match self { Self::Houston => -20.0, Self::Kennedy => -25.0, Self::Tanegashima => 45.0, Self::Sriharikota => -65.0 }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SimCommand {
     Spawn(SpawnRequest),
     SpawnRocket(RocketSpawnRequest),
+    SpawnShuttle { #[serde(default)] orbit: bool, #[serde(default)] site: ShuttleSite },
+    LaunchShuttle,
+    SeparateShuttle,
+    /// Assisted return: skip re-entry, then fly a runway approach and rollout.
+    LandShuttle { airport: String, #[serde(default)] runway: Option<String> },
     /// Engage X-15 guidance to climb or descend to and hold the selected altitude.
     ClimbRocket { altitude_ft: f64 },
     CancelRocketClimb,
@@ -273,7 +313,18 @@ pub mod snap {
     pub const AP_SELECTED_HEADING: usize = 61;
     pub const AP_SELECTED_ALT_FT: usize = 62;
     pub const AP_SELECTED_SPEED: usize = 63;
-    pub const LEN: usize = 64;
+    pub const SHUTTLE_PHASE: usize = 64;
+    pub const MISSION_TIME: usize = 65;
+    pub const BOOSTER_SEP_TIME: usize = 66;
+    pub const TANK_SEP_TIME: usize = 67;
+    pub const ISS_X: usize = 68;
+    pub const ISS_Y: usize = 69;
+    pub const ISS_Z: usize = 70;
+    pub const ORBITAL_SPEED: usize = 71;
+    pub const LOCAL_GRAVITY: usize = 72;
+    pub const SHUTTLE_SITE: usize = 73;
+    pub const SHUTTLE_PAD_HEIGHT: usize = 74;
+    pub const LEN: usize = 75;
 
     pub mod flags {
         pub const ON_GROUND: u32 = 1;

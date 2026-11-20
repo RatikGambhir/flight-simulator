@@ -95,7 +95,7 @@ export function FlightLoop({ world, aircraft, atmosphere, sunLight, skyLight, oc
   useEffect(() => {
     rig.cockpitLookPitch = aircraft.model.cockpitLookPitch ?? -0.2
   }, [rig, aircraft])
-  const spaceFlight = isRocket(useAircraftSpec(aircraft.id))
+  const spaceFlight = isRocket(useAircraftSpec(aircraft.id)) && aircraft.id !== 'endeavour'
   // Reused every frame (no per-frame allocation).
   const pose = useMemo<AircraftPose>(
     () => ({

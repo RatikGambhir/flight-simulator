@@ -95,7 +95,7 @@ pub struct Perf {
 
 impl Perf {
     pub fn from_spec(s: &AircraftSpec) -> Self {
-        let jet = s.engine == EngineKind::Jet;
+        let jet = s.engine == EngineKind::Jet || s.id == "endeavour";
         let flap_count = s.flap_detents.len().max(1);
         let v_ref = s.v_approach_kt;
         let v_clean = if jet { v_ref * 1.3 + 10.0 } else { v_ref * 1.25 };
@@ -180,8 +180,8 @@ impl Perf {
             crosswind_limit_kt: if jet { 30.0 } else { 15.0 },
             tailwind_limit_kt: if jet { 10.0 } else { 5.0 },
             // Blackbird managed routes use dry power and the subsonic Mach cap.
-            cruise_alt_ft: if s.id == "sr71" { 35_000.0 } else { s.cruise_alt_ft.min(s.max_alt_ft) },
-            max_alt_ft: s.max_alt_ft,
+            cruise_alt_ft: if s.id == "endeavour" { 10_000.0 } else if s.id == "sr71" { 35_000.0 } else { s.cruise_alt_ft.min(s.max_alt_ft) },
+            max_alt_ft: if s.id == "endeavour" { 45_000.0 } else { s.max_alt_ft },
             alt_per_nm: if jet { 150.0 } else { 60.0 },
             wingspan_m: s.wingspan_m,
             wheelbase_m: s.wheelbase_m,

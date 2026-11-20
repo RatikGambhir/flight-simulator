@@ -2,12 +2,14 @@
 // to the DOM from a requestAnimationFrame loop instead of React state.
 
 import { useEffect, useRef } from 'react'
+import { useShuttlePhase } from '../sim/useShuttlePhase'
 import { Flags, KT_TO_MPH, S } from '../sim/protocol'
 import { autopilotStatus } from '../sim/autopilotStatus'
 import { sim } from '../sim/simClient'
 import { useAircraftList } from './useAircraftList'
 import { useApp } from '../state/store'
 import { AutopilotTargets } from './AutopilotTargets'
+import { ShuttleControls } from './ShuttleMission'
 import { RocketFlight } from './RocketFlight'
 import { angleDelta, navigationTo } from '../navigation/route'
 import { landingRunway, lineupHeading } from '../navigation/runwayGuide'
@@ -48,6 +50,8 @@ export function Hud() {
   const cockpit = useApp((s) => s.camera === 'cockpit')
   const groundSpeedMph = useApp((s) => s.settings.groundSpeedMph)
   const aircraftId = useApp((s) => s.aircraftId)
+  const shuttlePhase = useShuttlePhase()
+  const inSpace = aircraftId === 'endeavour' && shuttlePhase !== 6
   const aircraft = list.find((spec) => spec.id === aircraftId)
 
   useEffect(() => {
@@ -117,11 +121,12 @@ export function Hud() {
       const flags = s[S.FLAGS] | 0
       const spec = listRef.current[s[S.AIRCRAFT_INDEX] | 0]
       const mph = app.settings.groundSpeedMph
-      const rocket = spec?.engine === 'rocket'
-      text(nodes.speed, mph ? fmt(s[S.GS_KT] * KT_TO_MPH) : rocket ? s[S.MACH].toFixed(2) : fmt(s[S.IAS_KT]))
-      text(nodes.gs, rocket ? `TAS ${fmt(s[S.TAS_KT])} KT` : mph ? `AIRSPEED ${fmt(s[S.IAS_KT])} KT` : `GS ${fmt(s[S.GS_KT])}  TAS ${fmt(s[S.TAS_KT])}`)
-      text(nodes.mach, (rocket ? mph : s[S.MACH] > 0.4) ? `M ${s[S.MACH].toFixed(2)}` : `G ${s[S.G_LOAD].toFixed(1)}`)
-      text(nodes.alt, fmt(Math.round(s[S.ALT_MSL_FT] / 10) * 10))
+      const shuttle = spec?.id === 'endeavour' && s[S.SHUTTLE_PHASE] !== 6
+      const rocket = spec?.engine === 'rocket' && !(spec.id === 'endeavour' && s[S.SHUTTLE_PHASE] === 6)
+      text(nodes.speed, shuttle ? (s[S.ORBITAL_SPEED] / 1000).toFixed(2) : mph ? fmt(s[S.GS_KT] * KT_TO_MPH) : rocket ? s[S.MACH].toFixed(2) : fmt(s[S.IAS_KT]))
+      text(nodes.gs, shuttle ? 'INERTIAL · km/s' : rocket ? `TAS ${fmt(s[S.TAS_KT])} KT` : mph ? `AIRSPEED ${fmt(s[S.IAS_KT])} KT` : `GS ${fmt(s[S.GS_KT])}  TAS ${fmt(s[S.TAS_KT])}`)
+      text(nodes.mach, shuttle ? `FELT ${Math.hypot(s[S.NX], s[S.NY], s[S.NZ]).toFixed(3)} g` : (rocket ? mph : s[S.MACH] > 0.4) ? `M ${s[S.MACH].toFixed(2)}` : `G ${s[S.G_LOAD].toFixed(1)}`)
+      text(nodes.alt, shuttle ? (s[S.ALT_MSL_FT] * 0.3048 / 1000).toFixed(1) : fmt(Math.round(s[S.ALT_MSL_FT] / 10) * 10))
       const agl = s[S.AGL_FT]
       text(nodes.agl, agl < 2500 ? `RA ${fmt(agl)}` : '')
       const vs = s[S.VS_FPM]
@@ -177,7 +182,7 @@ export function Hud() {
       const wn = s[S.WIND_N]
       const wkt = Math.hypot(we, wn) * 1.943844
       const wdir = (Math.round((Math.atan2(-we, -wn) * 180) / Math.PI + 360) % 360) || 360
-      text(nodes.wind, wkt >= 1 ? `WIND ${String(wdir).padStart(3, '0')}°/${Math.round(wkt)}` : 'WIND CALM')
+      text(nodes.wind, shuttle ? 'OMS / RCS' : wkt >= 1 ? `WIND ${String(wdir).padStart(3, '0')}°/${Math.round(wkt)}` : 'WIND CALM')
       const gear = s[S.GEAR]
       if (spec && !spec.retractable_gear) {
         text(nodes.gear, 'FIXED')
@@ -252,9 +257,9 @@ export function Hud() {
       <div className="hud-status" data-k="status" />
       <div className={`hud-side left box${groundSpeedMph ? ' ground-speed-mph' : ''}`}>
         <div className="hud-speed-header">
-          <div className="hud-unit">{groundSpeedMph ? 'GROUND SPEED' : aircraft?.engine === 'rocket' ? 'MACH' : 'AIRSPEED KT'}</div>
+          <div className="hud-unit">{inSpace ? 'ORBITAL SPEED' : groundSpeedMph ? 'GROUND SPEED' : aircraft?.engine === 'rocket' && aircraftId !== 'endeavour' ? 'MACH' : 'AIRSPEED KT'}</div>
           <button type="button" className="btn hud-mph-toggle" aria-pressed={groundSpeedMph}
-            aria-label="Show ground speed in MPH" title="Show ground speed in miles per hour"
+            disabled={inSpace} aria-label="Show ground speed in MPH" title="Show ground speed in miles per hour"
             onKeyDown={(event) => {
               if (event.key === ' ' || event.key === 'Enter') event.stopPropagation()
             }}
@@ -268,7 +273,7 @@ export function Hud() {
         <div className="hud-small" data-k="wind" />
       </div>
       <div className="hud-side right box">
-        <div className="hud-unit">ALTITUDE FT</div>
+        <div className="hud-unit">{inSpace ? 'ALTITUDE KM' : 'ALTITUDE FT'}</div>
         <div className="hud-big" data-k="alt" />
         <div className="hud-small" data-k="vs" />
         <div className="hud-small" data-k="agl" />
@@ -290,7 +295,7 @@ export function Hud() {
             <b data-k="gear" />
           </div>
           <div className="cell">
-            <span className="hud-unit">{aircraft?.engine === 'rocket' ? 'XLR99' : 'FLAPS'}</span>
+            <span className="hud-unit">{aircraftId === 'endeavour' ? inSpace ? 'ROCKET' : 'FLAPS' : aircraft?.engine === 'rocket' ? 'XLR99' : 'FLAPS'}</span>
             <b data-k="flaps" />
           </div>
           <div className="cell">
@@ -306,7 +311,7 @@ export function Hud() {
             <b data-k="gload" />
           </div>
         </div>
-        {aircraft && (aircraft.engine === 'rocket' ? <RocketFlight spec={aircraft} /> : <AutopilotTargets key={aircraft.id} spec={aircraft} />)}
+        {aircraft && (aircraftId === 'endeavour' ? <ShuttleControls /> : aircraft.engine === 'rocket' ? <RocketFlight spec={aircraft} /> : <AutopilotTargets key={aircraft.id} spec={aircraft} />)}
       </div>
       <div className="hud-coords box">
         <div data-k="wx" style={{ display: 'none' }} />
@@ -314,7 +319,7 @@ export function Hud() {
         <div className="faint" data-k="assist" />
       </div>
       <div className="hud-ap box" data-k="apBox" data-tone="off" role="status" aria-live="polite" aria-label="Autopilot"
-        style={aircraft?.engine === 'rocket' ? { display: 'none' } : undefined}>
+        style={aircraft?.engine === 'rocket' && !(aircraftId === 'endeavour' && shuttlePhase === 6) ? { display: 'none' } : undefined}>
         <div className="ap-head">
           <b data-k="ap" />
           <span className="ap-phase" data-k="apPhase" />

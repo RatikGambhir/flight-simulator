@@ -59,6 +59,7 @@ export interface AircraftModel {
   /** Default cockpit look angle (rad, negative = down); -0.2 when unset. */
   cockpitLookPitch?: number
   /** Animates engine effects and variable-geometry inlets, if any. */
+  flightState?: (snapshot: Float64Array) => void
   exhaust?: (engine: number, afterburner: number, time: number, mach: number) => void
   wingTipRight: Vector3
   span: number

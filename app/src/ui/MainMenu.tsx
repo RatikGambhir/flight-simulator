@@ -23,7 +23,7 @@ export function MainMenu() {
   const error = useWorldStatus((s) => s.error)
   const aircraft = list.find((a) => a.id === aircraftId)
   const where = describeSpawn(spawn)
-  const ready = providerReady(settings)
+  const ready = providerReady(settings) || (aircraftId === 'endeavour' && spawn.kind === 'shuttle' && spawn.orbit)
 
   const chooseLocation = (s: SpawnChoice) => {
     setSpawn(s)
@@ -64,10 +64,13 @@ export function MainMenu() {
           <span className="muted">Change</span>
         </div>
 
-        <button className="summary-card glass destination-card" onClick={() => setScreen('destination')}>
+        {aircraftId === 'endeavour' ? <button className="summary-card glass destination-card" onClick={() => setScreen('location')}>
+          <span style={{ fontSize: 26 }}>◎</span>
+          <div><div className="k">Mission target</div><div className="v">International Space Station</div><div className="s">Houston, Kennedy, Japan or India · start in orbit</div></div>
+        </button> : <button className="summary-card glass destination-card" onClick={() => setScreen('destination')}>
           <span style={{ fontSize: 26 }}>✈</span>
           <div><div className="k">Destination</div><div className="v">{destination?.airport.name ?? 'Choose an arrival airport'}</div><div className="s">{destination ? `${destination.airport.ident} · View route` : 'Optional · Preview your flight route'}</div></div>
-        </button>
+        </button>}
 
         {!ready ? (
           <div className="notice">
@@ -78,7 +81,7 @@ export function MainMenu() {
           <div className="notice">
             Scenery failed to load from {PROVIDER_LABEL[settings.provider]}: {error}. Check your key and network in Settings.
           </div>
-        ) : (
+        ) : aircraftId === 'endeavour' ? <div className="notice">Endeavour · OV-105 · 25 missions<br />Real scenery surrounds each launch location. Choose Change departure for Houston, Kennedy, Japan or India and a daylight launch.</div> : (
           <div className="row">
             <span className={`chip ${settings.provider === 'open' ? '' : 'good'}`}>{PROVIDER_LABEL[settings.provider]}</span>
             <span className="chip">{sim.transportKind === 'tauri' ? 'Native simulation' : 'WASM simulation (browser)'}</span>

@@ -56,6 +56,7 @@ export class CelestialState {
   readonly sunDirection = new Vector3()
   readonly moonDirection = new Vector3()
   readonly moonSunDirection = new Vector3()
+  sunAngularRadius = 0.00465
   moonAngularRadius = 0.0045
   illuminatedFraction = 0
   geoidHeight = 0
@@ -77,7 +78,9 @@ export class CelestialState {
       getMoonFixedToECIRotationMatrix(date, this.moonFixedFromECEF)
       this.moonFixedFromECEF.premultiply(this.inertialToECEF).transpose()
     }
-    this.sunDirection.subVectors(this.sunPosition, observerECEF).normalize()
+    this.sunDirection.subVectors(this.sunPosition, observerECEF)
+    this.sunAngularRadius = Math.asin(695_700_000 / this.sunDirection.length())
+    this.sunDirection.normalize()
     this.moonDirection.subVectors(this.moonPosition, observerECEF)
     this.moonAngularRadius = Math.asin(MOON_RADIUS / this.moonDirection.length())
     this.moonDirection.normalize()

@@ -11,6 +11,7 @@
 
 mod dynamics;
 mod rocket;
+mod shuttle;
 
 use glam::{DMat3, DQuat, DVec3};
 
@@ -129,6 +130,7 @@ pub struct Simulation {
     lever: f64,
     engine: f64,
     rocket_guidance: Option<RocketGuidance>,
+    shuttle: Option<shuttle::ShuttleMission>,
     gear: f64,
     gear_cmd_down: bool,
     flaps_index: usize,
@@ -195,6 +197,7 @@ impl Simulation {
             lever: 0.0,
             engine: 0.0,
             rocket_guidance: None,
+            shuttle: None,
             gear: 1.0,
             gear_cmd_down: true,
             flaps_index: 0,
@@ -249,6 +252,8 @@ impl Simulation {
             throttle_rate: c(input.throttle_rate, -1.0),
             brake: c(input.brake, 0.0),
             reverse: c(input.reverse, 0.0),
+            strafe: c(input.strafe, -1.0),
+            vertical: c(input.vertical, -1.0),
         };
     }
 
@@ -288,7 +293,19 @@ impl Simulation {
         {
             self.autopilot.disengage(Some("Autopilot disconnected by pilot input"));
         }
+        // Ordinary placement and airplane guidance cannot move an active Shuttle mission.
+        if self.spec.id == "endeavour" && self.shuttle.is_some() && matches!(&cmd,
+            SimCommand::Spawn(_) | SimCommand::SpawnRocket(_) | SimCommand::SpawnRunway { .. }
+            | SimCommand::ClimbRocket { .. } | SimCommand::FlyTargets(_) | SimCommand::ToggleAutopilot
+            | SimCommand::Autopilot(_)) {
+            self.message("Use the Endeavour mission controls for launch and orbital flight");
+            return;
+        }
         match cmd {
+            SimCommand::SpawnShuttle { orbit, site } => self.spawn_shuttle(orbit, site),
+            SimCommand::LaunchShuttle => self.launch_shuttle(),
+            SimCommand::SeparateShuttle => self.separate_shuttle(),
+            SimCommand::LandShuttle { airport, runway } => self.land_shuttle(&airport, runway),
             SimCommand::Spawn(req) => {
                 self.last_spawn = Some(SimCommand::Spawn(req.clone()));
                 self.spawn(&req);
@@ -317,7 +334,14 @@ impl Simulation {
                     self.aircraft_index = idx;
                     self.spec = &aircraft::catalog()[idx];
                     self.flaps_index = self.flaps_index.min(self.spec.flap_detents.len() - 1);
+                    if self.spec.id == "endeavour" {
+                        self.spawn_shuttle(false, Default::default());
+                        return;
+                    }
                     match self.last_spawn.clone() {
+                        Some(SimCommand::SpawnShuttle { .. }) => self.command(SimCommand::SpawnRunway {
+                            airport: "KORD".into(), runway: Some("28R".into()), kind: RunwaySpawnKind::Takeoff,
+                        }),
                         Some(SimCommand::SpawnRocket(r)) if self.spec.engine != EngineKind::Rocket => {
                             self.command(SimCommand::Spawn(SpawnRequest {
                                 lat: r.lat, lon: r.lon, heading: r.heading, mode: SpawnMode::Air, agl_ft: None,
@@ -371,7 +395,7 @@ impl Simulation {
                     self.engage_autopilot();
                 }
             }
-            SimCommand::Autopilot(c) if self.spec.engine == EngineKind::Rocket => {
+            SimCommand::Autopilot(c) if self.spec.engine == EngineKind::Rocket && self.spec.id != "endeavour" => {
                 match c.engaged {
                     Some(true) if self.rocket_guidance.is_none() => self.hold_rocket_altitude(),
                     Some(false) => self.cancel_rocket_guidance(),
@@ -388,7 +412,7 @@ impl Simulation {
                 self.autopilot.apply(&c, &inp, self.spec);
             }
             SimCommand::FlyTargets(targets) => {
-                if self.spec.engine == EngineKind::Rocket {
+                if self.spec.engine == EngineKind::Rocket && self.spec.id != "endeavour" {
                     self.message("Use Flight state to set the X-15's altitude, speed and heading");
                 } else if self.crashed || self.awaiting.is_some() {
                     self.message("Autopilot is available once the aircraft is placed and ready");
@@ -435,7 +459,7 @@ impl Simulation {
     }
 
     fn engage_autopilot(&mut self) {
-        if self.spec.engine == EngineKind::Rocket {
+        if self.spec.engine == EngineKind::Rocket && self.spec.id != "endeavour" {
             self.hold_rocket_altitude();
         } else if self.crashed {
             self.message("Autopilot unavailable after a crash");
@@ -454,6 +478,7 @@ impl Simulation {
             return;
         }
         self.ground = Some(GroundSample { lat, lon, height: h });
+        self.ground_shuttle_pad(h);
         if let Some(aw) = self.awaiting {
             self.finish_await(aw, h);
         }
@@ -507,6 +532,7 @@ impl Simulation {
         self.surfaces = DVec3::ZERO;
         self.reverser = 0.0;
         self.rocket_guidance = None;
+        self.shuttle = None;
         self.spec_force = DVec3::Z;
         self.weather.reset_gusts();
         self.autopilot.reset();
@@ -826,7 +852,11 @@ impl Simulation {
         let n = self.time_scale.ceil().max(1.0) as usize;
         let v0 = self.vel;
         for i in 0..n {
-            self.integrate(total / n as f64);
+            if self.shuttle.is_some() {
+                self.integrate_shuttle(total / n as f64);
+            } else {
+                self.integrate(total / n as f64);
+            }
             if self.crashed {
                 break;
             }
@@ -836,7 +866,7 @@ impl Simulation {
             }
         }
         self.update_derived();
-        self.update_specific_force(v0, total);
+        if self.shuttle.is_none() { self.update_specific_force(v0, total); }
         self.drain_autopilot();
     }
 
@@ -939,7 +969,7 @@ impl Simulation {
         let vel_enu = enu.to_local(self.vel);
         let gs = (vel_enu.x * vel_enu.x + vel_enu.y * vel_enu.y).sqrt();
         let ground_h = self.ground_height_at(g.lat_deg(), g.lon_deg());
-        let wind_enu = self.weather.wind_enu((g.height - ground_h).max(0.0));
+        let wind_enu = if self.shuttle.is_some() { DVec3::ZERO } else { self.weather.wind_enu((g.height - ground_h).max(0.0)) };
         let air_vel = self.vel - enu.to_ecef(wind_enu);
         let tas = air_vel.length();
         let vb = self.att.conjugate() * air_vel;
@@ -1076,6 +1106,7 @@ impl Simulation {
         out[AP_PHASE] = if ap.engaged { ap.phase.code() as f64 } else { 0.0 };
         out[AP_LATERAL] = if ap.engaged { ap.lateral as u8 as f64 } else { 0.0 };
         out[AP_DIST_NM] = ap.dist_to_go_nm.unwrap_or(-1.0);
+        self.write_shuttle_snapshot(out);
     }
 
     pub fn snapshot(&self) -> Vec<f64> {
@@ -1144,7 +1175,8 @@ mod tests {
 
     #[test]
     fn cruise_is_stable_hands_off() {
-        for ac in aircraft::catalog().iter().map(|spec| spec.id) {
+        // Orbital coasting has its own conservation/weightlessness test.
+        for ac in aircraft::catalog().iter().filter(|spec| spec.id != "endeavour").map(|spec| spec.id) {
             let mut sim = Simulation::new();
             sim.command(SimCommand::SetAircraft { id: ac.into() });
             sim.command(SimCommand::Spawn(SpawnRequest {

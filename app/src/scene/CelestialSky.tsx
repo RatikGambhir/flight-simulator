@@ -36,7 +36,10 @@ export function CelestialSky({ atmosphere, celestial }: {
     const atm = atmosphere.current
     if (!atm || !celestial.ready) return
     celestial.observeMoon(camera.getWorldPosition(eye).applyMatrix4(frame.ecefFromWorld), moon)
-    if (sky.current) setSkyMoon(sky.current.material, moon, celestial)
+    if (sky.current) {
+      sky.current.material.sunAngularRadius = celestial.sunAngularRadius
+      setSkyMoon(sky.current.material, moon, celestial)
+    }
     if (stars.current) {
       const points = stars.current
       starRotation(atm.inertialToECEFMatrix, frame.worldFromEcefRot, points.quaternion)

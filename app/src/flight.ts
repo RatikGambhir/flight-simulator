@@ -52,6 +52,7 @@ export function x15Departure(spawn: SpawnChoice): SpawnChoice {
 }
 
 export function spawnCommand(s: SpawnChoice): SimCommand {
+  if (s.kind === 'shuttle') return { type: 'spawn_shuttle', orbit: s.orbit, site: s.site }
   if (s.kind === 'runway') return { type: 'spawn_runway', airport: s.airport, runway: s.runway, kind: s.mode }
   if (s.kind === 'rocket') return {
     type: 'spawn_rocket', lat: s.lat, lon: s.lon, altitude_ft: s.altitude_ft,
@@ -118,6 +119,7 @@ export function returnToMenu() {
 }
 
 export function describeSpawn(s: SpawnChoice): { title: string; subtitle: string } {
+  if (s.kind === 'shuttle') return { title: s.label, subtitle: s.orbit ? '420 km orbit · ISS rendezvous' : 'Guided launch → orbit → ISS' }
   if (s.kind === 'runway') {
     return {
       title: s.airportName,

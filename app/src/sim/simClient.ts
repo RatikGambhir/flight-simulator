@@ -18,6 +18,9 @@ export interface RenderState {
   x: number
   y: number
   z: number
+  issX: number
+  issY: number
+  issZ: number
   quat: Quaternion
   gear: number
   flaps: number
@@ -41,6 +44,11 @@ class SimClient {
   private head = 0
   private count = 0
   private clockOffset: number | null = null
+  private snapshotListeners = new Set<() => void>()
+  readonly subscribeSnapshots = (listener: () => void) => {
+    this.snapshotListeners.add(listener)
+    return () => { this.snapshotListeners.delete(listener) }
+  }
   private eventListeners = new Set<(e: SimEvent) => void>()
   private lastInput: ControlInput = { pitch: 0, roll: 0, yaw: 0, throttle_rate: 0, brake: 0, reverse: 0 }
   private lastInputSent = 0
@@ -54,6 +62,9 @@ class SimClient {
     x: 0,
     y: 0,
     z: 0,
+    issX: 0,
+    issY: 0,
+    issZ: 0,
     quat: new Quaternion(),
     gear: 1,
     flaps: 0,
@@ -84,6 +95,7 @@ class SimClient {
       this.count = 0
     }
     this.latest.set(s.subarray(0, S.LEN))
+    this.snapshotListeners.forEach((listener) => listener())
     // Track the local-clock minus sim-clock offset. Snap down immediately
     // (earliest arrival = least delayed), drift up slowly to follow pauses.
     const off = now - s[S.TIME]
@@ -138,6 +150,9 @@ class SimClient {
     r.x = lerp(S.ECEF_X)
     r.y = lerp(S.ECEF_Y)
     r.z = lerp(S.ECEF_Z)
+    r.issX = lerp(S.ISS_X)
+    r.issY = lerp(S.ISS_Y)
+    r.issZ = lerp(S.ISS_Z)
     _qa.set(a[S.QX], a[S.QY], a[S.QZ], a[S.QW])
     _qb.set(b[S.QX], b[S.QY], b[S.QZ], b[S.QW])
     r.quat.slerpQuaternions(_qa, _qb, f)
@@ -167,7 +182,7 @@ class SimClient {
       Math.abs(p.pitch - input.pitch) < 1e-3 &&
       Math.abs(p.roll - input.roll) < 1e-3 &&
       Math.abs(p.yaw - input.yaw) < 1e-3 &&
-      p.throttle_rate === input.throttle_rate &&
+      p.throttle_rate === input.throttle_rate && p.strafe === input.strafe && p.vertical === input.vertical &&
       p.brake === input.brake &&
       p.reverse === input.reverse
     if (same && now - this.lastInputSent < 250) return

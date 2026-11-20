@@ -1,3 +1,4 @@
+import { useShuttlePhase } from '../sim/useShuttlePhase'
 import { useEffect, useRef, useState } from 'react'
 import { relocate, restartFlight, returnToMenu } from '../flight'
 import { Flags, S } from '../sim/protocol'
@@ -35,7 +36,7 @@ function TakeoffGuide() {
       }
       const spec = list[s[S.AIRCRAFT_INDEX] | 0]
       // Guided departures (standard autopilot or rocket guidance) fly the takeoff themselves.
-      if (flags & Flags.AP_ENGAGED) done.current = true
+      if (spec?.id === 'endeavour' || flags & Flags.AP_ENGAGED) done.current = true
       if (done.current || !spec || flags & (Flags.AWAITING_GROUND | Flags.CRASHED)) {
         setStep((p) => (p === null ? p : null))
         return
@@ -103,6 +104,8 @@ function Toasts() {
 
 /** Shows scenery streaming progress, and the "placing aircraft" wait after a spawn. */
 function LoadingIndicator() {
+  const shuttlePhase = useShuttlePhase()
+  const shuttle = useApp((s) => s.aircraftId === 'endeavour') && shuttlePhase !== 6
   const progress = useWorldStatus((s) => s.progress)
   const error = useWorldStatus((s) => s.error)
   const [awaiting, setAwaiting] = useState(true)
@@ -111,6 +114,7 @@ function LoadingIndicator() {
     const id = setInterval(() => setAwaiting(((sim.latest[S.FLAGS] | 0) & Flags.AWAITING_GROUND) !== 0), 250)
     return () => clearInterval(id)
   }, [])
+  if (shuttle && shuttlePhase >= 3) return null
   if (error) {
     return (
       <div className="loading glass" style={{ color: 'var(--warn)' }}>
@@ -135,12 +139,15 @@ function LoadingIndicator() {
 }
 
 export function Attribution() {
+  const shuttlePhase = useShuttlePhase()
+  const shuttle = useApp((s) => s.aircraftId === 'endeavour') && shuttlePhase !== 6
   const attributions = useWorldStatus((s) => s.attributions)
   const provider = useApp((s) => s.settings.provider)
   return (
     <div className="attribution">
       {provider === 'google' ? <b style={{ fontFamily: 'Arial, sans-serif', letterSpacing: '0.02em' }}>Google</b> : null}
       {attributions.map((a, i) => (a.image ? <img key={i} src={a.image} alt="" /> : <span key={i}>{a.text}</span>))}
+      {shuttle ? <span>Earth: NASA / Three.js · Moon & city lights: NASA · Simulated ISS orbit</span> : null}
     </div>
   )
 }
@@ -234,6 +241,7 @@ export function FlightChrome() {
   const markerVisible = useApp((s) => s.destinationMarkerVisible)
   const runwayAlignmentVisible = useApp((s) => s.runwayAlignmentVisible)
   const hasDepartureRunway = useApp((s) => s.spawn.kind === 'runway')
+  const shuttle = useApp((s) => s.aircraftId === 'endeavour')
   const hudVisible = useApp((s) => s.hudVisible)
   const pauseMenu = useApp((s) => s.pauseMenu)
   const crashed = useApp((s) => s.crashed)
@@ -248,7 +256,7 @@ export function FlightChrome() {
         </>
       ) : null}
       <Toasts />
-      {!pauseMenu && !crashed ? <div className="navigation-actions glass">
+      {!shuttle && !pauseMenu && !crashed ? <div className="navigation-actions glass">
         <button className="btn ghost" onClick={() => useApp.getState().setRouteOpen(!routeOpen)}>Route map <kbd>M</kbd></button>
         <button className="btn ghost" onClick={() => useApp.getState().setSkipToOpen(true)}>Skip to <kbd>Q</kbd></button>
         <button className="btn ghost" disabled={!destination && !hasDepartureRunway} aria-pressed={runwayAlignmentVisible} onClick={() => useApp.getState().toggleRunwayAlignment()}>Runway alignment <kbd>H</kbd></button>

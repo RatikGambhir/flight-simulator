@@ -12,6 +12,12 @@ export interface Binding {
 }
 
 export const BINDINGS: { group: string; items: Binding[] }[] = [
+  { group: 'Endeavour mission', items: [
+    { keys: 'L / B', action: 'Launch / release external tank after orbital insertion' },
+    { keys: 'W/S · A/D · J/E', action: 'RCS pitch · roll · yaw (free flight)' },
+    { keys: 'R/F · ⇧F', action: 'OMS thrust up/down · cut thrust; velocity persists in vacuum' },
+    { keys: 'X · U/O · I/K', action: 'Hold reverse · left/right · up/down RCS translation' },
+  ] },
   {
     group: '737 cockpit',
     items: [
@@ -150,7 +156,7 @@ class Controls {
     if (app.pauseMenu) return
     if (code === 'KeyQ' && !app.routeOpen && !app.helpOverlay && !app.crashed) {
       e.preventDefault()
-      if (!e.repeat) { this.down.clear(); app.setSkipToOpen(true) }
+      if (!e.repeat && app.aircraftId !== 'endeavour') { this.down.clear(); app.setSkipToOpen(true) }
       return
     }
     if (code === 'KeyM') {
@@ -190,6 +196,10 @@ class Controls {
     if (e.shiftKey && code === 'KeyF') return sim.command({ type: 'set_throttle', value: 0 })
     if (e.repeat) {
       this.down.add(code)
+      return
+    }
+    if (app.aircraftId === 'endeavour' && (code === 'KeyL' || code === 'KeyB')) {
+      sim.command({ type: code === 'KeyL' ? 'launch_shuttle' : 'separate_shuttle' })
       return
     }
     switch (code) {
@@ -295,6 +305,9 @@ class Controls {
     out.throttle_rate = throttleRate
     out.brake = brake
     out.reverse = reverse
+    const shuttle = useApp.getState().aircraftId === 'endeavour' && !blocked
+    out.strafe = shuttle ? Number(this.key('KeyO')) - Number(this.key('KeyU')) : 0
+    out.vertical = shuttle ? Number(this.key('KeyI')) - Number(this.key('KeyK')) : 0
 
     // Gamepad (standard mapping) overrides the keyboard when deflected.
     this.look.x = 0

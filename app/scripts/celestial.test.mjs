@@ -185,3 +185,15 @@ test('installed sky shaders support lunar texture, occultation and small round s
     assert.equal(stars.depthWrite, false)
   } finally { sky.dispose(); stars.dispose(); texture.dispose() }
 })
+
+test('Sun keeps its physical angular size from low orbit and varies with Earth-Sun distance', () => {
+  const state = new CelestialState()
+  const observer = geodeticToEcef(28.6, -80.6, 420_000)
+  state.update(new Date('2026-01-03T12:00:00Z'), observer)
+  const january = state.sunAngularRadius
+  state.update(new Date('2026-07-04T12:00:00Z'), observer)
+  const july = state.sunAngularRadius
+  assert.ok(january > july)
+  assert.ok(january > 0.00470 && january < 0.00474)
+  assert.ok(july > 0.00456 && july < 0.00459)
+})

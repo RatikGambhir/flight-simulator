@@ -1,3 +1,5 @@
+import type { ShuttleSite } from './shuttleSites'
+
 // TypeScript mirror of `crates/sim-core/src/protocol.rs`. Keep in sync.
 
 export const S = {
@@ -71,7 +73,18 @@ export const S = {
   AP_SELECTED_HEADING: 61,
   AP_SELECTED_ALT_FT: 62,
   AP_SELECTED_SPEED: 63,
-  LEN: 64,
+  SHUTTLE_PHASE: 64,
+  MISSION_TIME: 65,
+  BOOSTER_SEP_TIME: 66,
+  TANK_SEP_TIME: 67,
+  ISS_X: 68,
+  ISS_Y: 69,
+  ISS_Z: 70,
+  ORBITAL_SPEED: 71,
+  LOCAL_GRAVITY: 72,
+  SHUTTLE_SITE: 73,
+  SHUTTLE_PAD_HEIGHT: 74,
+  LEN: 75,
 } as const
 
 export const Flags = {
@@ -100,7 +113,10 @@ export interface ControlInput {
   yaw: number
   throttle_rate: number
   brake: number
-  /** Hold (1) for reverse thrust on the ground at idle. */
+  /** Shuttle RCS translation: right and up, in [-1, 1]. */
+  strafe?: number
+  vertical?: number
+  /** Hold for reverse thrust on the ground, or aft RCS in orbital free flight. */
   reverse: number
 }
 
@@ -158,6 +174,10 @@ export interface FlightTargets {
 export type SimCommand =
   | ({ type: 'spawn' } & SpawnRequest)
   | ({ type: 'spawn_rocket'; lat: number; lon: number; ground_elevation_ft?: number | null; keep_autopilot?: boolean } & RocketFlightState)
+  | { type: 'spawn_shuttle'; orbit: boolean; site?: ShuttleSite }
+  | { type: 'launch_shuttle' }
+  | { type: 'separate_shuttle' }
+  | { type: 'land_shuttle'; airport: string; runway?: string | null }
   | { type: 'climb_rocket'; altitude_ft: number }
   | { type: 'cancel_rocket_climb' }
   | { type: 'spawn_runway'; airport: string; runway?: string | null; kind: RunwaySpawnKind }

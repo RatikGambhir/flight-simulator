@@ -10,6 +10,7 @@ import { buildBizjet, buildLongitude } from './exterior/businessJets'
 import { buildCessna } from './exterior/cessna'
 import { buildFighter } from './exterior/fighter'
 import { buildBlackbird } from './exterior/blackbird'
+import { buildEndeavour } from './exterior/endeavour'
 import { buildX15 } from './exterior/x15'
 import type { AircraftModel } from './exterior/parts'
 
@@ -27,6 +28,7 @@ const BUILDERS: Record<string, (livery?: LiveryId) => AircraftModel> = {
   c5m: buildC5M,
   c17: buildC17,
   x15: buildX15,
+  endeavour: buildEndeavour,
 }
 
 /** Builds (and enables lighting-mask layers on) the exterior model for an aircraft id. */

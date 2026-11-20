@@ -6,7 +6,7 @@
     "app:dev": "npm --prefix app run app:dev",
     "app:web": "npm --prefix app run dev:web",
     "app:build": "npm --prefix app run app:build",
-    "app:test": "npm --prefix app run typecheck && npm --prefix app run test:graphics && npm --prefix app run test:navigation && npm --prefix app run test:cockpit && npm --prefix app run test:skip-to && npm --prefix app run test:autopilot && npm --prefix app run test:rust",
+    "app:test": "npm --prefix app run typecheck && npm --prefix app run test:graphics && npm --prefix app run test:navigation && npm --prefix app run test:cockpit && npm --prefix app run test:skip-to && npm --prefix app run test:autopilot && npm --prefix app run test:rust && npm --prefix app run test:space",
     "site:dev": "npm --prefix site run dev",
     "site:build": "npm --prefix site run build",
     "site:lint": "npm --prefix site run lint",

@@ -1,7 +1,7 @@
 {
   "name": "geoflight",
   "version": "0.1.0",
-  "description": "GeoFlight — a Tauri + Rust + React + Three.js flight simulator over a photorealistic, geographically accurate Earth.",
+  "description": "GeoFlight \u2014 a Tauri + Rust + React + Three.js flight simulator over a photorealistic, geographically accurate Earth.",
   "scripts": {
     "dev": "vite",
     "dev:web": "npm run build:wasm && vite",
@@ -18,7 +18,9 @@
     "tauri": "tauri",
     "app:dev": "tauri dev",
     "app:build": "tauri build --bundles app,dmg",
-    "data": "echo 'See scripts/README.md for regenerating bundled datasets'"
+    "data": "echo 'See scripts/README.md for regenerating bundled datasets'",
+    "test:space": "npm run build:wasm && node --test scripts/space.test.mjs",
+    "bench:launch": "node --experimental-transform-types scripts/launch-effects.bench.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",

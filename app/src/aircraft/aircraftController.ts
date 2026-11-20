@@ -84,7 +84,9 @@ export class AircraftController {
   readonly model: AircraftModel
   readonly cockpit: Cockpit
   private shadow: Mesh
-  private shadowTarget: WebGLRenderTarget
+  /** Rendered on first use: scenes without a ground shadow never pay for it. */
+  private shadowTarget: WebGLRenderTarget | null = null
+  private readonly renderer: WebGLRenderer
   private time = 0
   /** World position and orientation of the aircraft this frame. */
   readonly position = new Vector3()
@@ -100,6 +102,7 @@ export class AircraftController {
     renderer: WebGLRenderer,
     livery?: LiveryId,
   ) {
+    this.renderer = renderer
     this.model = buildAircraft(id, LIGHTING_MASK_LAYER, livery)
     this.lamps = this.model.lamps.map((l) => ({ position: new Vector3(), color: new Color(LAMP_COLOR[l.kind]), intensity: 0, size: LAMP_SIZE[l.kind] }))
     this.cockpit = buildCockpit(this.model)
@@ -115,11 +118,10 @@ export class AircraftController {
       }
     })
     this.container.add(this.model.root)
-    this.shadowTarget = this.renderSilhouette(renderer)
     const mat = new ShaderMaterial({
       vertexShader: SHADOW_VERT,
       fragmentShader: SHADOW_FRAG,
-      uniforms: { silhouette: { value: this.shadowTarget.texture }, opacity: { value: 0.5 }, radius: { value: 0.002 } },
+      uniforms: { silhouette: { value: null }, opacity: { value: 0.5 }, radius: { value: 0.002 } },
       transparent: true,
       depthWrite: false,
     })
@@ -131,6 +133,10 @@ export class AircraftController {
 
   /** Adds the ground shadow to the scene (it lives in world space, not under the aircraft). */
   attachShadow(scene: Scene) {
+    if (!this.shadowTarget) {
+      this.shadowTarget = this.renderSilhouette(this.renderer)
+      ;(this.shadow.material as ShaderMaterial).uniforms.silhouette.value = this.shadowTarget.texture
+    }
     scene.add(this.shadow)
   }
 
@@ -141,7 +147,9 @@ export class AircraftController {
   /** Renders a top-down silhouette of the exterior into a small texture for the ground shadow. */
   private renderSilhouette(renderer: WebGLRenderer) {
     const size = Math.max(this.model.span, this.model.length) * SHADOW_PAD
-    const rt = new WebGLRenderTarget(1024, 1024, { samples: 4, depthBuffer: true })
+    // Multisample once, then keep only a resolved 1024² copy: the MSAA colour and
+    // depth buffers (~32 MB) are not needed after this single draw.
+    const msaa = new WebGLRenderTarget(1024, 1024, { samples: 4, depthBuffer: false })
     const cam = new OrthographicCamera(-size / 2, size / 2, size / 2, -size / 2, 0.1, 100)
     cam.position.set(0, 50, 0)
     cam.lookAt(0, 0, 0)
@@ -160,9 +168,16 @@ export class AircraftController {
     if (cockpit) cockpit.visible = false
     scene.add(clone)
     const prev = renderer.getRenderTarget()
-    renderer.setRenderTarget(rt)
+    renderer.setRenderTarget(msaa)
     renderer.render(scene, cam)
+    const rt = new WebGLRenderTarget(1024, 1024, { depthBuffer: false })
+    const copy = new MeshBasicMaterial({ map: msaa.texture })
+    const quad = new Mesh(new PlaneGeometry(2, 2), copy)
+    const flat = new OrthographicCamera(-1, 1, 1, -1, 0, 1)
+    renderer.setRenderTarget(rt)
+    renderer.render(quad, flat)
     renderer.setRenderTarget(prev)
+    quad.geometry.dispose(); copy.dispose(); msaa.dispose()
     white.dispose()
     return rt
   }
@@ -233,6 +248,7 @@ export class AircraftController {
         sp.blades.visible = !blur
       }
     }
+    m.flightState?.(r.latest)
     m.exhaust?.(r.engine, r.latest[S.AFTERBURNER], this.time, r.latest[S.MACH])
     const strobeOn = this.time % 1.2 < 0.06 || (this.time % 1.2 > 0.14 && this.time % 1.2 < 0.2)
     for (const st of m.strobes) st.visible = strobeOn
@@ -305,7 +321,7 @@ export class AircraftController {
   }
 
   dispose() {
-    this.shadowTarget.dispose()
+    this.shadowTarget?.dispose()
     this.cockpit.root.removeFromParent()
     this.cockpit.dispose()
     disposeAircraftMeshes(this.cockpit.root, false)
